@@ -1,0 +1,38 @@
+#!/bin/sh
+# Adaptive cores: agents start on the 1-2 most frugal cores. When work is
+# waiting for a core (the kernel's CPU pressure), more cores are added; after a
+# calm minute it steps back down. Work finishes fast, then the chip sleeps deeply.
+#   step 0: frugal cores   step 1: all but the fastest cores   step 2: all cores
+F=/run/lightsout/cores.frugal
+units="user.slice lightsout.slice lightsout-session.service"
+total=$(nproc --all)
+all="0-$((total - 1))"
+top=$(cat /sys/devices/system/cpu/cpu*/cpufreq/cpuinfo_max_freq 2>/dev/null | sort -n | tail -1)
+mid=""
+for c in /sys/devices/system/cpu/cpu[0-9]*; do
+  f=$(cat "$c/cpufreq/cpuinfo_max_freq" 2>/dev/null)
+  [ -n "$f" ] && [ "$f" != "$top" ] && mid="$mid${mid:+,}${c##*cpu}"
+done
+pressure() {  # % of the last 10 s that work was waiting for a core
+  if [ -r /proc/pressure/cpu ]; then
+    awk '/^some/ { split($2, a, "="); print int(a[2]) }' /proc/pressure/cpu
+  else  # older kernels: load compared to the cores in use
+    awk -v n="$1" '{ print int($1 * 100 / (n > 0 ? n : 1)) - 100 }' /proc/loadavg
+  fi
+}
+count() { echo "$1" | tr ',' '\n' | awk -F- '{ n += (NF == 2 ? $2 - $1 + 1 : 1) } END { print n }'; }
+set_cores() { for u in $units; do systemctl set-property --runtime "$u" AllowedCPUs="$1" 2>/dev/null; done; }
+step=0; calm=0
+while sleep 5; do
+  frugal=$(cat "$F" 2>/dev/null) || continue
+  case $step in 0) cur=$frugal ;; 1) cur=${mid:-$all} ;; *) cur=$all ;; esac
+  p=$(pressure "$(count "$cur")")
+  if [ "$p" -ge 20 ] && [ $step -lt 2 ]; then
+    step=$((step + 1)); calm=0
+  elif [ "$p" -lt 5 ] && [ $step -gt 0 ]; then
+    calm=$((calm + 1)); [ $calm -ge 12 ] && { step=$((step - 1)); calm=0; }
+  else
+    calm=0; continue
+  fi
+  case $step in 0) set_cores "$frugal" ;; 1) set_cores "${mid:-$all}" ;; *) set_cores "$all" ;; esac
+done

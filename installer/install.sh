@@ -66,7 +66,7 @@ say "Installing the terminal"
 $SUDO install -d /usr/local/lib/lightsout
 $SUDO install -m 755 "$src/bin/lightsout" "$src/bin/lightsout-app" /usr/local/bin/
 $SUDO install -m 755 "$src/lib/switch" "$src/lib/kiosk.sh" "$src/lib/uninstall.sh" /usr/local/lib/lightsout/
-$SUDO install -m 755 "$src/sbin/lightsout-power" /usr/local/sbin/
+$SUDO install -m 755 "$src/sbin/lightsout-power" "$src/sbin/lightsout-cores" /usr/local/sbin/
 
 home=$(getent passwd "$ME" | cut -d: -f6)
 apps="$home/.local/share/applications"; auto="$home/.config/autostart"

@@ -1,0 +1,10 @@
+[Unit]
+Description=Lights Out: more cores only while work is waiting
+After=lightsout-power.service lightsout-power-inplace.service
+
+[Service]
+ExecStart=/usr/local/sbin/lightsout-cores
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

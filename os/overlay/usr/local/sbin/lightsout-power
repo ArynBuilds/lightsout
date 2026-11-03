@@ -23,15 +23,6 @@ w() {
 for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do w powersave "$f"; done
 for f in /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference; do w power "$f"; done
 w 1 /sys/devices/system/cpu/intel_pstate/no_turbo
-# top speed: no higher than the chip's base speed
-for c in /sys/devices/system/cpu/cpu[0-9]*/cpufreq; do
-  b=$(cat "$c/base_frequency" 2>/dev/null || cat "$c/cpuinfo_base_freq" 2>/dev/null)
-  [ -n "$b" ] && w "$b" "$c/scaling_max_freq"
-done
-# hard cap on the whole chip's power (Intel RAPL; newer AMD too): 6 W sustained
-for z in /sys/class/powercap/intel-rapl:[0-9] /sys/class/powercap/amd-rapl:[0-9]; do
-  [ -e "$z/constraint_0_power_limit_uw" ] && w "${LIGHTSOUT_WATTS:-6}000000" "$z/constraint_0_power_limit_uw"
-done
 w 0 /sys/devices/system/cpu/cpufreq/boost
 pp=/sys/firmware/acpi/platform_profile
 for c in low-power quiet cool; do grep -qw "$c" "${pp}_choices" 2>/dev/null && { w "$c" "$pp"; break; }; done
@@ -59,8 +50,9 @@ for d in /sys/bus/pci/devices/*; do
   w auto "$d/power/control"
 done
 
-# Keep the work on the most frugal cores (lowest top speed, e.g. the low-power
-# E-cores); the rest stay asleep. Same CPUs everywhere: use the first two.
+# Work starts on the most frugal cores (lowest top speed, e.g. low-power E-cores;
+# identical cores: the first two). lightsout-cores adds more cores only while
+# work is waiting and goes back when it's calm, so no fixed watt limit is needed.
 min=$(cat /sys/devices/system/cpu/cpu*/cpufreq/cpuinfo_max_freq 2>/dev/null | sort -n | head -1)
 cores=""
 if [ -n "$min" ]; then
@@ -71,6 +63,7 @@ fi
 n=$(echo "$cores" | tr ',' ' ' | wc -w)
 total=$(nproc --all)
 { [ -z "$cores" ] || [ "$n" -ge "$total" ]; } && cores="0-$(( total > 1 ? 1 : 0 ))"
+echo "$cores" > /run/lightsout/cores.frugal
 for u in user.slice lightsout.slice lightsout-session.service; do
   systemctl set-property --runtime "$u" AllowedCPUs="$cores" 2>/dev/null
 done

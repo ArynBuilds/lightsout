@@ -22,7 +22,7 @@ pub fn image() -> bool {
 pub fn in_place() -> bool {
     if cfg!(target_os = "macos") {
         // the Mac stays on one desktop; the helper marks Lights Out as on
-        return Path::new("/var/run/lightsout/active").exists();
+        return Path::new("/Library/Application Support/LightsOut/active").exists();
     }
     cfg!(target_os = "linux") && std::env::var("LIGHTSOUT_MODE").is_ok_and(|m| m == "inplace")
 }
@@ -226,9 +226,13 @@ pub fn screen(on: bool) {
 /// (lines "program = command"; the later file wins). None = not known.
 pub fn resume_command(command: &str) -> Option<String> {
     let program = command.split_whitespace().next()?.rsplit(['/', '\\']).next()?.to_lowercase();
+    let program = program.strip_suffix(".exe").or(program.strip_suffix(".cmd")).unwrap_or(&program).to_string();
     let mut found = None;
-    for file in [PathBuf::from("/usr/local/share/lightsout/resume.conf"), home().join(".config/lightsout/resume.conf")] {
-        let Ok(text) = std::fs::read_to_string(file) else { continue };
+    let builtin = include_str!("../../os/overlay/usr/local/share/lightsout/resume.conf").to_string();
+    let texts = [PathBuf::from("/usr/local/share/lightsout/resume.conf"), home().join(".config/lightsout/resume.conf")]
+        .into_iter()
+        .filter_map(|f| std::fs::read_to_string(f).ok());
+    for text in std::iter::once(builtin).chain(texts) {
         for line in text.lines() {
             let line = line.trim();
             if line.starts_with('#') {
@@ -405,6 +409,16 @@ pub fn enter_lightsout(saved: &crate::session::Saved) -> Result<(), String> {
     if !cfg!(windows) {
         return Err("Lights Out mode isn't available on this system yet.".into());
     }
+    // a waiting Windows update would install during the restart, and Lights Out
+    // must never open the drive in the middle of that
+    for key in [
+        r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired",
+        r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending",
+    ] {
+        if Command::new("reg").args(["query", key]).output().is_ok_and(|o| o.status.success()) {
+            return Err("Windows has an update waiting. Restart Windows once to finish it, then press Lights Out again.".into());
+        }
+    }
     let dir = lightsout_dir().join("handoff");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     crate::session::save(&dir.join("tabs.json"), saved);
@@ -433,6 +447,11 @@ pub fn back_to_windows(saved: &crate::session::Saved) {
         let _ = linux_switch("in");
         return;
     }
+    if image() {
+        let dir = lightsout_dir().join("handoff");
+        let _ = std::fs::create_dir_all(&dir);
+        crate::session::save(&dir.join("back.json"), saved);
+    }
     let ok = Command::new("systemctl").arg("reboot").status().is_ok_and(|s| s.success());
     if !ok {
         let _ = Command::new("sudo").args(["systemctl", "reboot"]).status();
@@ -441,6 +460,15 @@ pub fn back_to_windows(saved: &crate::session::Saved) {
 
 /// Windows path -> path inside Lights Out (C:\DEV\x -> /mnt/c/DEV/x).
 pub fn map_path(win: &str) -> PathBuf {
+    if cfg!(windows) {
+        // back from Lights Out: /mnt/c/DEV/x -> C:\DEV\x
+        let b = win.as_bytes();
+        if win.starts_with("/mnt/") && b.len() >= 6 && b[5].is_ascii_alphabetic() && (b.len() == 6 || b[6] == b'/') {
+            let drive = (b[5] as char).to_ascii_uppercase();
+            return PathBuf::from(format!("{drive}:\\{}", win.get(7..).unwrap_or("").replace('/', "\\")));
+        }
+        return PathBuf::from(win);
+    }
     let b = win.as_bytes();
     if b.len() >= 2 && b[1] == b':' {
         let drive = (b[0] as char).to_ascii_lowercase();
@@ -448,6 +476,24 @@ pub fn map_path(win: &str) -> PathBuf {
         return PathBuf::from(format!("/mnt/{drive}{rest}"));
     }
     PathBuf::from(win)
+}
+
+/// Lights Out: C: was opened read-only (Windows was hibernated or not shut down cleanly).
+pub fn drive_read_only() -> bool {
+    image()
+        && std::fs::read_to_string("/proc/mounts")
+            .is_ok_and(|m| m.lines().any(|l| l.split_whitespace().nth(1) == Some("/mnt/c") && l.split_whitespace().nth(3).is_some_and(|o| o.split(',').any(|x| x == "ro"))))
+}
+
+/// Windows: tabs coming back from Lights Out (read once, then removed).
+pub fn take_handback() -> Option<crate::session::Saved> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let f = lightsout_dir().join("handoff").join("back.json");
+    let saved = crate::session::load(&f);
+    let _ = std::fs::remove_file(f);
+    saved
 }
 
 /// Tabs handed over from Windows (read once, then removed).
@@ -700,6 +746,9 @@ pub fn attach_console() {
 /// Claude Code keys its history by folder path. Point the Linux path's key at
 /// the Windows one, so `claude --continue` picks up the same conversation.
 pub fn link_claude_history(win_cwd: &str, linux_cwd: &Path) {
+    if cfg!(windows) {
+        return; // only Lights Out links its folder names to the Windows ones
+    }
     let key = |p: &str| p.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect::<String>();
     let projects = home().join(".claude").join("projects");
     let win = projects.join(key(win_cwd));
@@ -761,4 +810,23 @@ pub fn pin_matches(salt: &[u8], hash: &str, pin: &str) -> bool {
     h.update(pin.as_bytes());
     let got: String = h.finalize().iter().map(|x| format!("{x:02x}")).collect();
     got == hash
+}
+
+#[cfg(all(test, windows))]
+mod switch_tests {
+    use std::path::PathBuf;
+
+    #[test]
+    fn paths_come_back_to_windows() {
+        assert_eq!(super::map_path("/mnt/c/DEV/my app"), PathBuf::from(r"C:\DEV\my app"));
+        assert_eq!(super::map_path("/mnt/d"), PathBuf::from(r"D:\"));
+        assert_eq!(super::map_path(r"C:\x"), PathBuf::from(r"C:\x"));
+    }
+
+    #[test]
+    fn known_agents_continue() {
+        assert_eq!(super::resume_command("claude").as_deref(), Some("claude --continue"));
+        assert_eq!(super::resume_command("codex.cmd").as_deref(), Some("codex resume --last"));
+        assert_eq!(super::resume_command("npm run dev"), None);
+    }
 }

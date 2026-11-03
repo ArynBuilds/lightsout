@@ -5,7 +5,7 @@
 #   in     Lights On: everything put back exactly as it was
 #   awake  the app is open: closing the lid doesn't stop it
 #   sleep  the app closed: your sleep setting is back
-S=/var/run/lightsout
+S="/Library/Application Support/LightsOut"
 mkdir -p "$S"
 pm() { pmset -g | awk -v k="$1" '$1==k {print $2}'; }
 remember() { [ -f "$S/$1" ] || printf '%s' "$2" > "$S/$1"; }

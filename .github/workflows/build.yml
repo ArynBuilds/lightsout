@@ -38,7 +38,8 @@ jobs:
           d=out/lightsout-linux-x64; mkdir -p $d/bin $d/lib $d/sbin $d/systemd
           cp term/target/release/lightsout term/target/release/lightsout-app $d/bin/
           cp linux/switch linux/kiosk.sh linux/uninstall.sh $d/lib/
-          cp os/overlay/usr/local/sbin/lightsout-power $d/sbin/
+          cp os/overlay/usr/local/sbin/lightsout-power os/overlay/usr/local/sbin/lightsout-cores $d/sbin/
+          cp os/overlay/etc/systemd/system/lightsout-cores.service $d/systemd/
           cp linux/systemd/* $d/systemd/
           chmod +x $d/bin/* $d/lib/* $d/sbin/*
           tar -C out -czf out/lightsout-linux-x64.tar.gz lightsout-linux-x64
@@ -50,7 +51,7 @@ jobs:
           test -f /etc/systemd/system/lightsout.target
           sudo test -f /etc/sudoers.d/lightsout
           sudo -l -U "$USER" | grep -q /usr/local/lib/lightsout/switch
-          sudo systemd-analyze verify /etc/systemd/system/lightsout.target /etc/systemd/system/lightsout-kiosk.service
+          sudo systemd-analyze verify /etc/systemd/system/lightsout.target /etc/systemd/system/lightsout-kiosk.service /etc/systemd/system/lightsout-cores.service
           # the Lights Out screen with no monitor: headless sway + the app
           export XDG_RUNTIME_DIR=/tmp/xdg && mkdir -p -m 700 "$XDG_RUNTIME_DIR"
           WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 sh /usr/local/lib/lightsout/kiosk.sh > kiosk.log 2>&1 &
@@ -66,6 +67,8 @@ jobs:
           before=$(snap)
           sudo /usr/local/sbin/lightsout-power
           sudo cat /run/lightsout/power.saved | head -5
+          test -s /run/lightsout/cores.frugal && echo "frugal cores: $(cat /run/lightsout/cores.frugal)"
+          sudo timeout 12 /usr/local/sbin/lightsout-cores || test $? = 124
           sudo /usr/local/sbin/lightsout-power --restore
           test "$before" = "$(snap)"
           pkill sway || true
@@ -117,10 +120,10 @@ jobs:
           lightsout list
           pmset -g | grep -i sleepdisabled
           sudo -n /usr/local/lib/lightsout/switch out
-          test -f /var/run/lightsout/active
+          test -f "/Library/Application Support/LightsOut/active"
           pmset -g | grep -iE "sleepdisabled|lowpowermode"
           sudo -n /usr/local/lib/lightsout/switch in
-          test ! -f /var/run/lightsout/active
+          test ! -f "/Library/Application Support/LightsOut/active"
           pkill lightsout-app || true
           sudo sh /usr/local/lib/lightsout/uninstall.sh
           test ! -e /usr/local/bin/lightsout

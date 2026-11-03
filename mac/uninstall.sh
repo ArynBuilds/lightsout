@@ -5,6 +5,6 @@
 ME="${SUDO_USER:-$(id -un)}"
 home=$(dscl . -read "/Users/$ME" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
 rm -f /etc/sudoers.d/lightsout /usr/local/bin/lightsout /usr/local/bin/lightsout-app
-rm -rf /usr/local/lib/lightsout /var/run/lightsout "/Applications/Lights Out.app"
+rm -rf /usr/local/lib/lightsout "/Library/Application Support/LightsOut" "/Applications/Lights Out.app"
 [ -n "$home" ] && rm -rf "$home/.local/state/lightsout"
 echo "Lights Out removed."

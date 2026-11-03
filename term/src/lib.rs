@@ -824,10 +824,16 @@ impl App {
         } else if let Some(s) = platform::take_handoff().filter(|_| cfg!(target_os = "linux")) {
             // back on the Linux desktop: the tabs from Lights Out come along
             self.restore(s, false);
+        } else if let Some(s) = platform::take_handback() {
+            // back in Windows: the tabs from Lights Out come along (conversations continue)
+            self.restore(s, true);
         } else if self.cfg.history.keep {
             if let Some(s) = session::load(&session::local_file(&self.session)) {
                 self.restore(s, false);
             }
+        }
+        if platform::drive_read_only() {
+            self.toast("C: is read-only: Windows was hibernated. Shut Windows down fully (or restart) before Lights Out to save files.".into(), ALERT);
         }
         if self.tabs.is_empty() {
             let start = std::env::current_dir().ok().filter(|d| d.is_dir()).unwrap_or_else(platform::home);
@@ -1935,7 +1941,8 @@ impl App {
                     Confirm::BackToWindows if platform::image() => "Lights On? Windows starts again; your tabs come along. Enter = yes, Esc = no",
                     Confirm::BackToWindows => "Lights On? The desktop comes back; your tabs come along. Enter = yes, Esc = no",
                     Confirm::EnterLightsOut if cfg!(windows) => "Lights Out? Windows shuts down, your tabs reopen there. Enter = yes, Esc = no",
-                    Confirm::EnterLightsOut => "Lights Out? The desktop stops, only this terminal stays. Enter = yes, Esc = no",
+                    Confirm::EnterLightsOut if cfg!(target_os = "macos") => "Lights Out? Other apps quit (unsaved ones ask first), the Mac goes quiet. Enter = yes, Esc = no",
+                    Confirm::EnterLightsOut => "Lights Out? The desktop and its apps close (save your work first). Enter = yes, Esc = no",
                     Confirm::Quit => "Quit Lights Out? All agents stop (tabs come back next time). Enter = yes, Esc = no",
                 };
                 let y = h as i32 - ch - 8;

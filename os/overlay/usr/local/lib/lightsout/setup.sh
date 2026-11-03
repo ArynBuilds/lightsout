@@ -27,7 +27,7 @@ printf '[General]\nEnableNetworkConfiguration=true\n[Network]\nNameResolvingServ
 systemctl enable iwd systemd-resolved
 ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
 
-systemctl enable lightsout-power.service lightsout-wifi.service lightsout-session.service lightsout-selftest.service \
+systemctl enable lightsout-power.service lightsout-cores.service lightsout-wifi.service lightsout-session.service lightsout-selftest.service \
   lightsout-split.service lightsout-grow.timer
 systemctl set-default graphical.target
 # Nothing else on the screen: no login prompts
