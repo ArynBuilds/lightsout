@@ -25,8 +25,8 @@ input type:touchpad {
 }
 for_window [app_id=".*"] fullscreen enable
 # closing the lid switches the screen off; opening it switches it back on
-bindswitch --reload --locked lid:on output * power off
-bindswitch --reload --locked lid:off output * power on
+bindswitch --reload --locked lid:on exec sh -c 'swaymsg "output * power off"; lightsout screen off'
+bindswitch --reload --locked lid:off exec sh -c 'swaymsg "output * power on"; lightsout screen on'
 exec $term
 CONF
 exec sway --unsupported-gpu -c "$conf"

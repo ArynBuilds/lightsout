@@ -998,7 +998,8 @@ impl App {
             }
             Action::ScreenOff => {
                 platform::screen(false);
-                self.screen_off = true;
+                // macOS wakes the display itself (lid, trackpad), so keep drawing there
+                self.screen_off = !cfg!(target_os = "macos");
             }
             Action::BackToWindows => self.overlay = Overlay::Confirm(Confirm::BackToWindows),
             Action::Quit => self.overlay = Overlay::Confirm(Confirm::Quit),
@@ -2059,6 +2060,12 @@ impl ApplicationHandler<UserEvent> for App {
                 self.mouse = position;
                 self.mouse_move();
             }
+            WindowEvent::MouseInput { state: ElementState::Pressed, .. } if self.screen_off => {
+                // a click or tap wakes the screen (and does nothing else)
+                platform::screen(true);
+                self.screen_off = false;
+                self.dirty = true;
+            }
             WindowEvent::MouseInput { state, button, .. } => match state {
                 ElementState::Pressed => self.mouse_down(button, el),
                 ElementState::Released => self.mouse_up(),
@@ -2207,7 +2214,6 @@ impl ApplicationHandler<UserEvent> for App {
                             w.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
                         }
                         platform::screen(false);
-                        self.screen_off = true;
                     }
                     self.toast("Restarting into Lights Out...".into(), self.theme.accent);
                 }
