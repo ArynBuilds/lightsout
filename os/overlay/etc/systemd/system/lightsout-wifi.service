@@ -1,0 +1,13 @@
+[Unit]
+Description=Lights Out: Wi-Fi networks and settings from Windows
+Before=iwd.service lightsout-session.service
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/lightsout/import-from-windows.py
+ExecStart=/usr/local/sbin/lightsout-home
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

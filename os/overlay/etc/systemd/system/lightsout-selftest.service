@@ -1,0 +1,11 @@
+[Unit]
+Description=Lights Out self-test (only when the build test asks for it)
+ConditionPathExists=/boot/efi/EFI/lightsout/selftest
+After=lightsout-session.service lightsout-wifi.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/lightsout/selftest.sh
+
+[Install]
+WantedBy=graphical.target

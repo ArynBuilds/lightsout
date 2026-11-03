@@ -1,0 +1,6 @@
+[Unit]
+Description=Lights Out: only the Lights Out terminal runs (desktop stopped)
+Requires=multi-user.target lightsout-power-inplace.service lightsout-kiosk.service
+After=multi-user.target
+Conflicts=graphical.target display-manager.service rescue.service rescue.target
+AllowIsolate=yes

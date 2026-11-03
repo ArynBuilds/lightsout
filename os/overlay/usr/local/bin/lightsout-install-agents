@@ -1,0 +1,36 @@
+#!/bin/bash
+# Pick AI agents to install. Everything goes into your Lights Out home folder
+# and stays on disk. Any other tool installs the usual way (npm, pipx, curl, apt).
+set -u
+export PATH="$HOME/.local/bin:$PATH"
+npm_i() { npm install -g --prefix "$HOME/.local" "$@"; }
+
+names=(  "Claude Code"  "Codex"           "Gemini CLI"            "GitHub Copilot CLI" "OpenCode"     "Cursor CLI"   "Amp"               "Aider")
+checks=( claude         codex             gemini                  copilot              opencode       cursor-agent   amp                 aider)
+installs=(
+  "curl -fsSL https://claude.ai/install.sh | bash"
+  "npm_i @openai/codex"
+  "npm_i @google/gemini-cli"
+  "npm_i @github/copilot"
+  "npm_i opencode-ai"
+  "curl -fsS https://cursor.com/install | bash"
+  "npm_i @sourcegraph/amp"
+  "pipx install aider-chat"
+)
+
+echo "Which agents should be installed? (kept on disk, no admin needed)"
+for i in "${!names[@]}"; do
+  mark=" "; command -v "${checks[$i]}" >/dev/null 2>&1 && mark="installed"
+  printf "  %d) %-20s %s\n" "$((i + 1))" "${names[$i]}" "$mark"
+done
+echo "Type numbers separated by spaces (e.g. 1 2), or Enter for Claude Code + Codex:"
+read -r picks
+[ -n "$picks" ] || picks="1 2"
+for p in $picks; do
+  i=$((p - 1))
+  [ "$i" -ge 0 ] && [ "$i" -lt "${#names[@]}" ] || { echo "skipping '$p'"; continue; }
+  echo; echo "== ${names[$i]}"
+  if eval "${installs[$i]}"; then echo "ok: ${names[$i]}"; else echo "FAILED: ${names[$i]} (you can retry, or install it the usual way)"; fi
+done
+echo
+echo "Done. New tab: Ctrl+Shift+T, then type the agent's name (claude, codex, gemini, ...)."

@@ -1,0 +1,6 @@
+[Unit]
+Description=Lights Out: grow the system file when it fills up
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/lightsout-grow

@@ -1,0 +1,40 @@
+[package]
+name = "lightsout-term"
+version = "0.1.0"
+edition = "2021"
+autobins = false
+
+[lib]
+name = "lightsout_term"
+path = "src/lib.rs"
+
+[[bin]]
+name = "lightsout-app"
+path = "src/main.rs"
+
+[[bin]]
+name = "lightsout"
+path = "src/bin/lightsout.rs"
+
+[dependencies]
+alacritty_terminal = "0.26.0"
+arboard = "3.7.0"
+fontdue = "0.9.5"
+getrandom = "0.4.3"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+softbuffer = "0.4.8"
+toml = "1.1.8"
+winit = "0.30.13"
+
+[target."cfg(windows)".dependencies]
+notify-rust = "4.18.2"
+windows-sys = { version = "0.61.2", features = ["Win32_System_Power", "Win32_Foundation", "Win32_System_Console", "Win32_Media_Audio", "Win32_UI_WindowsAndMessaging", "Win32_System_Diagnostics_ToolHelp"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

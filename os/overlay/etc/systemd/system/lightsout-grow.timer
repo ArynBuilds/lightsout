@@ -1,0 +1,9 @@
+[Unit]
+Description=Lights Out: grow the system file when it fills up
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,11 @@
+#!/bin/sh
+# Lights Out on a Linux PC: switch between the desktop and Lights Out, no restart.
+# Allowed for the installing user without a password (/etc/sudoers.d/lightsout).
+case "${1:-}" in
+  out) exec systemctl isolate --no-block lightsout.target ;;
+  in) # only while Lights Out is on (the app was closed or Lights On was pressed)
+      [ "$(systemctl is-active lightsout.target)" = active ] || exit 0
+      exec systemctl isolate --no-block default.target ;;
+  back) exec systemctl isolate --no-block default.target ;;  # safety net after a crash
+  *) echo "usage: switch out|in" >&2; exit 2 ;;
+esac

@@ -1,0 +1,8 @@
+[Unit]
+Description=Lights Out: low-power settings (put back when the desktop returns)
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/lightsout-power
+ExecStop=/usr/local/sbin/lightsout-power --restore

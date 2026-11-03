@@ -1,0 +1,47 @@
+#!/bin/bash
+# Runs once inside the new system at build time.
+set -e
+chmod 755 /usr/local/sbin/lightsout-home /usr/local/sbin/lightsout-split /usr/local/sbin/lightsout-grow /usr/local/sbin/lightsout-power /usr/local/bin/lightsout-install-agents /usr/local/lib/lightsout/*.sh /usr/local/lib/lightsout/*.py
+
+# The user. Logins and installs live in this home folder, inside system.img.
+useradd -m -s /bin/bash -G sudo,video,input,render lights
+passwd -d lights            # no password: the Lights Out lock screen protects the session
+echo 'lights ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/lights
+chmod 440 /etc/sudoers.d/lights
+
+echo lightsout > /etc/hostname
+printf '127.0.0.1 localhost\n127.0.1.1 lightsout\n' > /etc/hosts
+sed -i 's/^# *en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen && locale-gen >/dev/null
+echo 'LANG=en_US.UTF-8' > /etc/default/locale
+
+# Windows keeps the hardware clock in local time; read it that way, sync over the internet
+printf '0.0 0 0.0
+0
+LOCAL
+' > /etc/adjtime
+systemctl enable systemd-timesyncd
+
+# Wi-Fi: iwd handles DHCP itself; resolved does DNS
+mkdir -p /etc/iwd
+printf '[General]\nEnableNetworkConfiguration=true\n[Network]\nNameResolvingService=systemd\n' > /etc/iwd/main.conf
+systemctl enable iwd systemd-resolved
+ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+
+systemctl enable lightsout-power.service lightsout-wifi.service lightsout-session.service lightsout-selftest.service \
+  lightsout-split.service lightsout-grow.timer
+systemctl set-default graphical.target
+# Nothing else on the screen: no login prompts
+systemctl mask getty@tty1.service
+# Lid, power button: Lights Out decides, not logind
+mkdir -p /etc/systemd/logind.conf.d
+printf '[Login]\nHandleLidSwitch=ignore\nHandleLidSwitchExternalPower=ignore\nHandlePowerKey=ignore\nIdleAction=ignore\n' \
+  > /etc/systemd/logind.conf.d/lightsout.conf
+# Smaller journal, kept in RAM (fewer disk writes = less power)
+mkdir -p /etc/systemd/journald.conf.d
+printf '[Journal]\nStorage=volatile\nRuntimeMaxUse=32M\n' > /etc/systemd/journald.conf.d/lightsout.conf
+
+# Agent configs follow you from Windows (see lightsout-env.sh)
+echo '. /usr/local/lib/lightsout/lightsout-env.sh' >> /home/lights/.bashrc
+
+apt-get clean
+rm -rf /var/lib/apt/lists/* /usr/share/doc/* /usr/share/man/?? /usr/share/man/??_*

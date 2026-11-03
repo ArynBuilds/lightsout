@@ -1,0 +1,18 @@
+#!/bin/sh
+# systemd runs this at the very end of shutdown (from /run/initramfs), after
+# stopping everything. The Lights Out system is mounted at /oldroot, and its
+# file lives on the Windows drive mounted inside it, so close in this order:
+# Windows drive (lazy), system file, loop device, then the BitLocker unlock.
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+umount -l /oldroot/mnt/c 2>/dev/null
+umount -l /oldroot/boot/efi 2>/dev/null
+sync
+umount /oldroot 2>/dev/null || umount -l /oldroot
+for l in /dev/loop*; do losetup -d "$l" 2>/dev/null; done
+sync; sleep 1
+cryptsetup close winc 2>/dev/null
+sync
+case "$1" in
+  poweroff|halt) poweroff -f ;;
+  *) reboot -f ;;
+esac

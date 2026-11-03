@@ -1,0 +1,32 @@
+#!/bin/bash
+# Makes your Windows user folder the home folder in Lights Out (runs as root at
+# every start). Shared: every CLI's settings, logins, sessions. Per system:
+# the program folders in per-system.conf, plus SSH keys (Linux needs strict
+# permissions, which a Windows drive can't store).
+USER_NAME=$(cat /etc/lightsout/windows-user 2>/dev/null)
+WINHOME="/mnt/c/Users/$USER_NAME"
+LOCAL=/home/lights            # Lights Out's own space, inside the system file
+[ -n "$USER_NAME" ] && [ -d "$WINHOME" ] || { echo "no Windows home found; keeping $LOCAL"; exit 0; }
+
+usermod -d "$WINHOME" lights 2>/dev/null
+
+bind() {   # $1 = Linux copy, $2 = place in the Windows home
+  mkdir -p "$1" "$2" 2>/dev/null || return
+  chown lights:lights "$1"
+  mountpoint -q "$2" || mount --bind "$1" "$2"
+}
+grep -vE '^\s*(#|$)' /usr/local/share/lightsout/per-system.conf 2>/dev/null | while read -r d; do
+  d=${d%%[[:space:]]*}
+  case "$d" in */..*|..*|/*) continue ;; esac
+  bind "$LOCAL/per-system/$d" "$WINHOME/$d"
+done
+
+# SSH keys: a strict-permission copy, refreshed from Windows at every start
+if [ -d "$WINHOME/.ssh" ] && ! mountpoint -q "$WINHOME/.ssh"; then
+  rm -rf "$LOCAL/ssh"; mkdir -p "$LOCAL/ssh"
+  cp -a "$WINHOME/.ssh/." "$LOCAL/ssh/" 2>/dev/null
+  chown -R lights:lights "$LOCAL/ssh"; chmod 700 "$LOCAL/ssh"
+  find "$LOCAL/ssh" -type f -exec chmod 600 {} + ; find "$LOCAL/ssh" -name '*.pub' -exec chmod 644 {} +
+  mount --bind "$LOCAL/ssh" "$WINHOME/.ssh"
+fi
+exit 0

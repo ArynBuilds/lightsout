@@ -1,0 +1,78 @@
+#!/bin/sh
+# Power settings for agent work. Every knob is optional: whatever this machine
+# lacks is skipped, so the same script runs on any PC.
+# `lightsout-power --restore` puts every changed value back (Lights Out on a
+# Linux PC, when the desktop returns).
+SAVED=/run/lightsout/power.saved
+if [ "${1:-}" = --restore ]; then
+  [ -f "$SAVED" ] && while read -r f v; do [ -w "$f" ] && echo "$v" > "$f" 2>/dev/null; done < "$SAVED"
+  rm -f "$SAVED"
+  for u in user.slice lightsout.slice lightsout-session.service; do
+    systemctl set-property --runtime "$u" AllowedCPUs= 2>/dev/null
+  done
+  exit 0
+fi
+mkdir -p /run/lightsout
+w() {
+  [ -w "$2" ] || return 0
+  grep -qF "$2 " "$SAVED" 2>/dev/null || printf '%s %s\n' "$2" "$(head -n1 "$2" 2>/dev/null)" >> "$SAVED"
+  echo "$1" > "$2" 2>/dev/null
+  return 0
+}
+
+for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do w powersave "$f"; done
+for f in /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference; do w power "$f"; done
+w 1 /sys/devices/system/cpu/intel_pstate/no_turbo
+# top speed: no higher than the chip's base speed
+for c in /sys/devices/system/cpu/cpu[0-9]*/cpufreq; do
+  b=$(cat "$c/base_frequency" 2>/dev/null || cat "$c/cpuinfo_base_freq" 2>/dev/null)
+  [ -n "$b" ] && w "$b" "$c/scaling_max_freq"
+done
+# hard cap on the whole chip's power (Intel RAPL; newer AMD too): 6 W sustained
+for z in /sys/class/powercap/intel-rapl:[0-9] /sys/class/powercap/amd-rapl:[0-9]; do
+  [ -e "$z/constraint_0_power_limit_uw" ] && w "${LIGHTSOUT_WATTS:-6}000000" "$z/constraint_0_power_limit_uw"
+done
+w 0 /sys/devices/system/cpu/cpufreq/boost
+pp=/sys/firmware/acpi/platform_profile
+for c in low-power quiet cool; do grep -qw "$c" "${pp}_choices" 2>/dev/null && { w "$c" "$pp"; break; }; done
+
+# Runtime power management everywhere (idle chips switch off on their own)
+for f in /sys/bus/pci/devices/*/power/control; do w auto "$f"; done
+for d in /sys/bus/usb/devices/*; do
+  grep -qs '^03$' "$d"/*/bInterfaceClass && continue   # keyboards/touchpads stay awake
+  w auto "$d/power/control"
+done
+for f in /sys/class/scsi_host/host*/link_power_management_policy; do w med_power_with_dipm "$f"; done
+w 1 /sys/module/snd_hda_intel/parameters/power_save
+
+w 0 /proc/sys/kernel/nmi_watchdog
+w 1500 /proc/sys/vm/dirty_writeback_centisecs
+w 1 /proc/sys/vm/laptop_mode
+
+for f in /sys/class/rfkill/rfkill*; do [ "$(cat "$f/type" 2>/dev/null)" = bluetooth ] && w 1 "$f/soft"; done
+for f in /sys/class/leds/*kbd_backlight*/brightness; do w 0 "$f"; done
+iw dev 2>/dev/null | awk '/Interface/{print $2}' | while read -r i; do iw dev "$i" set power_save on 2>/dev/null; done
+# Separate graphics card (not the one driving the screen): let it power off.
+for d in /sys/bus/pci/devices/*; do
+  case "$(cat "$d/class" 2>/dev/null)" in 0x03*) ;; *) continue ;; esac
+  [ "$(cat "$d/boot_vga" 2>/dev/null)" = 1 ] && continue
+  w auto "$d/power/control"
+done
+
+# Keep the work on the most frugal cores (lowest top speed, e.g. the low-power
+# E-cores); the rest stay asleep. Same CPUs everywhere: use the first two.
+min=$(cat /sys/devices/system/cpu/cpu*/cpufreq/cpuinfo_max_freq 2>/dev/null | sort -n | head -1)
+cores=""
+if [ -n "$min" ]; then
+  for c in /sys/devices/system/cpu/cpu[0-9]*; do
+    [ "$(cat "$c/cpufreq/cpuinfo_max_freq" 2>/dev/null)" = "$min" ] && cores="$cores${cores:+,}${c##*cpu}"
+  done
+fi
+n=$(echo "$cores" | tr ',' ' ' | wc -w)
+total=$(nproc --all)
+{ [ -z "$cores" ] || [ "$n" -ge "$total" ]; } && cores="0-$(( total > 1 ? 1 : 0 ))"
+for u in user.slice lightsout.slice lightsout-session.service; do
+  systemctl set-property --runtime "$u" AllowedCPUs="$cores" 2>/dev/null
+done
+echo "lightsout-power: work cores $cores" > /dev/kmsg 2>/dev/null
+exit 0

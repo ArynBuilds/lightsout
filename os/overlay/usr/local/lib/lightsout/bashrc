@@ -1,0 +1,14 @@
+# Shell settings for Lights Out tabs. Your Windows home is the home folder here,
+# but its .bashrc belongs to Git Bash on Windows, so it is not read.
+# Personal additions: ~/.config/lightsout/bashrc
+[ -f /etc/bash.bashrc ] && . /etc/bash.bashrc
+. /usr/local/lib/lightsout/lightsout-env.sh
+PS1='\[\e[2m\]lights out\[\e[0m\] \[\e[1m\]\w\[\e[0m\] \$ '
+HISTFILE="$HOME/.lightsout_bash_history"
+
+# screen output carried over from Windows, shown once, dimmed
+if [ -n "${LIGHTSOUT_SCREEN:-}" ] && [ -f "$LIGHTSOUT_SCREEN" ]; then
+  printf '\e[2m'; cat "$LIGHTSOUT_SCREEN"; printf '\e[0m\n'
+  rm -f "$LIGHTSOUT_SCREEN"; unset LIGHTSOUT_SCREEN
+fi
+[ -f "$HOME/.config/lightsout/bashrc" ] && . "$HOME/.config/lightsout/bashrc"

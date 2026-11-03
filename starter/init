@@ -1,0 +1,147 @@
+#!/bin/sh
+# Lights Out starter (runs from the EFI partition).
+# 1. finds the Windows drive and unlocks it (BitLocker key sealed in the TPM,
+#    or the one-time handoff from the Windows installer, which it then seals)
+# 2. opens C:\LightsOut\system.img and starts the Lights Out system from it
+# Never writes to the Windows drive itself except through the system file.
+
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+mount -t proc proc /proc
+mount -t sysfs sys /sys
+mount -t devtmpfs dev /dev
+mount -t tmpfs -o mode=755 run /run
+mkdir -p /run/lightsout /esp /mnt/c /newroot
+LOG=/run/lightsout/starter.log
+say() { echo "lightsout: $*" | tee -a "$LOG" > /dev/console; }
+fail() {
+  say "$*"
+  dmesg | tail -n 25 | sed 's/^/lightsout: dmesg: /' > /dev/console
+  say "Restarting into Windows in 20 seconds. Nothing was changed."
+  [ -d /esp/EFI/lightsout ] && { mkdir -p /esp/EFI/lightsout/results; cp "$LOG" "/esp/EFI/lightsout/results/starter-$(date +%s).log"; sync; umount /esp; }
+  sleep 20; reboot -f
+}
+say "starting"
+
+# ---- drivers (storage, crypto, file systems, TPM, keyboard)
+load_drivers() {
+  find /sys/devices -name modalias -type f 2>/dev/null | xargs cat 2>/dev/null | sort -u \
+    | xargs -r -n 40 modprobe -a -q -b 2>/dev/null
+}
+load_drivers; sleep 1; load_drivers
+modprobe -a -q nvme vmd ahci sd_mod dm_mod dm_crypt xts aesni_intel aes_generic ntfs3 loop ext4 \
+  vfat nls_cp437 nls_ascii nls_iso8859_1 nls_utf8 tpm_crb tpm_tis efivarfs 2>/dev/null
+mount -t efivarfs efivarfs /sys/firmware/efi/efivars 2>/dev/null
+for i in 1 2 3 4 5; do ls /dev/nvme*n*p* /dev/sd?* /dev/vd?* >/dev/null 2>&1 && break; sleep 1; done
+
+PARTS=$(ls /dev/nvme*n*p* /dev/sd?[0-9]* /dev/vd?[0-9]* 2>/dev/null)
+
+# ---- our folder on the EFI partition
+for dev in $PARTS; do
+  if mount -t vfat -o rw "$dev" /esp 2>/dev/null; then
+    [ -f /esp/EFI/lightsout/starter.img ] && break
+    umount /esp
+  fi
+done
+grep -q ' /esp ' /proc/mounts || fail "EFI partition not found"
+L=/esp/EFI/lightsout
+
+# ---- TPM: seal / unseal the drive key, bound to this exact boot (PCRs)
+PCRS="sha256:4,7,8,9"
+export TPM2TOOLS_TCTI="device:/dev/tpmrm0"
+# Parent key: Windows' persistent storage root key (usable without a password).
+# On PCs without it, a key derived from the TPM's owner seed (same every boot).
+SRK=0x81000001
+if [ -e /dev/tpmrm0 ] && ! tpm2_readpublic -c "$SRK" >/dev/null 2>&1; then
+  tpm2_createprimary -C o -g sha256 -G rsa2048 -c /run/lightsout/primary.ctx >/dev/null 2>&1     && SRK=/run/lightsout/primary.ctx
+fi
+unseal() {
+  [ -f "$L/seal/key.pub" ] && [ -f "$L/seal/key.priv" ] && [ -e /dev/tpmrm0 ] || return 1
+  tpm2_load -C "$SRK" -u "$L/seal/key.pub" -r "$L/seal/key.priv" -c /run/lightsout/key.ctx >/dev/null 2>&1 || return 1
+  tpm2_startauthsession --policy-session -S /run/lightsout/s.ctx >/dev/null 2>&1 || return 1
+  tpm2_policypcr -S /run/lightsout/s.ctx -l "$PCRS" >/dev/null 2>&1
+  tpm2_unseal -p session:/run/lightsout/s.ctx -c /run/lightsout/key.ctx 2>/dev/null
+  rc=$?; tpm2_flushcontext /run/lightsout/s.ctx >/dev/null 2>&1; return $rc
+}
+seal() {   # $1 = file holding the secret
+  [ -e /dev/tpmrm0 ] || { say "no TPM: the key can't be stored safely"; return 1; }
+  mkdir -p "$L/seal.new"
+  tpm2_createpolicy --policy-pcr -l "$PCRS" -L /run/lightsout/pcr.policy >/dev/null 2>&1 &&
+  tpm2_create -C "$SRK" -L /run/lightsout/pcr.policy -a 'fixedtpm|fixedparent' -i "$1" \
+    -u "$L/seal.new/key.pub" -r "$L/seal.new/key.priv" >/dev/null 2>&1 || { rm -rf "$L/seal.new"; return 1; }
+  rm -rf "$L/seal"; mv "$L/seal.new" "$L/seal"; sync
+}
+
+KEY=""
+if [ -f "$L/handoff.key" ]; then
+  # First start after installing/updating: the installer passed a dedicated
+  # Lights Out key. Lock it into the TPM, then delete the file right away.
+  KEY=$(tr -d '\r\n ' < "$L/handoff.key")
+  printf '%s' "$KEY" > /run/lightsout/key
+  if seal /run/lightsout/key; then say "drive key sealed into the TPM"; else say "could not seal the key"; fi
+  rm -f "$L/handoff.key"; sync
+else
+  KEY=$(unseal) || KEY=""
+  [ -n "$KEY" ] && say "drive key unsealed from the TPM"
+fi
+rm -f /run/lightsout/key
+
+# ---- the Windows drive that holds C:\LightsOut\system.img
+CDEV=""
+for dev in $PARTS; do
+  [ "$dev" = "$(awk '$2=="/esp"{print $1}' /proc/mounts)" ] && continue
+  if cryptsetup bitlkDump "$dev" >/dev/null 2>&1; then
+    [ -n "$KEY" ] || continue
+    printf '%s' "$KEY" | cryptsetup open --type bitlk --key-file - "$dev" winc 2>/dev/null || continue
+    try=/dev/mapper/winc
+  else
+    blkid "$dev" 2>/dev/null | grep -q 'TYPE="ntfs"' || continue
+    try=$dev
+  fi
+  if mount -t ntfs3 -o ro "$try" /mnt/c 2>/dev/null; then
+    if [ -f /mnt/c/LightsOut/system.img ]; then CDEV=$try; break; fi
+    umount /mnt/c
+  fi
+  [ "$try" = /dev/mapper/winc ] && cryptsetup close winc
+done
+KEY=""
+[ -n "$CDEV" ] || fail "Could not open the Windows drive (no key, or Lights Out isn't installed on it)."
+umount /mnt/c
+
+# ---- read-write only if Windows really shut down (not hibernated / Fast Startup)
+RW=rw
+if mount -t ntfs3 -o ro "$CDEV" /mnt/c 2>/dev/null; then
+  if [ -f /mnt/c/hiberfil.sys ] && [ "$(head -c 4 /mnt/c/hiberfil.sys 2>/dev/null | tr 'a-z' 'A-Z')" = "HIBR" ]; then
+    RW=ro; say "Windows is hibernated: your files are read-only this time (restart Windows normally to fix)."
+  fi
+  umount /mnt/c
+fi
+# nocase: file names ignore upper/lowercase, like on Windows (falls back if unsupported)
+NTOPTS="$RW,uid=1000,gid=1000,iocharset=utf8,windows_names"
+mount -t ntfs3 -o "$NTOPTS,nocase" "$CDEV" /mnt/c 2>/dev/null || mount -t ntfs3 -o "$NTOPTS" "$CDEV" /mnt/c 2>/dev/null \
+  || { RW=ro; mount -t ntfs3 -o ro,uid=1000,gid=1000,iocharset=utf8 "$CDEV" /mnt/c; say "drive opened read-only"; }
+[ "$RW" = rw ] || fail "The system file needs a writable drive. Restart Windows normally (not hibernate), then try again."
+
+# ---- start the Lights Out system from its file
+if ! mount -o loop,noatime /mnt/c/LightsOut/system.img /newroot 2>/run/lightsout/mount.err; then
+  say "mount error: $(cat /run/lightsout/mount.err)"
+  say "system file: $(ls -la /mnt/c/LightsOut/system.img 2>&1)"
+  fail "system file could not be opened"
+fi
+mkdir -p /newroot/mnt/c /newroot/boot/efi
+mount --move /mnt/c /newroot/mnt/c
+mount --move /esp /newroot/boot/efi
+echo "$CDEV" > /run/lightsout/cdev
+cp "$LOG" /run/lightsout/ 2>/dev/null
+
+# Clean shutdown later: systemd hands control back to this small system,
+# which closes the system file, the Windows drive and the unlock in order.
+mkdir -p /run/initramfs
+cp -a /bin /sbin /lib /lib64 /usr /etc /run/initramfs/ 2>/dev/null
+rm -rf /run/initramfs/lib/modules /run/initramfs/lib/firmware
+cp /bin/lo-shutdown /run/initramfs/shutdown
+chmod 755 /run/initramfs/shutdown
+mount --move /run /newroot/run
+mount --move /dev /newroot/dev
+mount --move /sys /newroot/sys
+mount --move /proc /newroot/proc
+exec switch_root /newroot /sbin/init

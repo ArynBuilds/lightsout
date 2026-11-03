@@ -1,0 +1,12 @@
+[Unit]
+Description=Lights Out: separate Linux node_modules / .venv for projects on C:
+After=lightsout-wifi.service local-fs.target
+Before=lightsout-session.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/lightsout-split
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

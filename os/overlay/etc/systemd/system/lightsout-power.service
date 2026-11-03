@@ -1,0 +1,13 @@
+[Unit]
+Description=Lights Out: power settings
+After=systemd-modules-load.service iwd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/lightsout-power
+# again once Wi-Fi and late devices are up
+ExecStartPost=/bin/sh -c 'sleep 20; /usr/local/sbin/lightsout-power'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

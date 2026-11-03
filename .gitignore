@@ -1,2 +1,10 @@
 /target/
 /target-test/
+/term/target/
+/term-bin/
+/os/rootfs/
+/os/out/
+/starter/root/
+/starter/out/
+/test/work/
+/dist/

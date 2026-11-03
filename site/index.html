@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lights Out</title>
+<meta name="description" content="Turn the computer off. Keep your AI agents running.">
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #000; color: #e8e8ea;
+         font: 16px/1.6 ui-monospace, "JetBrains Mono", Consolas, monospace; }
+  main { max-width: 640px; padding: 24px 16px; }
+  h1 { font-size: 20px; letter-spacing: .3em; margin: 0 0 8px; }
+  p { color: #9a9aa2; margin: 0 0 28px; }
+  .label { color: #6a6a72; font-size: 13px; margin-bottom: 6px; }
+  pre { margin: 0 0 22px; padding: 12px 14px; border: 1px solid #26262c; overflow-x: auto; user-select: all; }
+  a { color: #e8e8ea; }
+</style>
+</head>
+<body>
+<main>
+  <h1>LIGHTS OUT</h1>
+  <p>Windows switches off. Only your AI agents' terminal keeps running, for hours longer on battery.</p>
+  <div class="label">Windows (PowerShell)</div>
+  <pre>irm https://lightsout.sh | iex</pre>
+  <div class="label">Linux</div>
+  <pre>curl -fsSL https://lightsout.sh | sh</pre>
+  <p><a href="https://github.com/ArynBuilds/lightsout">github.com/ArynBuilds/lightsout</a></p>
+</main>
+</body>
+</html>

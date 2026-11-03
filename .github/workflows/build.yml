@@ -2,38 +2,129 @@ name: build
 
 on:
   push:
-    branches: [main]
+    paths-ignore: ["**.md"]
+    branches: ["**"]
     tags: ["v*"]
-  pull_request:
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
-  windows:
+  terminal-windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Lint
-        run: cargo clippy --release -- -D warnings
       - name: Build
-        run: cargo build --release
-      - name: Checksum
-        shell: pwsh
-        run: |
-          $h = (Get-FileHash target/release/lightsout.exe -Algorithm SHA256).Hash.ToLower()
-          [IO.File]::WriteAllText("target/release/lightsout.exe.sha256", "$h  lightsout.exe`n")
+        run: cd term; cargo build --release
       - uses: actions/upload-artifact@v4
         with:
-          name: lightsout
+          name: lightsout-term-windows
           path: |
-            target/release/lightsout.exe
-            target/release/lightsout.exe.sha256
-      - name: Release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+            term/target/release/lightsout.exe
+            term/target/release/lightsout-app.exe
+            installer/uninstall.ps1
+          retention-days: 14
+
+  terminal-linux:
+    # older Ubuntu = older glibc, so the binary runs on most Linux PCs
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check scripts
+        run: |
+          for f in installer/install.sh linux/*.sh linux/switch os/overlay/usr/local/sbin/lightsout-power; do sh -n "$f"; done
+          shellcheck -S error installer/install.sh linux/*.sh linux/switch
+      - name: Build and package
+        run: |
+          cd term && cargo build --release && cd ../..
+          d=out/lightsout-linux-x64; mkdir -p $d/bin $d/lib $d/sbin $d/systemd
+          cp term/target/release/lightsout term/target/release/lightsout-app $d/bin/
+          cp linux/switch linux/kiosk.sh linux/uninstall.sh $d/lib/
+          cp os/overlay/usr/local/sbin/lightsout-power $d/sbin/
+          cp linux/systemd/* $d/systemd/
+          chmod +x $d/bin/* $d/lib/* $d/sbin/*
+          tar -C out -czf out/lightsout-linux-x64.tar.gz lightsout-linux-x64
+      - uses: actions/upload-artifact@v4
         with:
-          files: |
-            target/release/lightsout.exe
-            target/release/lightsout.exe.sha256
+          name: lightsout-linux-x64
+          path: out/lightsout-linux-x64.tar.gz
+          retention-days: 14
+
+  build-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: debian:trixie
+      options: --privileged
+      volumes:
+        - /mnt:/mnt   # the runner's big second drive (~70 GB) for the VM test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: |
+          sed -i 's/^Components: main$/Components: main contrib non-free non-free-firmware/' /etc/apt/sources.list.d/debian.sources
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            mmdebstrap e2fsprogs zstd pigz cpio build-essential pkg-config curl kmod busybox-static util-linux \
+            shim-signed grub-efi-amd64-signed cryptsetup-bin tpm2-tools libtss2-tcti-device0t64 \
+            qemu-system-x86 ovmf swtpm swtpm-tools ntfs-3g dosfstools mtools gdisk procps ca-certificates
+      - name: Build the terminal (Linux)
+        run: |
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          . "$HOME/.cargo/env"
+          cd term && cargo build --release
+          mkdir -p ../term-bin && cp target/release/lightsout target/release/lightsout-app ../term-bin/
+      - name: Build system image
+        run: bash os/build.sh
+      - name: Build starter
+        run: bash starter/build.sh
+      - name: Upload starter
+        uses: actions/upload-artifact@v4
+        with:
+          name: lightsout-starter
+          path: starter/out/
+          retention-days: 14
+      - name: Upload system image
+        uses: actions/upload-artifact@v4
+        with:
+          name: lightsout-system
+          path: |
+            os/out/system.img.gz
+            os/out/system.img.gz.sha256
+          retention-days: 14
+          compression-level: 0
+      - name: Free disk space
+        run: rm -rf os/rootfs starter/root term/target ~/.cargo/registry && df -h / /mnt | tail -n 2
+      - name: Test in a virtual PC (UEFI + TPM + NTFS C:)
+        run: VMTEST_DIR=/mnt/vmtest bash test/vm-test.sh
+      - name: Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vm-test-logs
+          path: |
+            /mnt/vmtest/serial*.log
+            test/selftest-report.txt
+          retention-days: 7
+
+  release:
+    # tag vX.Y.Z -> GitHub Release with everything the one-line installers download
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [terminal-windows, terminal-linux, build-and-test]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: a
+      - name: Package
+        run: |
+          mkdir rel
+          (cd a/lightsout-term-windows && zip -j ../../rel/lightsout-windows-x64.zip $(find . -type f))
+          (cd a/lightsout-starter && zip -r ../../rel/lightsout-starter.zip EFI)
+          cp a/lightsout-system/system.img.gz a/lightsout-system/system.img.gz.sha256 rel/
+          cp a/lightsout-linux-x64/lightsout-linux-x64.tar.gz rel/
+          ls -la rel
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" rel/* -R "$GITHUB_REPOSITORY" --title "Lights Out $GITHUB_REF_NAME" --generate-notes

@@ -1,0 +1,43 @@
+#!/bin/bash
+# Gives projects their own Linux node_modules / .venv inside Lights Out, so the
+# Windows copies (with Windows-only binaries) are never touched and both keep working.
+#   lightsout-split            scan the usual project folders
+#   lightsout-split <dir>...   only these folders (and the projects inside them)
+# The Linux copies live in the Lights Out system file; the project folder on C:
+# only ever sees an empty mount point.
+STORE=/home/lights/.local/share/lightsout/split
+USER_NAME=$(cat /etc/lightsout/windows-user 2>/dev/null)
+mkdir -p "$STORE"; chown lights:lights "$STORE" /home/lights/.local/share/lightsout 2>/dev/null
+
+split() {   # $1 = node_modules or .venv path inside a project on C:
+  local target=$1
+  mountpoint -q "$target" && return
+  local key; key=$(printf '%s' "$target" | sha1sum | cut -c1-16)
+  local src="$STORE/$key"
+  mkdir -p "$src" && chown lights:lights "$src"
+  printf '%s\n' "$target" > "$src.path"
+  mkdir -p "$target" 2>/dev/null || return
+  mount --bind "$src" "$target" && echo "split: $target"
+}
+
+roots=("$@")
+if [ ${#roots[@]} -eq 0 ]; then
+  roots=()
+  for d in "/mnt/c/Users/$USER_NAME" /mnt/c/DEV /mnt/c/dev /mnt/c/Projects /mnt/c/projects /mnt/c/src /mnt/c/code /mnt/c/repos; do
+    [ -d "$d" ] && roots+=("$d")
+  done
+fi
+[ ${#roots[@]} -gt 0 ] || exit 0
+
+# projects up to 5 levels deep; skip dependency folders, hidden folders and AppData
+find "${roots[@]}" -maxdepth 5 \
+  \( -name node_modules -o -name .venv -o -name 'AppData' -o -name '.*' -o -name 'Program Files*' -o -name Windows \) -prune \
+  -o \( -name package.json -o -name pyproject.toml -o -name requirements.txt \) -type f -print 2>/dev/null |
+while read -r f; do
+  proj=$(dirname "$f")
+  case "$(basename "$f")" in
+    package.json) split "$proj/node_modules" ;;
+    *) [ -d "$proj/.venv" ] && split "$proj/.venv" ;;
+  esac
+done
+exit 0

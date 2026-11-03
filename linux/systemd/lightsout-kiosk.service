@@ -1,0 +1,18 @@
+[Unit]
+Description=Lights Out: the full-screen terminal
+After=systemd-user-sessions.service lightsout-power-inplace.service
+Conflicts=getty@tty1.service
+OnFailure=lightsout-return.service
+
+[Service]
+User=__USER__
+PAMName=login
+TTYPath=/dev/tty1
+StandardInput=tty-fail
+StandardOutput=journal
+UtmpIdentifier=tty1
+UtmpMode=user
+WorkingDirectory=~
+Slice=lightsout.slice
+ExecStartPre=+-/bin/sh -c 'chvt 1'
+ExecStart=/usr/local/lib/lightsout/kiosk.sh

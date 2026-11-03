@@ -1,0 +1,6 @@
+[Unit]
+Description=Lights Out: back to the desktop (safety net)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/lightsout/switch back
