@@ -7,16 +7,54 @@ BASE="${LIGHTSOUT_BASE:-https://github.com/ArynBuilds/lightsout/releases/latest/
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
 stop() { printf 'Lights Out: %s\n' "$*" >&2; exit 1; }
 
-case "$(uname -s)" in
-  Linux) ;;
-  Darwin) echo "Lights Out for Mac is coming next. Windows and Linux work today."; exit 0 ;;
-  *) stop "this system isn't supported yet. On Windows run: irm https://lightsout.sh | iex" ;;
-esac
-[ "$(uname -m)" = x86_64 ] || stop "needs a 64-bit Intel or AMD PC for now"
 command -v curl >/dev/null || stop "needs curl"
 SUDO=""; [ "$(id -u)" = 0 ] || SUDO=sudo
 ME="${SUDO_USER:-$(id -un)}"
 [ "$ME" != root ] || stop "run it as your normal user (it asks for sudo when needed)"
+
+install_mac() {
+  say "Downloading Lights Out for Mac"
+  tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+  curl -fL --progress-bar "$BASE/lightsout-macos.tar.gz" -o "$tmp/lo.tgz"
+  tar -xzf "$tmp/lo.tgz" -C "$tmp"
+  src="$tmp/lightsout-macos"
+  say "Installing (asks for your Mac password once)"
+  $SUDO mkdir -p /usr/local/bin /usr/local/lib/lightsout
+  $SUDO install -m 755 "$src/bin/lightsout" "$src/bin/lightsout-app" /usr/local/bin/
+  $SUDO install -m 755 "$src/lib/switch" "$src/lib/uninstall.sh" /usr/local/lib/lightsout/
+  echo "$ME ALL=(root) NOPASSWD: /usr/local/lib/lightsout/switch" > "$tmp/sudoers"
+  $SUDO visudo -cf "$tmp/sudoers" >/dev/null && $SUDO install -m 440 "$tmp/sudoers" /etc/sudoers.d/lightsout
+  # a small app so Lights Out is in Launchpad, Spotlight and the Dock
+  app="/Applications/Lights Out.app/Contents"
+  $SUDO mkdir -p "$app/MacOS"
+  printf '#!/bin/sh\nexec /usr/local/bin/lightsout-app "$@"\n' | $SUDO tee "$app/MacOS/lightsout" >/dev/null
+  $SUDO chmod 755 "$app/MacOS/lightsout"
+  $SUDO tee "$app/Info.plist" >/dev/null <<P
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleName</key><string>Lights Out</string>
+<key>CFBundleIdentifier</key><string>sh.lightsout.app</string>
+<key>CFBundleExecutable</key><string>lightsout</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>0.2.0</string>
+<key>LSMinimumSystemVersion</key><string>11.0</string>
+</dict></plist>
+P
+  command -v blueutil >/dev/null || echo "Tip: 'brew install blueutil' lets Lights Out switch Bluetooth off too."
+  say "Lights Out is installed."
+  echo "Open it with:  lightsout   (or Lights Out in Launchpad)"
+  echo "The Lights Out button (bottom left) makes the Mac quiet; Lights On brings everything back."
+  echo "Remove it with:  lightsout uninstall"
+  exit 0
+}
+
+case "$(uname -s)" in
+  Linux) ;;
+  Darwin) install_mac ;;
+  *) stop "this system isn't supported yet. On Windows run: irm https://lightsout.sh | iex" ;;
+esac
+[ "$(uname -m)" = x86_64 ] || stop "needs a 64-bit Intel or AMD PC for now"
 
 say "Downloading Lights Out"
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT

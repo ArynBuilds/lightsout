@@ -31,7 +31,7 @@ jobs:
       - name: Check scripts
         run: |
           for f in installer/install.sh linux/*.sh linux/switch os/overlay/usr/local/sbin/lightsout-power; do sh -n "$f"; done
-          shellcheck -S error installer/install.sh linux/*.sh linux/switch
+          shellcheck -S error installer/install.sh linux/*.sh linux/switch mac/switch mac/uninstall.sh
       - name: Build and package
         run: |
           cd term && cargo build --release && cd ../..
@@ -42,10 +42,96 @@ jobs:
           cp linux/systemd/* $d/systemd/
           chmod +x $d/bin/* $d/lib/* $d/sbin/*
           tar -C out -czf out/lightsout-linux-x64.tar.gz lightsout-linux-x64
+      - name: Test on this Linux machine (install, Lights Out screen, power restore, uninstall)
+        run: |
+          set -ex
+          LIGHTSOUT_BASE="file://$PWD/out" sh installer/install.sh
+          test -x /usr/local/bin/lightsout-app
+          test -f /etc/systemd/system/lightsout.target
+          sudo test -f /etc/sudoers.d/lightsout
+          sudo -l -U "$USER" | grep -q /usr/local/lib/lightsout/switch
+          sudo systemd-analyze verify /etc/systemd/system/lightsout.target /etc/systemd/system/lightsout-kiosk.service
+          # the Lights Out screen with no monitor: headless sway + the app
+          export XDG_RUNTIME_DIR=/tmp/xdg && mkdir -p -m 700 "$XDG_RUNTIME_DIR"
+          WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 sh /usr/local/lib/lightsout/kiosk.sh > kiosk.log 2>&1 &
+          for i in $(seq 1 40); do lightsout list >/dev/null 2>&1 && break; sleep 1; done
+          lightsout list | tee list.txt
+          grep -q ROOM list.txt
+          lightsout new -- sh -c 'echo hello-from-lights-out; sleep 30'
+          sleep 4
+          lightsout list | tee list2.txt
+          test "$(grep -c Room list2.txt)" -ge 2
+          # power settings: applied, then put back exactly
+          snap() { cat /sys/bus/pci/devices/*/power/control /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor 2>/dev/null | md5sum; }
+          before=$(snap)
+          sudo /usr/local/sbin/lightsout-power
+          sudo cat /run/lightsout/power.saved | head -5
+          sudo /usr/local/sbin/lightsout-power --restore
+          test "$before" = "$(snap)"
+          pkill sway || true
+          sudo sh /usr/local/lib/lightsout/uninstall.sh
+          test ! -e /usr/local/bin/lightsout
+          echo "LINUX TEST PASSED"
+      - name: Logs
+        if: failure()
+        run: cat kiosk.log || true
       - uses: actions/upload-artifact@v4
         with:
           name: lightsout-linux-x64
           path: out/lightsout-linux-x64.tar.gz
+          retention-days: 14
+
+  terminal-macos:
+    # Mac machines are free for public repos; the private dev repo skips this job
+    if: ${{ !github.event.repository.private }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (Apple chips + Intel) and package
+        run: |
+          rustup target add x86_64-apple-darwin aarch64-apple-darwin
+          cd term
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+          cd ../..
+          d=out/lightsout-macos; mkdir -p $d/bin $d/lib
+          for b in lightsout lightsout-app; do
+            lipo -create -output $d/bin/$b term/target/aarch64-apple-darwin/release/$b term/target/x86_64-apple-darwin/release/$b
+          done
+          cp mac/switch mac/uninstall.sh $d/lib/
+          chmod +x $d/bin/* $d/lib/*
+          tar -C out -czf out/lightsout-macos.tar.gz lightsout-macos
+      - name: Test on this Mac (install, app, Lights Out on/off, uninstall)
+        run: |
+          set -ex
+          sh -n mac/switch
+          LIGHTSOUT_BASE="file://$PWD/out" sh installer/install.sh
+          test -x "/Applications/Lights Out.app/Contents/MacOS/lightsout"
+          sudo -l | grep -q /usr/local/lib/lightsout/switch
+          lightsout-app > app.log 2>&1 &
+          for i in $(seq 1 40); do lightsout list >/dev/null 2>&1 && break; sleep 1; done
+          lightsout list | tee list.txt
+          grep -q ROOM list.txt
+          lightsout new -- sh -c 'echo hello-mac; sleep 30'
+          sleep 4
+          lightsout list
+          pmset -g | grep -i sleepdisabled
+          sudo -n /usr/local/lib/lightsout/switch out
+          test -f /var/run/lightsout/active
+          pmset -g | grep -iE "sleepdisabled|lowpowermode"
+          sudo -n /usr/local/lib/lightsout/switch in
+          test ! -f /var/run/lightsout/active
+          pkill lightsout-app || true
+          sudo sh /usr/local/lib/lightsout/uninstall.sh
+          test ! -e /usr/local/bin/lightsout
+          echo "MAC TEST PASSED"
+      - name: Logs
+        if: failure()
+        run: cat app.log || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lightsout-macos
+          path: out/lightsout-macos.tar.gz
           retention-days: 14
 
   build-and-test:
@@ -108,7 +194,7 @@ jobs:
   release:
     # tag vX.Y.Z -> GitHub Release with everything the one-line installers download
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [terminal-windows, terminal-linux, build-and-test]
+    needs: [terminal-windows, terminal-linux, terminal-macos, build-and-test]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -122,7 +208,7 @@ jobs:
           (cd a/lightsout-term-windows && zip -j ../../rel/lightsout-windows-x64.zip $(find . -type f))
           (cd a/lightsout-starter && zip -r ../../rel/lightsout-starter.zip EFI)
           cp a/lightsout-system/system.img.gz a/lightsout-system/system.img.gz.sha256 rel/
-          cp a/lightsout-linux-x64/lightsout-linux-x64.tar.gz rel/
+          cp a/lightsout-linux-x64/lightsout-linux-x64.tar.gz a/lightsout-macos/lightsout-macos.tar.gz rel/
           ls -la rel
       - name: Release
         env:

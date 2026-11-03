@@ -1,6 +1,5 @@
 //! Everything that differs between Windows and Lights Out (Linux).
 
-use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -21,6 +20,10 @@ pub fn image() -> bool {
 
 /// On a Linux PC itself: the desktop is stopped and only Lights Out runs.
 pub fn in_place() -> bool {
+    if cfg!(target_os = "macos") {
+        // the Mac stays on one desktop; the helper marks Lights Out as on
+        return Path::new("/var/run/lightsout/active").exists();
+    }
     cfg!(target_os = "linux") && std::env::var("LIGHTSOUT_MODE").is_ok_and(|m| m == "inplace")
 }
 
@@ -59,6 +62,37 @@ fn linux_switch(to: &str) -> Result<(), String> {
     }
 }
 
+/// Mac: quit every other app politely (apps with unsaved work stay open and
+/// ask), remember them, and reopen them on Lights On.
+#[cfg(target_os = "macos")]
+fn mac_quit_apps() {
+    let list = Command::new("osascript")
+        .args(["-e", "tell application \"System Events\" to get name of every application process whose background only is false"])
+        .output();
+    let Ok(out) = list else { return };
+    let names: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .split(", ")
+        .map(str::to_string)
+        .filter(|n| !n.is_empty() && !["Finder", "lightsout-app", "Lights Out", "Terminal", "iTerm2"].contains(&n.as_str()))
+        .collect();
+    let _ = std::fs::write(data_dir().join("quit-apps.txt"), names.join("\n"));
+    for n in &names {
+        let _ = Command::new("osascript").args(["-e", &format!("tell application \"{n}\" to quit")]).spawn();
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn mac_reopen_apps() {
+    let f = data_dir().join("quit-apps.txt");
+    if let Ok(s) = std::fs::read_to_string(&f) {
+        for n in s.lines().filter(|l| !l.is_empty()) {
+            let _ = Command::new("open").args(["-g", "-a", n]).spawn();
+        }
+    }
+    let _ = std::fs::remove_file(f);
+}
+
 pub fn home() -> PathBuf {
     std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
         .map(PathBuf::from)
@@ -78,9 +112,16 @@ pub fn shell() -> (String, Vec<String>) {
     if cfg!(windows) {
         let ps = if on_path("pwsh.exe") { "pwsh.exe" } else { "powershell.exe" };
         (ps.into(), vec!["-NoLogo".into()])
-    } else {
+    } else if image() {
         ("/bin/bash".into(), vec!["--rcfile".into(), BASHRC.into(), "-i".into()])
+    } else {
+        (user_shell(), vec!["-l".into(), "-i".into()])
     }
+}
+
+/// Your own shell on Linux and Mac (zsh, bash, fish...).
+fn user_shell() -> String {
+    std::env::var("SHELL").ok().filter(|s| Path::new(s).exists()).unwrap_or_else(|| "/bin/bash".into())
 }
 
 const BASHRC: &str = "/usr/local/lib/lightsout/bashrc";
@@ -91,9 +132,13 @@ pub fn agent(cmd: &str) -> (String, Vec<String>) {
     if cfg!(windows) {
         let (ps, _) = shell();
         (ps, vec!["-NoLogo".into(), "-NoExit".into(), "-Command".into(), cmd.into()])
-    } else {
+    } else if image() {
         let rest = format!("{cmd}; exec bash --rcfile {BASHRC} -i");
         ("/bin/bash".into(), vec!["--rcfile".into(), BASHRC.into(), "-i".into(), "-c".into(), rest])
+    } else {
+        let sh = user_shell();
+        let rest = format!("{cmd}; exec {sh} -l -i");
+        (sh, vec!["-l".into(), "-i".into(), "-c".into(), rest])
     }
 }
 
@@ -139,7 +184,18 @@ pub fn battery() -> Option<Battery> {
     Some(Battery { percent: s.BatteryLifePercent, watts: None, charging: s.ACLineStatus == 1 })
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(target_os = "macos")]
+pub fn battery() -> Option<Battery> {
+    // "-InternalBattery-0 (id=...)\t85%; discharging; 5:12 remaining present: true"
+    let out = Command::new("pmset").args(["-g", "batt"]).output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let line = text.lines().find(|l| l.contains("InternalBattery"))?;
+    let pct = line.split('\t').nth(1)?.split('%').next()?.trim().parse::<u8>().ok()?;
+    let charging = line.contains("charging;") && !line.contains("discharging") || line.contains("charged");
+    Some(Battery { percent: pct, watts: None, charging })
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 pub fn battery() -> Option<Battery> {
     None
 }
@@ -149,6 +205,10 @@ pub fn battery() -> Option<Battery> {
 /// Turns the panel off/on (Lights Out). The compositor keeps reading keys,
 /// so any key wakes it again.
 pub fn screen(on: bool) {
+    if cfg!(target_os = "macos") {
+        let _ = if on { Command::new("caffeinate").args(["-u", "-t", "2"]).spawn().map(|_| ()) } else { Command::new("pmset").arg("displaysleepnow").status().map(|_| ()) };
+        return;
+    }
     if cfg!(target_os = "linux") {
         let ok = Command::new("wlopm").args([if on { "--on" } else { "--off" }, "*"]).status().is_ok_and(|s| s.success());
         let ok = ok
@@ -189,7 +249,7 @@ pub fn resume_command(command: &str) -> Option<String> {
 #[cfg(windows)]
 pub fn running_in_tabs(shells: &[u32]) -> std::collections::HashMap<u32, Option<String>> {
     use std::collections::HashMap;
-    #[derive(Deserialize)]
+    #[derive(serde::Deserialize)]
     #[allow(non_snake_case)]
     struct P {
         ProcessId: u32,
@@ -327,6 +387,14 @@ fn random_hex() -> String {
 /// Windows -> Lights Out: save the tabs, leave a one-time "came from Windows"
 /// pass (skips the lock screen), and ask the Lights Out task to restart.
 pub fn enter_lightsout(saved: &crate::session::Saved) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        // Mac: the same window stays (agents never stop); everything else goes quiet
+        let _ = saved;
+        mac_quit_apps();
+        return linux_switch("out");
+    }
+    #[allow(unreachable_code)]
     if cfg!(target_os = "linux") {
         // Linux PC: stop the desktop, start the Lights Out screen (no restart)
         let dir = handoff_dir();
@@ -350,6 +418,14 @@ pub fn enter_lightsout(saved: &crate::session::Saved) -> Result<(), String> {
 
 /// Lights On: back to Windows (restart), or back to the Linux desktop (tabs come along).
 pub fn back_to_windows(saved: &crate::session::Saved) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = saved;
+        let _ = linux_switch("in");
+        mac_reopen_apps();
+        return;
+    }
+    #[allow(unreachable_code)]
     if in_place() {
         let dir = handoff_dir();
         let _ = std::fs::create_dir_all(&dir);
@@ -401,6 +477,10 @@ pub fn lid_keep_running() {
         }
         set_lid(0, 0);
     }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = linux_switch("awake");
+    }
     #[cfg(target_os = "linux")]
     {
         let me = std::process::id().to_string();
@@ -414,8 +494,14 @@ pub fn lid_keep_running() {
     }
 }
 
-/// Puts your own lid setting back (Windows), when the app closes.
+/// Puts your own lid setting back, when the app closes.
 pub fn lid_restore() {
+    #[cfg(target_os = "macos")]
+    {
+        if !in_lightsout() {
+            let _ = linux_switch("sleep");
+        }
+    }
     #[cfg(windows)]
     {
         let f = data_dir().join("lid-setting.txt");
@@ -468,7 +554,7 @@ pub fn stay_awake(on: bool) {
 pub fn running_programs(shells: &[u32]) -> std::collections::HashMap<u32, Option<String>> {
     let mut out = std::collections::HashMap::new();
     let children = process_children();
-    let wrappers = ["cmd", "conhost", "openconsole", "sh", "bash", "dash", "env", "sudo"];
+    let wrappers = ["cmd", "conhost", "openconsole", "sh", "bash", "dash", "zsh", "fish", "login", "env", "sudo"];
     for &shell in shells {
         // follow wrapper processes (e.g. cmd.exe running an npm .cmd shim) to the real program
         let mut pid = shell;
@@ -515,7 +601,22 @@ fn process_children() -> std::collections::HashMap<u32, Vec<(u32, String)>> {
     map
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn process_children() -> std::collections::HashMap<u32, Vec<(u32, String)>> {
+    let mut map: std::collections::HashMap<u32, Vec<(u32, String)>> = std::collections::HashMap::new();
+    if let Ok(out) = Command::new("ps").args(["-axo", "pid=,ppid=,comm="]).output() {
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            let mut it = line.split_whitespace();
+            let (Some(pid), Some(ppid)) = (it.next().and_then(|p| p.parse().ok()), it.next().and_then(|p| p.parse::<u32>().ok())) else { continue };
+            let comm: String = it.collect::<Vec<_>>().join(" ");
+            let name = comm.rsplit('/').next().unwrap_or("").trim_start_matches('-').to_lowercase();
+            map.entry(ppid).or_default().push((pid, name));
+        }
+    }
+    map
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn process_children() -> std::collections::HashMap<u32, Vec<(u32, String)>> {
     let mut map: std::collections::HashMap<u32, Vec<(u32, String)>> = std::collections::HashMap::new();
     if let Ok(dir) = std::fs::read_dir("/proc") {
@@ -549,6 +650,15 @@ pub fn sound(file: &str, needs_you: bool) {
             }
         }
     }
+    #[cfg(target_os = "macos")]
+    {
+        let f = if !file.is_empty() && Path::new(file).exists() {
+            file.to_string()
+        } else {
+            format!("/System/Library/Sounds/{}.aiff", if needs_you { "Glass" } else { "Tink" })
+        };
+        let _ = Command::new("afplay").arg(f).spawn();
+    }
     let _ = (file, needs_you);
 }
 
@@ -557,6 +667,11 @@ pub fn os_notify(text: &str) {
     #[cfg(windows)]
     {
         let _ = notify_rust::Notification::new().summary("Lights Out").body(text).show();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let t = text.replace('"', "'");
+        let _ = Command::new("osascript").args(["-e", &format!("display notification \"{t}\" with title \"Lights Out\"")]).spawn();
     }
     let _ = text;
 }

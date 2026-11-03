@@ -21,6 +21,10 @@ bindswitch --reload --locked lid:off output * power on
 exec sh -c 'lightsout-app; swaymsg exit'
 CONF
 # lid closed = screen off, never sleep (while Lights Out runs)
-systemd-inhibit --what=handle-lid-switch:sleep:idle --who="Lights Out" --why="agents keep running" --mode=block sway -c "$conf"
+set --
+if systemd-inhibit --what=handle-lid-switch:sleep:idle --mode=block true 2>/dev/null; then
+  set -- systemd-inhibit --what=handle-lid-switch:sleep:idle --who="Lights Out" --why="agents keep running" --mode=block
+fi
+"$@" sway -c "$conf"
 # the app was closed: back to the desktop
 sudo -n /usr/local/lib/lightsout/switch in

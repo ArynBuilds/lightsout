@@ -92,6 +92,7 @@ impl Pane {
         env.insert("LIGHTSOUT_PANE".into(), id.to_string());
         env.insert("LIGHTSOUT_SESSION".into(), session.to_string());
         env.extend(extra_env);
+        #[allow(clippy::needless_update)] // Windows has one more field
         let options = tty::Options {
             shell: Some(tty::Shell::new(program, args)),
             working_directory: Some(cwd.clone()),

@@ -2,7 +2,8 @@
 # Removes Lights Out from this Linux PC (run with sudo: `lightsout uninstall`).
 ME="${SUDO_USER:-$(id -un)}"
 home=$(getent passwd "$ME" | cut -d: -f6)
-systemctl isolate default.target 2>/dev/null
+# leave Lights Out first if it is on
+[ "$(systemctl is-active lightsout.target 2>/dev/null)" = active ] && systemctl isolate default.target
 for u in lightsout.target lightsout-power-inplace.service lightsout-kiosk.service lightsout-return.service; do
   rm -f "/etc/systemd/system/$u"
 done

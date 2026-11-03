@@ -1,0 +1,52 @@
+#!/bin/sh
+# Lights Out on a Mac (runs as root through sudo, allowed for the installing user).
+#   out    Lights Out: Low Power Mode, never sleep (lid closed keeps running),
+#          Spotlight indexing, Time Machine and Bluetooth off
+#   in     Lights On: everything put back exactly as it was
+#   awake  the app is open: closing the lid doesn't stop it
+#   sleep  the app closed: your sleep setting is back
+S=/var/run/lightsout
+mkdir -p "$S"
+pm() { pmset -g | awk -v k="$1" '$1==k {print $2}'; }
+remember() { [ -f "$S/$1" ] || printf '%s' "$2" > "$S/$1"; }
+bt() { command -v blueutil >/dev/null && blueutil "$@"; }
+
+case "${1:-}" in
+  out)
+    [ -f "$S/active" ] && exit 0
+    remember lowpowermode "$(pm lowpowermode)"
+    remember sleepdisabled "$(pm SleepDisabled)"
+    remember spotlight "$(mdutil -s / 2>/dev/null | grep -q 'enabled' && echo on || echo off)"
+    remember timemachine "$(defaults read /Library/Preferences/com.apple.TimeMachine AutoBackup 2>/dev/null || echo 0)"
+    remember bluetooth "$(bt -p 2>/dev/null || echo)"
+    pmset -a lowpowermode 1 2>/dev/null
+    pmset -a disablesleep 1
+    mdutil -a -i off >/dev/null 2>&1
+    tmutil disable 2>/dev/null
+    bt -p 0 2>/dev/null
+    touch "$S/active"
+    ;;
+  in)
+    [ -f "$S/active" ] || exit 0
+    v=$(cat "$S/lowpowermode" 2>/dev/null); [ -n "$v" ] && pmset -a lowpowermode "$v" 2>/dev/null
+    v=$(cat "$S/sleepdisabled" 2>/dev/null); [ -f "$S/awake" ] || { [ -n "$v" ] && pmset -a disablesleep "$v"; }
+    [ "$(cat "$S/spotlight" 2>/dev/null)" = on ] && mdutil -a -i on >/dev/null 2>&1
+    [ "$(cat "$S/timemachine" 2>/dev/null)" = 1 ] && tmutil enable 2>/dev/null
+    v=$(cat "$S/bluetooth" 2>/dev/null); [ -n "$v" ] && bt -p "$v" 2>/dev/null
+    rm -f "$S/active" "$S/lowpowermode" "$S/spotlight" "$S/timemachine" "$S/bluetooth"
+    [ -f "$S/awake" ] || rm -f "$S/sleepdisabled"
+    ;;
+  awake)
+    remember sleepdisabled "$(pm SleepDisabled)"
+    pmset -a disablesleep 1
+    touch "$S/awake"
+    ;;
+  sleep)
+    rm -f "$S/awake"
+    [ -f "$S/active" ] && exit 0
+    v=$(cat "$S/sleepdisabled" 2>/dev/null); [ -n "$v" ] && pmset -a disablesleep "$v"
+    rm -f "$S/sleepdisabled"
+    ;;
+  *) echo "usage: switch out|in|awake|sleep" >&2; exit 2 ;;
+esac
+exit 0

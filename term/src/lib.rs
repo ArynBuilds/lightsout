@@ -1205,7 +1205,14 @@ impl App {
             self.overlay = Overlay::None;
             if matches!(key, Key::Named(NamedKey::Enter)) {
                 match c {
-                    Confirm::BackToWindows => platform::back_to_windows(&self.saved(80)),
+                    Confirm::BackToWindows => {
+                        platform::back_to_windows(&self.saved(80));
+                        if cfg!(target_os = "macos") {
+                            if let Some(w) = &self.window {
+                                w.set_fullscreen(None);
+                            }
+                        }
+                    }
                     Confirm::EnterLightsOut => self.start_switch(),
                     Confirm::Quit => {
                         self.save_session();
@@ -2186,6 +2193,14 @@ impl ApplicationHandler<UserEvent> for App {
                     self.switching = None;
                     if cfg!(target_os = "linux") {
                         std::process::exit(0); // the desktop is stopping; Lights Out reopens these tabs
+                    }
+                    if cfg!(target_os = "macos") {
+                        // the Mac keeps this window: full screen, then the screen goes off
+                        if let Some(w) = &self.window {
+                            w.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+                        }
+                        platform::screen(false);
+                        self.screen_off = true;
                     }
                     self.toast("Restarting into Lights Out...".into(), self.theme.accent);
                 }
