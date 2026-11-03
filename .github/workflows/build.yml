@@ -34,7 +34,7 @@ jobs:
           shellcheck -S error installer/install.sh linux/*.sh linux/switch mac/switch mac/uninstall.sh
       - name: Build and package
         run: |
-          cd term && cargo build --release && cd ../..
+          (cd term && cargo build --release)
           d=out/lightsout-linux-x64; mkdir -p $d/bin $d/lib $d/sbin $d/systemd
           cp term/target/release/lightsout term/target/release/lightsout-app $d/bin/
           cp linux/switch linux/kiosk.sh linux/uninstall.sh $d/lib/
@@ -93,10 +93,7 @@ jobs:
       - name: Build (Apple chips + Intel) and package
         run: |
           rustup target add x86_64-apple-darwin aarch64-apple-darwin
-          cd term
-          cargo build --release --target aarch64-apple-darwin
-          cargo build --release --target x86_64-apple-darwin
-          cd ../..
+          (cd term && cargo build --release --target aarch64-apple-darwin && cargo build --release --target x86_64-apple-darwin)
           d=out/lightsout-macos; mkdir -p $d/bin $d/lib
           for b in lightsout lightsout-app; do
             lipo -create -output $d/bin/$b term/target/aarch64-apple-darwin/release/$b term/target/x86_64-apple-darwin/release/$b
