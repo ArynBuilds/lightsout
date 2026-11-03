@@ -11,7 +11,6 @@ use state::Saved;
 use std::io::Write;
 use std::process::{Command, ExitCode};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const HELP: &str = "\
@@ -38,6 +37,53 @@ DARK OPTIONS
 Press Ctrl+C in the dark window to end agent mode and see the report.
 ";
 
+// ---------------------------------------------------------------- console events
+
+static IN_DARK: AtomicBool = AtomicBool::new(false);
+static STOP: AtomicBool = AtomicBool::new(false);
+static RESTORED: AtomicBool = AtomicBool::new(false);
+
+/// Ctrl+C ends agent mode. Closing the window, signing out or shutting down
+/// also ends it, and we hold Windows off (up to ~4.5 s) until every setting is
+/// restored. In `run`, Ctrl+C belongs to the agent, so we ignore it.
+unsafe extern "system" fn on_console(event: u32) -> windows::core::BOOL {
+    use windows::Win32::System::Console::{CTRL_BREAK_EVENT, CTRL_C_EVENT};
+    if !IN_DARK.load(Ordering::SeqCst) {
+        return windows::core::BOOL((event == CTRL_C_EVENT || event == CTRL_BREAK_EVENT) as i32);
+    }
+    STOP.store(true, Ordering::SeqCst);
+    if event != CTRL_C_EVENT && event != CTRL_BREAK_EVENT {
+        for _ in 0..90 {
+            if RESTORED.load(Ordering::SeqCst) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    windows::core::BOOL(1)
+}
+
+fn install_console_handler() {
+    unsafe {
+        let _ = windows::Win32::System::Console::SetConsoleCtrlHandler(Some(on_console), true);
+    }
+}
+
+// If the PC loses power or restarts mid-run, settings are restored at the next sign-in.
+const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+
+fn restore_at_signin(on: bool) {
+    let mut cmd = Command::new("reg");
+    if on {
+        let Ok(exe) = std::env::current_exe() else { return };
+        let value = format!("\"{}\" restore", exe.display());
+        cmd.args(["add", RUN_KEY, "/v", "LightsOutRestore", "/t", "REG_SZ", "/d", &value, "/f"]);
+    } else {
+        cmd.args(["delete", RUN_KEY, "/v", "LightsOutRestore", "/f"]);
+    }
+    let _ = cmd.output();
+}
+
 fn main() -> ExitCode {
     unsafe {
         use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
@@ -61,6 +107,8 @@ fn main() -> ExitCode {
                 }
                 None => println!("Nothing to restore."),
             }
+            restore_at_signin(false);
+            let _ = std::fs::remove_file(state::dir().join("dark.pid"));
             ExitCode::SUCCESS
         }
         Some("-V" | "--version" | "version") => {
@@ -96,7 +144,7 @@ fn run(args: &[String]) -> ExitCode {
     }
 
     // Ctrl+C belongs to the agent, not to us.
-    let _ = ctrlc::set_handler(|| {});
+    install_console_handler();
     power::keep_awake(true);
 
     let spawn = |p: &str, a: &[String]| Command::new(p).args(a).spawn();
@@ -229,17 +277,28 @@ fn dark(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    // Only one agent mode at a time.
+    let pid_file = state::dir().join("dark.pid");
+    if let Ok(pid) = std::fs::read_to_string(&pid_file).unwrap_or_default().trim().parse::<u32>() {
+        let me = std::process::id();
+        let running = pid != me
+            && procs::alive(pid)
+            && procs::list().iter().any(|p| p.pid == pid && p.name.eq_ignore_ascii_case("lightsout.exe"));
+        if running {
+            eprintln!("Agent mode is already on in another window. End it with `lightsout wake`.");
+            return ExitCode::from(1);
+        }
+    }
+    let _ = std::fs::write(&pid_file, std::process::id().to_string());
+
     if let Some(old) = Saved::load() {
         println!("A previous agent mode wasn't ended cleanly; restoring it first.");
         old.restore();
     }
     let _ = std::fs::remove_file(state::wake_flag());
 
-    let stop = Arc::new(AtomicBool::new(false));
-    {
-        let stop = stop.clone();
-        let _ = ctrlc::set_handler(move || stop.store(true, Ordering::SeqCst));
-    }
+    IN_DARK.store(true, Ordering::SeqCst);
+    install_console_handler();
 
     let bat = Battery::open();
     let full = bat.as_ref().and_then(|b| b.full_charge_mwh()).unwrap_or(0) as f64;
@@ -313,6 +372,7 @@ Using power right now:");
     }
     power::activate();
     power::keep_awake(true);
+    restore_at_signin(true);
 
     if o.keep_bluetooth {
         // leave it alone
@@ -368,7 +428,7 @@ Using power right now:");
             paused_secs += gap.as_secs();
         }
         last_tick = Instant::now();
-        if stop.load(Ordering::SeqCst) || state::wake_flag().exists() {
+        if STOP.load(Ordering::SeqCst) || state::wake_flag().exists() {
             break;
         }
         let agents = state::agents().len();
@@ -415,6 +475,9 @@ Using power right now:");
     let busy = procs::hogs(&dark_t0, &procs::cpu_times(), start.elapsed().as_secs_f64(), &skip);
     let _ = std::fs::remove_file(state::wake_flag());
     saved.restore();
+    restore_at_signin(false);
+    let _ = std::fs::remove_file(&pid_file);
+    RESTORED.store(true, Ordering::SeqCst);
     if !(o.then_sleep && finished_by_agents) {
         power::wake_screen();
     }

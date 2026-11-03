@@ -21,7 +21,7 @@ lightsout dark              # agent mode: close the lid and walk away
 - **It finds the power hogs.** Before going dark it shows which apps are burning your battery (a stuck browser tab, Docker, a game launcher) so you can close them with `--close`.
 - **It measures your power draw** before and during, then reports what you saved.
 
-When you end it (Ctrl+C, `lightsout wake`, or automatically when your agents finish), **everything goes back exactly as it was** and the screen wakes up. Every original setting is saved before it's changed, so even a crash or a dead battery can be undone with `lightsout restore`.
+When you end it (Ctrl+C, `lightsout wake`, or automatically when your agents finish), **everything goes back exactly as it was** and the screen wakes up. Every original setting is saved before it's changed. Closing the window restores everything too, and if the PC crashes or the battery dies mid-run, Lights Out restores your settings automatically at the next sign-in. `lightsout restore` does it by hand.
 
 ```
 LIGHTS OUT  (balanced)
