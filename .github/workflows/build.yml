@@ -128,8 +128,7 @@ jobs:
           test ! -f "$S/active"
           test ! -f "$S/throttled"
           echo "MAC TEST PASSED"
-      - name: Log-out mode (in progress, does not block releases)
-        continue-on-error: true
+      - name: Log-out mode (agents in the background service, sign-in return)
         run: |
           set -ex
           S="/Library/Application Support/LightsOut"
@@ -160,7 +159,7 @@ jobs:
           pkill lightsout-app || true
           echo "MAC LOG-OUT MODE PASSED"
       - name: Mac log-out mode details
-        if: always()
+        if: failure()
         run: |
           cat /tmp/lightsout-agents.log 2>/dev/null | tail -40 || true
           lightsout read 1 --lines 30 2>&1 || true
