@@ -12,7 +12,7 @@ Windows (PowerShell):
 irm https://lightsout.sh | iex
 ```
 
-Linux:
+Linux and Mac:
 
 ```sh
 curl -fsSL https://lightsout.sh | sh
@@ -25,6 +25,7 @@ Then open it with `lightsout`. Remove it any time with `lightsout uninstall`.
 - **One terminal everywhere.** The same app on Windows, on Linux, and in Lights Out mode: tabs, splits, rooms, mouse, copy/paste, alerts when an agent needs you.
 - **Lights Out (Windows).** Windows shuts down fully. The small Linux unlocks your drive with the TPM (no recovery key to type), joins your Wi-Fi, and reopens your tabs. Agents work on your real files with your existing logins.
 - **Lights Out (Linux).** No restart: the desktop stops, only Lights Out runs, and Lights On brings the desktop back.
+- **Lights Out (Mac).** Other apps quit (unsaved ones ask first), Low Power Mode, no sleep with the lid closed, Spotlight and Time Machine off, everything else slowed to the lowest priority while your agents keep full speed. Lights On puts it all back and reopens your apps.
 - **What's off:** all of Windows, the extra graphics card, Bluetooth, sound, the keyboard light, the screen (turn it off, or close the lid). Work runs on the 1–2 most frugal CPU cores with turbo off and a power cap; idle chips switch off on their own. Wi-Fi stays on.
 - **Lid closed never stops your agents**, in Lights Out or on the normal desktop.
 - **Agent control:** `lightsout list | new | send | read | wait | notify`, plus `lightsout skill` for agents that drive other agents.
@@ -32,8 +33,9 @@ Then open it with `lightsout`. Remove it any time with `lightsout uninstall`.
 ## Requirements
 
 - 64-bit Intel or AMD PC with UEFI (most PCs from 2012 on). Windows 10/11 or a systemd Linux.
+- Mac: macOS 11 or newer, Apple chip or Intel.
 - TPM 2.0 if the drive is BitLocker-encrypted.
-- Not yet: Snapdragon/ARM laptops, Macs. Some business and Surface laptops need "allow Microsoft UEFI CA" turned on in the BIOS; the installer checks this before changing anything.
+- Not yet: Snapdragon/ARM laptops. Some business and Surface laptops need "allow Microsoft UEFI CA" turned on in the BIOS; the installer checks this before changing anything.
 
 ## Safety
 

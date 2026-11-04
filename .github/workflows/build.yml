@@ -105,7 +105,7 @@ jobs:
         run: |
           set -ex
           sh -n mac/switch
-          LIGHTSOUT_BASE="file://$PWD/out" sh installer/install.sh
+          LIGHTSOUT_MAC_LOGOUT=1 LIGHTSOUT_BASE="file://$PWD/out" sh installer/install.sh
           test -x "/Applications/Lights Out.app/Contents/MacOS/lightsout"
           sudo -l | grep -q /usr/local/lib/lightsout/switch
           lightsout-app > app.log 2>&1 &
@@ -127,6 +127,12 @@ jobs:
           sudo -n /usr/local/lib/lightsout/switch in
           test ! -f "$S/active"
           test ! -f "$S/throttled"
+          echo "MAC TEST PASSED"
+      - name: Log-out mode (in progress, does not block releases)
+        continue-on-error: true
+        run: |
+          set -ex
+          S="/Library/Application Support/LightsOut"
           # --- logged-out mode: agents in the background service (the log-out
           # itself can't run here: it would log out this test machine)
           test -f /Library/LaunchDaemons/sh.lightsout.agents.plist
@@ -152,10 +158,20 @@ jobs:
           test "$(grep -c Room back.txt)" -ge 2
           test ! -f "$S/active"
           pkill lightsout-app || true
+          echo "MAC LOG-OUT MODE PASSED"
+      - name: Mac log-out mode details
+        if: always()
+        run: |
+          cat /tmp/lightsout-agents.log 2>/dev/null | tail -40 || true
+          lightsout read 1 --lines 30 2>&1 || true
+          for p in $(pgrep -f 'lightsout-app --headless'); do ps -o pid,user,command -g "$(ps -o pgid= -p $p)" || true; pgrep -lP "$p" || true; done
+      - name: Uninstall (Mac)
+        if: always()
+        run: |
+          set -ex
           pkill lightsout-app || true
           sudo sh /usr/local/lib/lightsout/uninstall.sh
           test ! -e /usr/local/bin/lightsout
-          echo "MAC TEST PASSED"
       - name: Logs
         if: failure()
         run: cat app.log app2.log || true

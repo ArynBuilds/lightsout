@@ -23,8 +23,12 @@ install_mac() {
   $SUDO install -m 755 "$src/bin/lightsout" "$src/bin/lightsout-app" /usr/local/bin/
   $SUDO install -m 755 "$src/lib/switch" "$src/lib/logout-later" "$src/lib/uninstall.sh" /usr/local/lib/lightsout/
   home=$(dscl . -read "/Users/$ME" NFSHomeDirectory | awk '{print $2}')
-  # the background service that keeps agents running while you're logged out
-  $SUDO tee /Library/LaunchDaemons/sh.lightsout.agents.plist >/dev/null <<P
+  # Log-out mode (agents in a background service while you're logged out) is
+  # still being verified; LIGHTSOUT_MAC_LOGOUT=1 turns it on. Without it, Lights
+  # Out stays signed in and slows everything else down.
+  if [ "${LIGHTSOUT_MAC_LOGOUT:-0}" = 1 ]; then
+    # the background service that keeps agents running while you're logged out
+    $SUDO tee /Library/LaunchDaemons/sh.lightsout.agents.plist >/dev/null <<P
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -35,16 +39,17 @@ install_mac() {
 <key>WorkingDirectory</key><string>$home</string>
 <key>RunAtLoad</key><false/>
 <key>ProcessType</key><string>Standard</string>
+<key>StandardErrorPath</key><string>/tmp/lightsout-agents.log</string>
 </dict></plist>
 P
-  $SUDO chmod 644 /Library/LaunchDaemons/sh.lightsout.agents.plist
-  $SUDO chown root:wheel /Library/LaunchDaemons/sh.lightsout.agents.plist
-  # loaded but never started on its own: Lights Out starts it on demand
-  $SUDO launchctl bootout system/sh.lightsout.agents 2>/dev/null || true
-  $SUDO launchctl bootstrap system /Library/LaunchDaemons/sh.lightsout.agents.plist || echo "Note: the background service will be loaded at the next restart."
-  # signing back in after Lights Out: the app opens and takes your tabs back
-  mkdir -p "$home/Library/LaunchAgents"
-  cat > "$home/Library/LaunchAgents/sh.lightsout.return.plist" <<P
+    $SUDO chmod 644 /Library/LaunchDaemons/sh.lightsout.agents.plist
+    $SUDO chown root:wheel /Library/LaunchDaemons/sh.lightsout.agents.plist
+    # loaded but never started on its own: Lights Out starts it on demand
+    $SUDO launchctl bootout system/sh.lightsout.agents 2>/dev/null || true
+    $SUDO launchctl bootstrap system /Library/LaunchDaemons/sh.lightsout.agents.plist || echo "Note: the background service will be loaded at the next restart."
+    # signing back in after Lights Out: the app opens and takes your tabs back
+    mkdir -p "$home/Library/LaunchAgents"
+    cat > "$home/Library/LaunchAgents/sh.lightsout.return.plist" <<P
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -53,6 +58,7 @@ P
 <key>RunAtLoad</key><true/>
 </dict></plist>
 P
+  fi
   echo "$ME ALL=(root) NOPASSWD: /usr/local/lib/lightsout/switch" > "$tmp/sudoers"
   $SUDO visudo -cf "$tmp/sudoers" >/dev/null && $SUDO install -m 440 "$tmp/sudoers" /etc/sudoers.d/lightsout
   # a small app so Lights Out is in Launchpad, Spotlight and the Dock
@@ -68,7 +74,7 @@ P
 <key>CFBundleIdentifier</key><string>sh.lightsout.app</string>
 <key>CFBundleExecutable</key><string>lightsout</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.2.0</string>
+<key>CFBundleShortVersionString</key><string>0.2.1</string>
 <key>LSMinimumSystemVersion</key><string>11.0</string>
 </dict></plist>
 P
