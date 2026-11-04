@@ -30,6 +30,7 @@ A room is its own set of tabs, for example one room per project. Click a room to
 
 - **New room:** click **+ room** or press **Ctrl+Shift+N**.
 - **Rename or close a room:** open **actions**. Closing a room stops its agents.
+- **A room on a server:** **actions → New room on a server...** (or `lightsout room add me@server`). Its agents run on the server; the room shows them live and keeps reconnecting if the connection drops (dimmed meanwhile). See [Rooms on a server](configuration.md#rooms-on-a-server).
 
 ## Tabs and splits
 
@@ -73,6 +74,7 @@ You can add your own keys: see [Configuration](configuration.md#your-own-keys).
 - Drag to select text; it's copied with Ctrl+Shift+C.
 - Right-click for copy, paste, split and close.
 - Scroll to see earlier output.
+- Programs that use the mouse (editors, `htop`, Lights Out on a server) get clicks and the wheel. Hold **Shift** to select text or open the menu instead.
 
 ## Alerts
 
@@ -85,6 +87,12 @@ Lights Out recognises common questions by itself. If one of your tools asks in i
 ## Closing the window
 
 Closing the window doesn't stop your agents: they keep running, and `lightsout` brings the window back. **Quit** in actions stops everything. Your tabs come back the next time you open Lights Out, each in its folder, with its command typed back in for you to run (agents continue by themselves only when you switch to or from Lights Out).
+
+## Inside any terminal
+
+Type `lightsout` in PowerShell, cmd, bash, zsh or any terminal app, and Lights Out runs right there, like tmux: same rooms, tabs and sidebar, in your terminal's font. Terminals keep many Ctrl+Shift keys for themselves, so there the shortcuts are **Ctrl+B, then the key** (Ctrl+B P = actions, T = new tab, W = close, N = new room, → = split); press Ctrl+B twice to send Ctrl+B to the program. **F1** also opens actions.
+
+Closing that terminal doesn't stop anything: your agents keep running in the background, and `lightsout` brings you back to the same screen. **Ctrl+B D** (or **actions → Detach**) does the same on purpose. `lightsout --window` opens the window instead.
 
 ## Wi-Fi
 

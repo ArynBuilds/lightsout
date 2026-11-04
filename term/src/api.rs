@@ -114,26 +114,6 @@ pub fn call(session: &str, cmd: &str, args: Value) -> Result<Value, String> {
     }
 }
 
-pub const SKILL: &str = r#"# Lights Out (terminal for AI agents)
-
-You are running inside Lights Out. Each tab can hold several panes; every pane
-runs a shell or an agent. Your own pane id is in $LIGHTSOUT_PANE.
-
-Commands (run them in your shell):
-  lightsout list                         panes: id, tab, folder, state (working / needs-you / done / idle)
-  lightsout new [--right|--down] [--cwd DIR] [-- COMMAND...]
-                                         open a pane (new tab by default) and print its id
-  lightsout send PANE TEXT... [--no-enter]   type into a pane (Enter is pressed unless --no-enter)
-  lightsout read PANE [--lines N]        print what a pane shows (last N lines, default 60)
-  lightsout wait PANE [--until idle|done|needs-you] [--timeout SECONDS]
-                                         block until the pane reaches that state (default: done or idle)
-  lightsout explain PANE                 why Lights Out thinks a pane is in its state
-  lightsout notify TEXT...               show a popup to the user
-  lightsout screen off|on                switch the laptop screen off/on (saves battery)
-  lightsout power                        battery and current power draw
-
-Working with other agents: start one with `lightsout new -- claude`, give it a
-task with `lightsout send <id> "..."`, wait with `lightsout wait <id>`, then
-collect its answer with `lightsout read <id>`.
-Saving battery: when you are done and the user is away, `lightsout screen off`.
-"#;
+/// What an agent inside Lights Out needs to know (`lightsout skill`); the same file is
+/// the installable skill (skills/lightsout/SKILL.md, `npx skills add ArynBuilds/lightsout`).
+pub const SKILL: &str = include_str!("../../skills/lightsout/SKILL.md");

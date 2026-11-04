@@ -155,7 +155,7 @@ struct Room {
     remote: Option<session::RemoteRoom>,
     /// What runs in it over there (name, state, folder), as that machine reports it.
     remote_agents: Vec<(String, String, String)>,
-    /// That machine can't be reached right now.
+    /// Its server can't be reached right now.
     offline: bool,
 }
 
@@ -165,6 +165,7 @@ enum Purpose {
     RoomName(usize),
     WifiPassword(usize),
     WifiName,
+    ServerRoom,
 }
 
 #[derive(Clone)]
@@ -181,7 +182,6 @@ enum Action {
     Editor,
     Copy,
     Paste,
-    Remote(String),
     Lights,
     BackToWindows,
     Quit,
@@ -192,10 +192,8 @@ enum Action {
     FontSmaller,
     ToggleSidebar,
     NewRoom,
-    /// A room on this computer (when machines are set up, NewRoom asks where).
-    NewLocalRoom,
-    /// A room on that machine ([[machine]] number).
-    NewRemoteRoom(usize),
+    /// Asks for an ssh address: a room that lives on that server.
+    NewServerRoom,
     RenameRoom,
     CloseRoom,
     GoRoom(usize),
@@ -746,62 +744,77 @@ impl App {
         self.new_tab(cwd, None, Vec::new());
     }
 
-    /// "+ room": with machines set up, asks where it lives; otherwise a room here.
-    fn add_room(&mut self) {
-        if self.cfg.machine.is_empty() {
-            return self.new_room();
+    /// Rooms on servers (server-rooms.json): they appear when added and go when removed.
+    fn sync_server_rooms(&mut self) {
+        let servers = session::server_rooms();
+        let current = self.room;
+        let mut keep_current = true;
+        // removed: the room closes here (its agents keep running on the server)
+        for i in (0..self.rooms.len()).rev() {
+            let Some(remote) = self.rooms[i].remote.clone() else {
+                continue;
+            };
+            match servers.iter().find(|m| m.name == remote.server) {
+                Some(m) if m.ssh == remote.ssh => {}
+                Some(m) => {
+                    if let Some(r) = self.rooms[i].remote.as_mut() {
+                        r.ssh = m.ssh.clone(); // reached another way from now on (next connect)
+                    }
+                }
+                None => {
+                    if i == self.room {
+                        keep_current = false;
+                    } else {
+                        for id in self.rooms[i].tabs.iter().flat_map(|t| t.layout.leaves()) {
+                            if let Some(p) = self.panes.remove(&id) {
+                                p.shutdown();
+                            }
+                        }
+                        self.rooms.remove(i);
+                        if i < self.room {
+                            self.room -= 1;
+                        }
+                    }
+                }
+            }
         }
-        let mut items = vec![Item {
-            label: "This computer".into(),
-            hint: String::new(),
-            action: Action::NewLocalRoom,
-        }];
-        for (i, m) in self.cfg.machine.iter().enumerate() {
-            items.push(Item {
-                label: m.name.clone(),
-                hint: m.ssh.clone(),
-                action: Action::NewRemoteRoom(i),
+        if !keep_current {
+            self.close_room();
+        }
+        // added: a room each, connected (the room you're in stays)
+        let back = if keep_current {
+            Some(self.room.min(current))
+        } else {
+            None
+        };
+        let mut added = None;
+        for m in &servers {
+            if self
+                .rooms
+                .iter()
+                .any(|r| r.remote.as_ref().is_some_and(|x| x.server == m.name))
+            {
+                continue;
+            }
+            let remote = session::RemoteRoom {
+                server: m.name.clone(),
+                ssh: m.ssh.clone(),
+                room: String::new(),
+            };
+            self.rooms.push(Room {
+                name: m.name.clone(),
+                remote: Some(remote.clone()),
+                ..Default::default()
             });
+            let ri = self.rooms.len() - 1;
+            self.switch_room(ri);
+            self.open_remote(&remote);
+            added = Some(ri);
         }
-        self.overlay = Overlay::Palette {
-            title: "New room on".into(),
-            items,
-            filter: String::new(),
-            sel: 0,
-            picked: false,
-            top: 0,
-        };
+        if let (Some(b), Some(_)) = (back, added) {
+            self.switch_room(b);
+        }
         self.dirty = true;
-    }
-
-    /// A room that lives on that machine: its agents run there, this room shows it.
-    fn new_remote_room(&mut self, i: usize) {
-        let Some(m) = self.cfg.machine.get(i).cloned() else {
-            return;
-        };
-        let n = self.rooms.len() + 1;
-        let taken: Vec<String> = self
-            .rooms
-            .iter()
-            .filter_map(|r| r.remote.as_ref().map(|x| x.room.clone()))
-            .collect();
-        let mut k = n;
-        while taken.contains(&format!("room-{k}")) {
-            k += 1;
-        }
-        let remote = session::RemoteRoom {
-            machine: m.name.clone(),
-            ssh: m.ssh.clone(),
-            room: format!("room-{k}"),
-        };
-        self.rooms.push(Room {
-            name: format!("Room {n}"),
-            ..Default::default()
-        });
-        self.switch_room(self.rooms.len() - 1);
-        self.open_remote(&remote);
-        let ri = self.rooms.len() - 1;
-        self.rooms[ri].remote = Some(remote);
     }
 
     /// Connects the current tab list to a room on another machine (and keeps reconnecting).
@@ -823,11 +836,17 @@ impl App {
             .chars()
             .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
             .collect();
-        let cmd = format!("{call} --remote {} --room {room}", shell_word(&remote.ssh));
+        // a server room shows what is open over there; a named room shows that room
+        let which = if room.is_empty() {
+            "--embed".to_string()
+        } else {
+            format!("--room {room}")
+        };
+        let cmd = format!("{call} open {} {which}", shell_word(&remote.ssh));
         let size = self.grid_size(self.content());
         if let Some(id) = self.spawn(platform::home(), Some(cmd), Vec::new(), size) {
             if let Some(p) = self.panes.get_mut(&id) {
-                p.title = remote.machine.clone();
+                p.title = remote.server.clone();
             }
             self.tabs.push(TabView {
                 layout: layout::Node::Leaf(id),
@@ -837,7 +856,7 @@ impl App {
         }
     }
 
-    /// Goes to the room with that name (made if there is none): a machine showing it asked.
+    /// Goes to the room with that name (made if there is none): a computer showing it as a server room asked.
     pub(crate) fn open_room_named(&mut self, name: &str) {
         if let Some(i) = self.rooms.iter().position(|r| r.name == name) {
             self.switch_room(i);
@@ -869,6 +888,17 @@ impl App {
     }
 
     fn close_room(&mut self) {
+        // a server room: it leaves the list here (its agents keep running on the server)
+        if let Some(m) = self
+            .rooms
+            .get(self.room)
+            .and_then(|r| r.remote.as_ref())
+            .map(|r| r.server.clone())
+        {
+            let mut all = session::server_rooms();
+            all.retain(|x| x.name != m);
+            let _ = session::save_server_rooms(&all);
+        }
         let ids: Vec<u64> = self.tabs.iter().flat_map(|t| t.layout.leaves()).collect();
         for id in ids {
             if let Some(p) = self.panes.remove(&id) {
@@ -1282,6 +1312,7 @@ impl App {
                 .unwrap_or_else(platform::home);
             self.new_tab(start, None, Vec::new());
         }
+        self.sync_server_rooms();
         self.start_bar_items();
     }
 
@@ -1369,7 +1400,20 @@ impl App {
             item("Smaller text", "Ctrl+-", Action::FontSmaller),
             item("New room", "Ctrl+Shift+N", Action::NewRoom),
             item("Rename this room", "", Action::RenameRoom),
-            item("Delete this room (stops its agents)", "", Action::CloseRoom),
+            if self
+                .rooms
+                .get(self.room)
+                .is_some_and(|r| r.remote.is_some())
+            {
+                item(
+                    "Remove this room here (its agents keep running on the server)",
+                    "",
+                    Action::CloseRoom,
+                )
+            } else {
+                item("Delete this room (stops its agents)", "", Action::CloseRoom)
+            },
+            item("New room on a server...", "", Action::NewServerRoom),
             item(
                 "Show / hide the sidebar",
                 "Ctrl+Shift+B",
@@ -1420,13 +1464,6 @@ impl App {
                     Action::GoRoom(i),
                 ));
             }
-        }
-        for m in &self.cfg.machine {
-            v.push(item(
-                &format!("Connect to {}", m.name),
-                &m.ssh,
-                Action::Remote(m.ssh.clone()),
-            ));
         }
         for (k, c) in &self.cfg.keys {
             v.push(item(
@@ -1523,9 +1560,15 @@ impl App {
                     purpose: Purpose::Command,
                 }
             }
-            Action::NewRoom => self.add_room(),
-            Action::NewLocalRoom => self.new_room(),
-            Action::NewRemoteRoom(i) => self.new_remote_room(i),
+            Action::NewRoom => self.new_room(),
+            Action::NewServerRoom => {
+                self.overlay = Overlay::Ask {
+                    title: "New room on a server (user@host, or a name from your ssh config):"
+                        .into(),
+                    text: String::new(),
+                    purpose: Purpose::ServerRoom,
+                }
+            }
             Action::RenameRoom => {
                 let text = self.rooms[self.room].name.clone();
                 self.overlay = Overlay::Ask {
@@ -1553,10 +1596,6 @@ impl App {
             Action::Editor => self.open_in_editor(),
             Action::Copy => self.copy(),
             Action::Paste => self.paste(),
-            Action::Remote(target) => {
-                // that machine's own Lights Out (its rooms and agents live there)
-                self.new_tab(cwd, Some(remote_command(&target)), Vec::new());
-            }
             Action::Detach => {
                 self.detach = true;
                 self.dirty = true;
@@ -1900,6 +1939,24 @@ impl App {
                                     r.name = value;
                                 }
                             }
+                            Purpose::ServerRoom => {
+                                let name = session::server_name(&value);
+                                let mut all = session::server_rooms();
+                                all.retain(|m| m.name != name);
+                                all.push(session::ServerRoom {
+                                    name: name.clone(),
+                                    ssh: value,
+                                });
+                                if session::save_server_rooms(&all).is_err() {
+                                    self.toast("Couldn't save that room".into(), ALERT);
+                                }
+                                self.sync_server_rooms();
+                                if let Some(i) = self.rooms.iter().position(|r| {
+                                    r.remote.as_ref().is_some_and(|x| x.server == name)
+                                }) {
+                                    self.switch_room(i);
+                                }
+                            }
                             Purpose::WifiPassword(i) => self.join_wifi(i, Some(value)),
                             Purpose::WifiName => {
                                 // a network that isn't listed (hidden, or a name macOS doesn't show)
@@ -2190,7 +2247,7 @@ impl App {
             match hit {
                 Some(Hit::Pane(id)) => self.focus(id),
                 Some(Hit::Room(i)) => self.switch_room(i),
-                Some(Hit::NewRoom) => self.add_room(),
+                Some(Hit::NewRoom) => self.new_room(),
                 Some(Hit::Palette) => self.open_palette(),
                 Some(Hit::Switch) => {
                     self.overlay = Overlay::Confirm(if platform::in_lightsout() {
@@ -2500,6 +2557,38 @@ impl App {
                 .or_else(|| a["pane"].as_str().and_then(|s| s.parse().ok()))
         };
         let resp = match req.cmd.as_str() {
+            "server-rooms" => {
+                self.sync_server_rooms();
+                json!({ "ok": true })
+            }
+            "rooms" => {
+                let rooms: Vec<Value> = self
+                    .rooms
+                    .iter()
+                    .map(|r| json!({ "name": r.name, "server": r.remote.as_ref().map(|x| x.ssh.clone()) }))
+                    .collect();
+                json!({ "rooms": rooms })
+            }
+            "room-add" => {
+                self.new_room();
+                if let Some(n) = req.args["name"].as_str().filter(|n| !n.is_empty()) {
+                    let ri = self.room;
+                    self.rooms[ri].name = n.to_string();
+                }
+                json!({ "ok": true })
+            }
+            "room-remove" => match self
+                .rooms
+                .iter()
+                .position(|r| Some(r.name.as_str()) == req.args["name"].as_str())
+            {
+                Some(i) => {
+                    self.switch_room(i);
+                    self.close_room();
+                    json!({ "ok": true })
+                }
+                None => json!({ "ok": false }),
+            },
             "show" => {
                 if let Some(w) = &self.window {
                     w.set_visible(true);
@@ -2989,22 +3078,30 @@ impl App {
                 if let Some((name, _)) = rooms.get(i) {
                     let current = i == self.room;
                     let label: String = name.chars().take(max_chars).collect();
+                    let server = self
+                        .rooms
+                        .get(i)
+                        .and_then(|r| r.remote.as_ref().map(|x| (x.server.clone(), r.offline)));
+                    // a server that can't be reached right now: its room dims
+                    let off = server.as_ref().is_some_and(|m| m.1);
                     cv.text(
                         f,
                         PADX,
                         y,
                         &label,
                         current,
-                        if current { t.fg } else { DIMTEXT },
+                        if current {
+                            t.fg
+                        } else if off {
+                            0x3a3a42
+                        } else {
+                            DIMTEXT
+                        },
                     );
-                    // a room on another machine: that machine's name, dimmed (more when unreachable)
-                    if let Some((m, off)) = self
-                        .rooms
-                        .get(i)
-                        .and_then(|r| r.remote.as_ref().map(|x| (x.machine.clone(), r.offline)))
-                    {
+                    // renamed: the server room's own name, dimmed, after it
+                    if let Some((m, _)) = server.filter(|m| &m.0 != name) {
                         let mx = sw - PADX - (m.chars().count() as i32 + 1) * cw;
-                        cv.text(f, mx, y, &m, false, if off { 0x3a3a42 } else { 0x55555c });
+                        cv.text(f, mx, y, &m, false, 0x55555c);
                     }
                     self.hits.push((
                         Rect {
@@ -3805,19 +3902,16 @@ Lights Out: the terminal for AI agents.
   lightsout                       run Lights Out right here, in this terminal
                                   (Ctrl+B then a key: P actions, T tab, W close, N room; F1 = actions)
   lightsout --window              open it in its own window instead
-  lightsout --remote USER@HOST    Lights Out on a server, over SSH (agents live there)
+  lightsout open USER@HOST        Lights Out on a server, over SSH (agents live there)
+  lightsout room add [NAME]       a new room
+  lightsout room add USER@HOST [NAME]   a room that lives on that server
+  lightsout room list | remove NAME
   lightsout --session NAME        a separate, named set of tabs
   lightsout uninstall             remove Lights Out from this computer
 
 Control the running app (also for agents; details: `lightsout skill`):
   lightsout list | new | send | read | wait | explain | focus | notify | screen | power | switch
 ";
-
-/// Opens Lights Out on another machine over SSH (it starts there if it isn't running yet).
-/// A login shell, so `lightsout` is found where the installer put it.
-fn remote_command(target: &str) -> String {
-    format!("ssh -t {target} \"sh -lc 'exec lightsout'\"")
-}
 
 /// One word of a command, quoted for the shell that runs it (PowerShell on Windows, sh elsewhere).
 fn shell_word(w: &str) -> String {
@@ -3993,21 +4087,26 @@ pub fn cli_entry() {
         std::process::exit(code);
     }
     // `--room NAME`: show just that room (a room on this machine, seen from another one)
-    let room_arg: Option<String> = rest
-        .iter()
-        .position(|a| a == "--room")
-        .and_then(|i| rest.get(i + 1))
-        .map(|r| {
-            r.chars()
-                .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
-                .collect()
-        });
-    if rest.first().map(String::as_str) == Some("--remote") {
+    // `--embed`: whatever room is open (a server shown as a room on another computer)
+    let room_arg: Option<String> = if rest.iter().any(|a| a == "--embed") {
+        Some(".".into())
+    } else {
+        rest.iter()
+            .position(|a| a == "--room")
+            .and_then(|i| rest.get(i + 1))
+            .map(|r| {
+                r.chars()
+                    .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+                    .collect()
+            })
+    };
+    if rest.first().map(String::as_str) == Some("open") {
         let Some(target) = rest.get(1) else {
-            eprintln!("lightsout: which machine? lightsout --remote you@server");
+            eprintln!("lightsout: which server? lightsout open you@server");
             std::process::exit(2);
         };
-        let there = match &room_arg {
+        let there = match room_arg.as_deref() {
+            Some(".") => "sh -lc 'exec lightsout --embed'".to_string(),
             Some(r) => format!("sh -lc 'exec lightsout --room {r}'"),
             None => "sh -lc 'exec lightsout'".to_string(),
         };
@@ -4037,7 +4136,8 @@ pub fn cli_entry() {
         }
     }
     let window = rest.iter().any(|a| a == "--window" || a == "-w");
-    let view_only = room_arg.is_some() && rest.len() == 2;
+    let view_only = (room_arg.as_deref() == Some(".") && rest.len() == 1)
+        || (room_arg.is_some() && rest.len() == 2);
     if rest.is_empty() || window || view_only {
         use std::io::IsTerminal;
         let in_terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
@@ -4109,7 +4209,118 @@ fn run_command(session: &str, rest: &[String]) {
             "-h" | "--help" | "help" => print!("{HELP}"),
             "-V" | "--version" | "version" => println!("lightsout {}", env!("CARGO_PKG_VERSION")),
             "uninstall" => std::process::exit(uninstall()),
+            "room" | "rooms" => std::process::exit(room_cmd(session, &rest[1..])),
             _ => std::process::exit(client(session, rest)),
+        }
+    }
+}
+
+/// `lightsout room add | list | remove`: rooms here, and rooms that live on a server.
+fn room_cmd(session: &str, args: &[String]) -> i32 {
+    let on = args
+        .iter()
+        .position(|a| a == "--on")
+        .and_then(|i| args.get(i + 1))
+        .cloned();
+    // the words after add/remove, without `--on X`
+    let mut words: Vec<&String> = Vec::new();
+    let mut it = args.iter().skip(1);
+    while let Some(a) = it.next() {
+        if a == "--on" {
+            it.next();
+        } else {
+            words.push(a);
+        }
+    }
+    let running = |cmd: &str, a: Value| api::call(session, cmd, a);
+    match args.first().map(String::as_str) {
+        Some("add") => {
+            // on a server: `me@server`, or `NAME --on <ssh name>`
+            let server = on.clone().or_else(|| {
+                words
+                    .first()
+                    .filter(|w| w.contains('@'))
+                    .map(|w| w.to_string())
+            });
+            if let Some(ssh) = server {
+                let name = words
+                    .iter()
+                    .find(|w| **w != &ssh)
+                    .map(|w| w.to_string())
+                    .unwrap_or_else(|| session::server_name(&ssh));
+                let mut all = session::server_rooms();
+                all.retain(|m| m.name != name);
+                all.push(session::ServerRoom {
+                    name: name.clone(),
+                    ssh: ssh.clone(),
+                });
+                if let Err(e) = session::save_server_rooms(&all) {
+                    eprintln!("lightsout: couldn't save: {e}");
+                    return 1;
+                }
+                let _ = running("server-rooms", json!({}));
+                println!("room {name} on {ssh}: its agents run there");
+                return 0;
+            }
+            let name = words.first().map(|w| w.to_string()).unwrap_or_default();
+            match running("room-add", json!({ "name": name })) {
+                Ok(_) => 0,
+                Err(_) => {
+                    eprintln!("lightsout: Lights Out isn't open (type lightsout first)");
+                    1
+                }
+            }
+        }
+        Some("remove") | Some("rm") => {
+            let Some(name) = words.first().map(|w| w.to_string()) else {
+                eprintln!("lightsout: lightsout room remove NAME");
+                return 2;
+            };
+            let mut all = session::server_rooms();
+            let before = all.len();
+            all.retain(|m| m.name != name);
+            if all.len() != before {
+                if let Err(e) = session::save_server_rooms(&all) {
+                    eprintln!("lightsout: couldn't save: {e}");
+                    return 1;
+                }
+                let _ = running("server-rooms", json!({}));
+                println!("removed {name} here (its agents keep running on the server)");
+                return 0;
+            }
+            match running("room-remove", json!({ "name": name })) {
+                Ok(v) if v["ok"].as_bool() == Some(true) => 0,
+                Ok(_) => {
+                    eprintln!("lightsout: no room called {name}");
+                    1
+                }
+                Err(_) => {
+                    eprintln!("lightsout: Lights Out isn't open");
+                    1
+                }
+            }
+        }
+        Some("list") | Some("ls") | None => {
+            match running("rooms", json!({})) {
+                Ok(v) => {
+                    for r in v["rooms"].as_array().cloned().unwrap_or_default() {
+                        match r["server"].as_str() {
+                            Some(s) => println!("{}  (on {s})", r["name"].as_str().unwrap_or("")),
+                            None => println!("{}", r["name"].as_str().unwrap_or("")),
+                        }
+                    }
+                }
+                Err(_) => {
+                    for m in session::server_rooms() {
+                        println!("{}  (on {})", m.name, m.ssh);
+                    }
+                }
+            }
+            0
+        }
+        Some(other) => {
+            eprintln!("lightsout: room {other}? use add, list or remove");
+            2
         }
     }
 }

@@ -190,7 +190,7 @@ fn rgb(c: u32) -> Color {
 struct Screen {
     /// Ctrl+B was pressed: the next key is a Lights Out shortcut (like tmux).
     prefix: bool,
-    /// What runs in the room, as last told to a machine showing this room.
+    /// What runs in the room, as last told to the computer showing this room.
     agents_sent: Option<String>,
     shown: Vec<Cell>,
     w: i32,
@@ -397,7 +397,7 @@ pub fn serve(session: &str) -> i32 {
             *client = Some((s, id));
             // seen from another machine as one of its rooms: just that room
             app.embedded = room.is_some();
-            if let Some(r) = room {
+            if let Some(r) = room.filter(|r| r != ".") {
                 app.open_room_named(&r);
             }
             app.resize_all();
@@ -1029,19 +1029,26 @@ fn draw(app: &mut App, prefix: bool) -> (Grid, Option<(u16, u16, CursorShape)>) 
         for i in app.rooms_top..total.min(app.rooms_top + fit) {
             if let Some((name, _)) = rooms.get(i) {
                 let on = i == app.room;
-                if let Some((m, off)) = app
+                let server = app
                     .rooms
                     .get(i)
-                    .and_then(|r| r.remote.as_ref().map(|x| (x.machine.clone(), r.offline)))
-                {
+                    .and_then(|r| r.remote.as_ref().map(|x| (x.server.clone(), r.offline)));
+                let off = server.as_ref().is_some_and(|m| m.1);
+                if let Some((m, _)) = server.filter(|m| &m.0 != name) {
                     let mx = sw - 2 - width(&m);
-                    g.text(mx, y, &m, if off { LINE } else { HEAD }, false, sw - 1);
+                    g.text(mx, y, &m, HEAD, false, sw - 1);
                 }
                 g.text(
                     1,
                     y,
                     &cut(name, inner),
-                    if on { t.fg } else { DIMTEXT },
+                    if on {
+                        t.fg
+                    } else if off {
+                        LINE
+                    } else {
+                        DIMTEXT
+                    },
                     on,
                     sw - 1,
                 );

@@ -52,7 +52,9 @@ Every pane can be driven with `lightsout` commands, from any terminal or from an
 | `lightsout notify TEXT...` | Shows a popup |
 | `lightsout screen off\|on` | Switches the screen off or on |
 | `lightsout power` | Battery and power draw |
-| `lightsout skill` | Prints a short guide for agents |
+| `lightsout skill` | Prints the skill: every command, written for agents |
+| `lightsout room add/list/remove` | Rooms here and rooms on a server |
+| `lightsout open me@server` | Lights Out on a server, in this terminal |
 | `lightsout uninstall` | Removes Lights Out |
 
 Every program in a pane knows its own pane id from `$LIGHTSOUT_PANE`.
@@ -68,11 +70,14 @@ lightsout read "$id" --lines 40
 
 ### Teaching your agent
 
+Lights Out comes with a skill: a short file that tells an agent every command it can run (panes, rooms, servers, waiting for other agents, the screen). Agents only use it inside Lights Out.
+
 ```sh
-lightsout skill
+npx skills add ArynBuilds/lightsout     # Claude Code, Codex, Cursor and others
+lightsout skill                         # or print it (it matches your installed version)
 ```
 
-prints a short guide written for agents. Add it to your agent's instructions (for example `CLAUDE.md` or `AGENTS.md`) and it can open panes, hand out work and switch the screen off when you're away.
+Agents without a skill system: add the output of `lightsout skill` to their instructions (for example `CLAUDE.md` or `AGENTS.md`). For agents reading the web, https://lightsout.sh/llms.txt indexes these docs, and https://lightsout.sh/llms-full.txt has them all in one file.
 
 ## Security of the control commands
 

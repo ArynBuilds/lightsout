@@ -30,11 +30,50 @@ pub struct SavedRoom {
     pub remote: Option<RemoteRoom>,
 }
 
+/// A room that lives on a server (`lightsout room add me@server`).
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct ServerRoom {
+    pub name: String,
+    /// How to reach it (`ssh` target: user@host or a name from ~/.ssh/config).
+    pub ssh: String,
+}
+
+fn server_rooms_file() -> std::path::PathBuf {
+    crate::platform::data_dir().join("server-rooms.json")
+}
+
+pub fn server_rooms() -> Vec<ServerRoom> {
+    std::fs::read_to_string(server_rooms_file())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_server_rooms(m: &[ServerRoom]) -> std::io::Result<()> {
+    let f = server_rooms_file();
+    if let Some(d) = f.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    std::fs::write(f, serde_json::to_string_pretty(m).unwrap_or_default())
+}
+
+/// A short room name from an ssh target: "me@vps.example.com" -> "vps".
+pub fn server_name(ssh: &str) -> String {
+    let host = ssh.rsplit('@').next().unwrap_or(ssh);
+    let first = host.split('.').next().unwrap_or(host);
+    if first.chars().all(|c| c.is_ascii_digit()) {
+        host.to_string() // an IP address stays whole
+    } else {
+        first.to_string()
+    }
+}
+
 /// A room on another machine: shown here, its agents run there.
 #[derive(Serialize, Deserialize, Clone, Default, PartialEq, Debug)]
 pub struct RemoteRoom {
-    /// The machine's name from the settings ([[machine]] name).
-    pub machine: String,
+    /// The server room's name (its entry in server-rooms.json).
+    #[serde(alias = "machine")]
+    pub server: String,
     /// How to reach it (`ssh` target).
     pub ssh: String,
     /// The room's name over there.

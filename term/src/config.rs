@@ -32,11 +32,6 @@ keep = true              # bring tabs, splits and screen history back after a re
 # items = [ { text = "my laptop" }, { command = "git branch --show-current", every = 30 } ]
 items = []
 
-# Saved machines, opened over SSH from the palette (Ctrl+Shift+P)
-# [[machine]]
-# name = "desktop"
-# ssh = "me@desktop.local"
-
 # Your own keys: a command in a popup, a new tab or a split
 # [keys]
 # "ctrl+alt+g" = { command = "lazygit", mode = "popup" }
@@ -51,7 +46,6 @@ pub struct Config {
     pub status: Status,
     pub history: History,
     pub bar: Bar,
-    pub machine: Vec<Machine>,
     pub keys: HashMap<String, KeyCmd>,
 }
 
@@ -125,12 +119,6 @@ pub struct BarItem {
 }
 fn thirty() -> u64 {
     30
-}
-
-#[derive(Deserialize, Clone)]
-pub struct Machine {
-    pub name: String,
-    pub ssh: String,
 }
 
 #[derive(Deserialize, Clone)]

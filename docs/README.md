@@ -18,7 +18,7 @@ It is also a complete terminal for everyday use, with tabs, rooms, splits and al
 |---|---|
 | [Agents](agents.md) | Any agent, how conversations continue, and the `lightsout` control commands |
 | [Power and battery](power-and-battery.md) | What switches off, how the CPU is used, and how to measure |
-| [Configuration](configuration.md) | `config.toml`, your own keys, saved machines and the data files |
+| [Configuration](configuration.md) | `config.toml`, your own keys, machines and the data files |
 
 ## Reference
 

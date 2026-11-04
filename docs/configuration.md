@@ -41,15 +41,19 @@ Run any command with a key: in a popup, a new tab, or a split.
 "ctrl+alt+t" = { command = "npm test", mode = "split" }
 ```
 
-## Saved machines
+## Rooms on a server
 
-Machines you open over SSH, listed in **actions**:
+A room can live on a server: its agents run there, 24/7, also while your computer sleeps or is off. It is not a setting: add it with a command, or **actions → New room on a server...**
 
-```toml
-[[machine]]
-name = "desktop"
-ssh = "me@desktop.local"
+```sh
+lightsout room add me@server.example.com        # the room "server"
+lightsout room add me@10.0.0.5 desktop          # or give it a name
+lightsout room add build --on buildbox          # a name from ~/.ssh/config
+lightsout room list
+lightsout room remove desktop                   # leaves it here; it keeps running on the server
 ```
+
+The server needs Lights Out too (`curl -fsSL https://lightsout.sh | sh`). Logins use your normal SSH setup (keys, `~/.ssh/config`); Lights Out keeps no passwords. To see everything on a server at once: `lightsout open me@server`.
 
 ## When an agent asks in its own words
 

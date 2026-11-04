@@ -70,10 +70,10 @@ jobs:
           sudo systemctl start ssh || sudo service ssh start
           ssh-keyscan -H localhost >> ~/.ssh/known_hosts 2>/dev/null
           sudo ln -sf $B/lightsout /usr/local/bin/lightsout
-          timeout 10 script -qfec "stty cols 120 rows 40; $B/lightsout --remote localhost" /dev/null > remote.log 2>&1 || true
+          timeout 10 script -qfec "stty cols 120 rows 40; $B/lightsout open localhost" /dev/null > remote.log 2>&1 || true
           grep -a -q rooms remote.log
           # a room on that machine (what a remote room in the sidebar opens): just that room, and it reports what runs
-          timeout 10 script -qfec "stty cols 120 rows 40; $B/lightsout --remote localhost --room room-9" /dev/null > room.log 2>&1 || true
+          timeout 10 script -qfec "stty cols 120 rows 40; $B/lightsout open localhost --room room-9" /dev/null > room.log 2>&1 || true
           grep -a -q "lightsout-room:" room.log
           sleep 2
           pgrep -f -- "--session default --server"
