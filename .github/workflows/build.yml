@@ -14,6 +14,34 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build
         run: cd term; cargo build --release
+      - name: Test (tabs from a switch that didn't happen come back; a quiet view stays connected)
+        if: ${{ !contains(github.ref, '-rc') }}  # test builds (vX-rc.N) skip the tests: you test them yourself
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $B = "$PWD\agentos\term\target\release\lightsout.exe"
+          # tabs saved for a switch to Lights Out that never happened (the PC came back to Windows)
+          New-Item -ItemType Directory -Force C:\LightsOut\handoff | Out-Null
+          '{"rooms":[{"name":"FromSwitch","active":0,"tabs":[{"focus":0,"layout":{"Leaf":0},"panes":[{"cwd":"C:\Windows"}]}]}],"room":0}' | Set-Content C:\LightsOut\handoff\tabs.json
+          $env:LIGHTSOUT_SESSION = 'ciwin'
+          Start-Process $B -ArgumentList '--session', 'ciwin', '--server' -WindowStyle Hidden
+          $info = "$env:LOCALAPPDATA\lightsout\run\screen-ciwin.json"
+          for ($i = 0; $i -lt 30 -and -not (Test-Path $info); $i++) { Start-Sleep 1 }
+          $list = & $B list; $list
+          if (-not ($list -match 'FromSwitch')) { throw 'the tabs saved at the switch did not come back' }
+          if (Test-Path C:\LightsOut\handoff\tabs.json) { throw 'the tabs saved at the switch were not taken' }
+          # a view that stays quiet (no keys) longer than the 5 s hello limit stays connected
+          $j = Get-Content $info | ConvertFrom-Json
+          $c = [Net.Sockets.TcpClient]::new('127.0.0.1', $j.port); $s = $c.GetStream(); $s.ReadTimeout = 2000
+          $w = [IO.StreamWriter]::new($s); $w.AutoFlush = $true
+          $w.WriteLine($j.token); $w.WriteLine('{"Resize":[100,30]}')
+          $buf = [byte[]]::new(65536)
+          try { while ($s.Read($buf, 0, $buf.Length) -gt 0) {} } catch {}   # the first screen
+          Start-Sleep 8
+          $w.WriteLine('{"Resize":[101,30]}')
+          if ($s.Read($buf, 0, $buf.Length) -le 0) { throw 'the quiet view was dropped' }
+          Get-Process lightsout | Stop-Process -Force
+          'WINDOWS TEST PASSED'
       - uses: actions/upload-artifact@v4
         with:
           name: lightsout-term-windows
@@ -80,6 +108,23 @@ jobs:
           pgrep -f -- "--session default --server"
           pkill -f -- "--server" || true
           sudo rm -f /usr/local/bin/lightsout
+          # reopening: known agents (resume.conf) continue, each tab its own session when known;
+          # any other command is typed back in, not run
+          mkdir -p ~/.config/lightsout ~/.local/state/lightsout
+          printf '%s\n' 'myagent = echo continued-plain' 'myagent = echo continued-{id}' > ~/.config/lightsout/resume.conf
+          tab() { echo "{\"focus\":0,\"layout\":{\"Leaf\":0},\"panes\":[{\"cwd\":\"/tmp\",$1}]}"; }
+          echo "{\"rooms\":[{\"name\":\"Reopen\",\"active\":0,\"tabs\":[$(tab '"command":"myagent","session":"chat-7"'),$(tab '"command":"myagent"'),$(tab '"command":"echo typed-back"')]}],\"room\":0}" \
+            > ~/.local/state/lightsout/session-cireopen.json
+          export LIGHTSOUT_SESSION=cireopen
+          $B/lightsout --session cireopen --server &
+          for i in $(seq 1 30); do $B/lightsout list > reopen.txt 2>/dev/null && break; sleep 1; done
+          sleep 3; cat reopen.txt
+          pane() { awk -v t="$1" 'NR>1 && $3==t {print $1}' reopen.txt; }
+          $B/lightsout read "$(pane 1)" | grep -q continued-chat-7
+          $B/lightsout read "$(pane 2)" | grep -q continued-plain
+          if $B/lightsout read "$(pane 3)" | grep -qE '^typed-back\s*$'; then echo "an unknown command ran"; exit 1; fi
+          $B/lightsout read "$(pane 3)" | grep -q "echo typed-back"
+          pkill -f -- "--session cireopen --server" || true
           echo "TERMINAL VIEW TEST PASSED"
       - name: Test on this Linux machine (install, Lights Out screen, power restore, uninstall)
         if: ${{ !contains(github.ref, '-rc') }}  # test builds (vX-rc.N) skip the tests: you test them yourself
@@ -248,7 +293,10 @@ jobs:
       - name: Build system image
         run: bash os/build.sh
       - name: Build starter
-        run: bash starter/build.sh
+        run: |
+          bash starter/build.sh
+          # the installer keeps a system file only with the starter's kernel: both must say the same
+          test "$(cat starter/out/EFI/lightsout/kernel-version)" = "$(cat os/out/boot/kernel-version)"
       - name: Upload starter
         uses: actions/upload-artifact@v4
         with:

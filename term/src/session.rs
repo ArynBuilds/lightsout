@@ -98,6 +98,9 @@ pub struct SavedPane {
     /// Text the pane showed, shown dimmed at the top when it comes back.
     #[serde(default)]
     pub screen: Option<String>,
+    /// The agent's own session (e.g. Claude's chat ID), so each tab continues its own chat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
 }
 
 pub fn local_file(session: &str) -> PathBuf {

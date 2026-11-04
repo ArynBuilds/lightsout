@@ -91,6 +91,8 @@ pub struct Pane {
     pub size: Size,
     /// The program running inside the shell, e.g. "claude" (None = just the shell).
     pub running: Option<String>,
+    /// Its process ID (to find the agent's own session, e.g. Claude's chat ID).
+    pub running_pid: Option<u32>,
     /// Fingerprint of the screen without its bottom rows (see `body_changed`).
     body: u64,
 }
@@ -165,6 +167,7 @@ impl Pane {
             det: Detector::default(),
             size,
             running: None,
+            running_pid: None,
             body: 0,
         })
     }

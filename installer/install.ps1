@@ -57,26 +57,28 @@ $tpm = Get-Tpm -ErrorAction SilentlyContinue
 $tpmOk = $tpm -and $tpm.TpmReady
 $sb = $false; try { $sb = Confirm-SecureBootUEFI } catch {}
 Write-Host "Secure Boot: $sb, TPM: $(if ($tpmOk) {'ready'} else {'none'})"
-# An update keeps the existing system file (your installs and logins), so it skips that big download.
-$haveSystem = Test-Path "$LO\system.img"
+function Download($f, $to) { Write-Host "  $f"; curl.exe -fL --progress-bar -o $to "$Base/$f"; if ($LASTEXITCODE -ne 0) { Fail "could not download $f" } }
 if (-not $Source) {
   Step 'Downloading Lights Out'
   $Source = Join-Path $env:TEMP 'lightsout-setup'
   Remove-Item $Source -Recurse -Force -ErrorAction SilentlyContinue
   New-Item -ItemType Directory -Force "$Source\system", "$Source\term", "$Source\starter" | Out-Null
-  $files = 'lightsout-windows-x64.zip', 'lightsout-starter.zip'
-  if (-not $haveSystem) { $files += 'system.img.gz.sha256', 'system.img.gz' }
-  foreach ($f in $files) {
-    Write-Host "  $f"
-    $to = if ($f -like 'system*') { "$Source\system\$f" } else { "$Source\$f" }
-    curl.exe -fL --progress-bar -o $to "$Base/$f"
-    if ($LASTEXITCODE -ne 0) { Fail "could not download $f" }
-  }
+  Download 'lightsout-windows-x64.zip' "$Source\lightsout-windows-x64.zip"
+  Download 'lightsout-starter.zip' "$Source\lightsout-starter.zip"
   Expand-Archive "$Source\lightsout-windows-x64.zip" "$Source\term" -Force
   Expand-Archive "$Source\lightsout-starter.zip" "$Source\starter" -Force
 }
+# An update keeps the system file (programs installed inside Lights Out) while its Linux kernel
+# matches the starter's: the drivers live in the system file. A new kernel needs the new system file.
+$kernel = (Get-Content (Join-Path $Source 'starter\EFI\lightsout\kernel-version') -ErrorAction SilentlyContinue | Select-Object -First 1)
+$sysKernel = (Get-Content "$LO\config\system-kernel" -ErrorAction SilentlyContinue | Select-Object -First 1)
+$keepSystem = (Test-Path "$LO\system.img") -and (-not $sysKernel -or $sysKernel -eq $kernel)
+if (-not $keepSystem -and -not (Test-Path (Join-Path $Source 'system\system.img.gz'))) {
+  Download 'system.img.gz.sha256' "$Source\system\system.img.gz.sha256"
+  Download 'system.img.gz' "$Source\system\system.img.gz"
+}
 $need = 'starter\EFI\lightsout\shimx64.efi','starter\EFI\lightsout\starter.img','term\lightsout.exe','term\lightsout-app.exe'
-if (-not $haveSystem) { $need += 'system\system.img.gz' }
+if (-not $keepSystem) { $need += 'system\system.img.gz' }
 foreach ($f in $need) {
   if (-not (Test-Path (Join-Path $Source $f))) { Fail "missing $f in $Source" }
 }
@@ -91,21 +93,23 @@ if ($encrypted -and -not $tpmOk) { Fail 'C: is encrypted (BitLocker) but this PC
 
 # ---------------------------------------------------------------- 2. system file
 Step 'Unpacking the Lights Out system (a few GB on C:)'
-$sumFile = "$gz.sha256"
-if (-not $haveSystem -and (Test-Path $sumFile)) {
-  $want = ((Get-Content $sumFile) -split '\s+')[0].ToLower()
-  $have = (Get-FileHash $gz -Algorithm SHA256).Hash.ToLower()
-  if ($want -ne $have) { Fail 'the system download is damaged (checksum mismatch)' }
-  Write-Host 'checksum ok'
-}
-if (Test-Path "$LO\system.img") { Write-Host 'keeping the existing system file (your installs and logins stay)' }
+if ($keepSystem) { Write-Host 'keeping the existing system file (your installs and logins stay)' }
 else {
+  if (Test-Path "$LO\system.img") { Write-Host "the Linux kernel changed ($sysKernel -> $kernel): new system file; programs installed inside Lights Out need installing again" }
+  $sumFile = "$gz.sha256"
+  if (Test-Path $sumFile) {
+    $want = ((Get-Content $sumFile) -split '\s+')[0].ToLower()
+    $have = (Get-FileHash $gz -Algorithm SHA256).Hash.ToLower()
+    if ($want -ne $have) { Fail 'the system download is damaged (checksum mismatch)' }
+    Write-Host 'checksum ok'
+  }
   $in = [IO.File]::OpenRead($gz)
   $z = New-Object IO.Compression.GZipStream($in, [IO.Compression.CompressionMode]::Decompress)
   $out = [IO.File]::Create("$LO\system.img.part")
   try { $z.CopyTo($out, 4MB) } finally { $out.Close(); $z.Close(); $in.Close() }
-  Move-Item "$LO\system.img.part" "$LO\system.img"
+  Move-Item "$LO\system.img.part" "$LO\system.img" -Force
 }
+if ($kernel) { [IO.File]::WriteAllText("$LO\config\system-kernel", $kernel) }
 
 # ---------------------------------------------------------------- 3. Wi-Fi, user, PIN
 Step 'Saving your Wi-Fi networks and settings for Lights Out'
@@ -146,7 +150,6 @@ if (-not $NoPin -and -not (Test-Path "$LO\config\pin")) {
 icacls $LO /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" "Administrators:(OI)(CI)F" "SYSTEM:(OI)(CI)F" | Out-Null
 
 # ---------------------------------------------------------------- 4. BitLocker key for Lights Out
-$handoff = $null
 if ($encrypted) {
   Step 'Adding a dedicated Lights Out key to BitLocker'
   $oldId = if (Test-Path "$LO\config\protector-id") { (Get-Content "$LO\config\protector-id").Trim() } else { $null }
@@ -156,10 +159,8 @@ if ($encrypted) {
   $new = (Get-BitLockerVolume -MountPoint 'C:').KeyProtector | Where-Object { $before -notcontains $_.KeyProtectorId -and $_.KeyProtectorType -eq 'RecoveryPassword' } | Select-Object -First 1
   if (-not $new) { Fail 'could not add the Lights Out key' }
   [IO.File]::WriteAllText("$LO\config\protector-id", $new.KeyProtectorId)
-  $handoff = $new.RecoveryPassword
   Write-Host 'done (sealed into the TPM at the first Lights Out start)'
 }
-$handoff = $null   # handed over per switch by enter.ps1, never stored at install
 
 # ---------------------------------------------------------------- 5. EFI partition + boot entry
 Step 'Installing the starter on the EFI partition'
@@ -184,7 +185,6 @@ try {
   # a new key was made above: the old sealed copy is useless now
   if ($encrypted) { Remove-Item "$esp\EFI\lightsout\seal", "$esp\EFI\lightsout\handoff.key", "$esp\EFI\lightsout\handoff.nonce" -Recurse -Force -ErrorAction SilentlyContinue }
 } finally { mountvol "$($letter):" /D }
-$handoff = $null
 
 $id = $null; $cur = $null
 $fw = bcdedit /enum firmware
@@ -241,8 +241,6 @@ bcdedit /set '{fwbootmgr}' bootsequence '$id' | Out-Null
 shutdown /r /t 0 /c 'Switching to Lights Out'
 "@
 [IO.File]::WriteAllText("$LO\bin\enter.ps1", $enter)
-# a switch still waiting from before (for example one held back on battery) would block the next one
-schtasks /end /tn '\LightsOut\Enter' 2>$null | Out-Null
 schtasks /create /tn '\LightsOut\Enter' /tr "powershell.exe -NoProfile -ExecutionPolicy Bypass -File $LO\bin\enter.ps1" /sc once /st 00:00 /sd 01/01/2000 /ru SYSTEM /rl HIGHEST /f | Out-Null
 # Windows' default only starts a task when plugged in; Lights Out must also work on battery
 Set-ScheduledTask -TaskPath '\LightsOut\' -TaskName Enter -Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 10)) | Out-Null

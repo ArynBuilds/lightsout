@@ -14,6 +14,7 @@ cp /usr/lib/shim/shimx64.efi.signed "$out/EFI/lightsout/shimx64.efi"
 cp "$(ls /usr/lib/shim/mmx64.efi.signed /usr/lib/shim/mmx64.efi 2>/dev/null | head -n1)" "$out/EFI/lightsout/mmx64.efi"
 cp /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed "$out/EFI/lightsout/grubx64.efi"
 cp "$sys/boot/vmlinuz-$KVER" "$out/EFI/lightsout/vmlinuz"
+echo "$KVER" > "$out/EFI/lightsout/kernel-version"   # the installer keeps the system file only with the same kernel
 cat > "$out/EFI/lightsout/grub.cfg" <<'EOF'
 set timeout=0
 search --no-floppy --file --set=root /EFI/lightsout/starter.img

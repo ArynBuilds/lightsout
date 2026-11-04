@@ -334,10 +334,11 @@ pub fn screen(on: bool) {
 
 // ---------------------------------------------------------------- switching
 
-/// How a program continues its last session, from plain data files:
+/// How a program continues its session, from plain data files:
 /// /usr/local/share/lightsout/resume.conf, then ~/.config/lightsout/resume.conf
-/// (lines "program = command"; the later file wins). None = not known.
-pub fn resume_command(command: &str) -> Option<String> {
+/// (lines "program = command"; the later file wins). A command with {id} is used when the
+/// agent's own session ID is known (that exact chat), the other one otherwise. None = not known.
+pub fn resume_command(command: &str, id: Option<&str>) -> Option<String> {
     let program = command
         .split_whitespace()
         .next()?
@@ -349,7 +350,7 @@ pub fn resume_command(command: &str) -> Option<String> {
         .or(program.strip_suffix(".cmd"))
         .unwrap_or(&program)
         .to_string();
-    let mut found = None;
+    let (mut plain, mut exact) = (None, None);
     let builtin =
         include_str!("../../os/overlay/usr/local/share/lightsout/resume.conf").to_string();
     let texts = [
@@ -365,13 +366,31 @@ pub fn resume_command(command: &str) -> Option<String> {
                 continue;
             }
             if let Some((p, c)) = line.split_once('=') {
-                if p.trim().eq_ignore_ascii_case(&program) && !c.trim().is_empty() {
-                    found = Some(c.trim().to_string());
+                let c = c.trim();
+                if !p.trim().eq_ignore_ascii_case(&program) || c.is_empty() {
+                    continue;
+                }
+                match (c.contains("{id}"), id) {
+                    (true, Some(id)) => exact = Some(c.replace("{id}", id)),
+                    (true, None) => {}
+                    (false, _) => plain = Some(c.to_string()),
                 }
             }
         }
     }
-    found
+    exact.or(plain)
+}
+
+/// The session ID of the agent running as `pid`, when it records one
+/// (Claude Code: ~/.claude/sessions/<pid>.json).
+pub fn agent_session(pid: u32) -> Option<String> {
+    agent_session_in(&home().join(".claude").join("sessions"), pid)
+}
+
+fn agent_session_in(dir: &std::path::Path, pid: u32) -> Option<String> {
+    let text = std::fs::read_to_string(dir.join(format!("{pid}.json"))).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    v["sessionId"].as_str().map(str::to_string)
 }
 
 /// Windows: the command running inside each tab's shell (any program),
@@ -631,13 +650,44 @@ pub fn enter_lightsout(saved: &crate::session::Saved) -> Result<(), String> {
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     crate::session::save(&dir.join("tabs.json"), saved);
     std::fs::write(dir.join("nonce"), random_hex()).map_err(|e| e.to_string())?;
-    let ok = quiet("schtasks")
-        .args(["/run", "/tn", r"\LightsOut\Enter"])
-        .output();
-    match ok {
-        Ok(o) if o.status.success() => Ok(()),
-        _ => Err("Lights Out isn't installed on this PC yet. Install it with: irm https://lightsout.sh | iex".into()),
+    let task = r"\LightsOut\Enter";
+    if !quiet("schtasks")
+        .args(["/run", "/tn", task])
+        .output()
+        .is_ok_and(|o| o.status.success())
+    {
+        return Err("Lights Out isn't installed on this PC yet. Install it with: irm https://lightsout.sh | iex".into());
     }
+    // Windows can hold a started task back (Battery saver), and then nothing would happen
+    let state = || {
+        quiet("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-Command",
+                r"(Get-ScheduledTask -TaskPath '\LightsOut\' -TaskName Enter).State",
+            ])
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    };
+    if held_back(state) {
+        let _ = quiet("schtasks").args(["/end", "/tn", task]).output();
+        let _ = std::fs::remove_file(dir.join("tabs.json"));
+        return Err("Windows is holding the switch back (Battery saver is on). Plug in or turn Battery saver off, then press Lights Out again.".into());
+    }
+    Ok(())
+}
+
+/// A task that was just started and is still "Queued" after a few seconds was held back.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn held_back(mut state: impl FnMut() -> Option<String>) -> bool {
+    for _ in 0..6 {
+        if state().as_deref() != Some("Queued") {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    true
 }
 
 /// Lights On: back to Windows (restart), or back to the Linux desktop (tabs come along).
@@ -1274,9 +1324,9 @@ pub fn stay_awake(on: bool) {
 
 // ---------------------------------------------------------------- what runs in a shell
 
-/// For each shell PID: the program running inside it (None = the shell is idle).
+/// For each shell PID: the program running inside it, with its PID (None = the shell is idle).
 /// Cheap enough to call every couple of seconds.
-pub fn running_programs(shells: &[u32]) -> std::collections::HashMap<u32, Option<String>> {
+pub fn running_programs(shells: &[u32]) -> std::collections::HashMap<u32, Option<(u32, String)>> {
     let mut out = std::collections::HashMap::new();
     let children = process_children();
     let wrappers = [
@@ -1295,7 +1345,7 @@ pub fn running_programs(shells: &[u32]) -> std::collections::HashMap<u32, Option
     for &shell in shells {
         // follow wrapper processes (e.g. cmd.exe running an npm .cmd shim) to the real program
         let mut pid = shell;
-        let mut name = None;
+        let mut found = None;
         for _ in 0..4 {
             let Some(kids) = children.get(&pid) else {
                 break;
@@ -1306,13 +1356,13 @@ pub fn running_programs(shells: &[u32]) -> std::collections::HashMap<u32, Option
             else {
                 break;
             };
-            name = Some(kname.clone());
+            found = Some((*kid, kname.clone()));
             pid = *kid;
             if !wrappers.contains(&kname.as_str()) {
                 break;
             }
         }
-        out.insert(shell, name);
+        out.insert(shell, found);
     }
     out
 }
@@ -1656,14 +1706,54 @@ mod switch_tests {
     #[test]
     fn known_agents_continue() {
         assert_eq!(
-            super::resume_command("claude").as_deref(),
+            super::resume_command("claude", None).as_deref(),
             Some("claude --continue")
         );
         assert_eq!(
-            super::resume_command("codex.cmd").as_deref(),
+            super::resume_command("codex.cmd", None).as_deref(),
             Some("codex resume --last")
         );
-        assert_eq!(super::resume_command("npm run dev"), None);
+        assert_eq!(super::resume_command("npm run dev", None), None);
+    }
+
+    #[test]
+    fn switch_held_back_by_windows() {
+        let mut states = ["Queued", "Running"].into_iter().map(String::from);
+        assert!(
+            !super::held_back(|| states.next()),
+            "it started after a moment"
+        );
+        assert!(
+            super::held_back(|| Some("Queued".into())),
+            "it never started"
+        );
+        assert!(!super::held_back(|| Some("Ready".into())), "it already ran");
+    }
+
+    #[test]
+    fn each_tab_continues_its_own_chat() {
+        // with the chat ID known, that exact chat; codex has no ID form, so it stays --last
+        assert_eq!(
+            super::resume_command("claude", Some("abc-123")).as_deref(),
+            Some("claude --resume abc-123")
+        );
+        assert_eq!(
+            super::resume_command("codex", Some("abc-123")).as_deref(),
+            Some("codex resume --last")
+        );
+        let dir = std::env::temp_dir().join(format!("lo-sessions-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("4242.json"),
+            r#"{"pid":4242,"sessionId":"abc-123"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            super::agent_session_in(&dir, 4242).as_deref(),
+            Some("abc-123")
+        );
+        assert_eq!(super::agent_session_in(&dir, 4243), None);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
 

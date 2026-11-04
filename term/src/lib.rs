@@ -1029,9 +1029,11 @@ impl App {
             let running = platform::running_programs(&pids);
             platform::stay_awake(running.values().any(|r| r.is_some()));
             for p in self.panes.values_mut() {
-                let now = p
+                let found = p
                     .shell_pid
                     .and_then(|pid| running.get(&pid).cloned().flatten());
+                p.running_pid = found.as_ref().map(|(pid, _)| *pid);
+                let now = found.map(|(_, name)| name);
                 if now != p.running {
                     p.running = now;
                     self.dirty = true;
@@ -1152,6 +1154,7 @@ impl App {
                             .shell_pid
                             .and_then(|pid| running.get(&pid).cloned().flatten())
                             .or_else(|| p.command.clone()),
+                        session: p.running_pid.and_then(platform::agent_session),
                         screen: (screen_lines > 0).then(|| p.text(screen_lines)),
                     })
                     .collect();
@@ -1176,9 +1179,9 @@ impl App {
         session::save(&session::local_file(&self.session), &s);
     }
 
-    /// `continue_agents`: a switch between systems continues known agents (resume.conf);
-    /// reopening on the same computer types each command back in instead, unrun.
-    fn restore(&mut self, saved: Saved, from_windows: bool, continue_agents: bool) {
+    /// Known agents (resume.conf) continue their conversation; any other command is
+    /// typed back in, unrun.
+    fn restore(&mut self, saved: Saved, from_windows: bool) {
         let mut rooms = saved.rooms;
         if rooms.is_empty() && !saved.tabs.is_empty() {
             rooms.push(session::SavedRoom {
@@ -1197,7 +1200,7 @@ impl App {
             if let Some(remote) = &r.remote {
                 self.open_remote(remote);
             } else {
-                self.restore_tabs(&r.tabs, from_windows, continue_agents, ri);
+                self.restore_tabs(&r.tabs, from_windows, ri);
             }
             let tabs = std::mem::take(&mut self.tabs);
             if !tabs.is_empty() {
@@ -1226,13 +1229,7 @@ impl App {
         self.resize_all();
     }
 
-    fn restore_tabs(
-        &mut self,
-        saved_tabs: &[SavedTab],
-        from_windows: bool,
-        continue_agents: bool,
-        room: usize,
-    ) {
+    fn restore_tabs(&mut self, saved_tabs: &[SavedTab], from_windows: bool, room: usize) {
         for (ti, t) in saved_tabs.iter().enumerate() {
             let mut ids = Vec::new();
             for (n, p) in t.panes.iter().enumerate() {
@@ -1255,13 +1252,11 @@ impl App {
                         ));
                     }
                 }
-                // after a switch: a known way to continue (resume.conf) runs; otherwise,
-                // and always when just reopening, the command is typed back in
+                // a known way to continue (resume.conf) runs; any other command is typed back in
                 let resume = p
                     .command
                     .as_deref()
-                    .filter(|_| continue_agents)
-                    .and_then(platform::resume_command);
+                    .and_then(|c| platform::resume_command(c, p.session.as_deref()));
                 let typed = if resume.is_none() {
                     p.command.clone()
                 } else {
@@ -1289,17 +1284,18 @@ impl App {
     fn start(&mut self) {
         if platform::in_lightsout() {
             if let Some(s) = platform::take_handoff() {
-                self.restore(s, platform::image(), true);
+                self.restore(s, platform::image());
             }
-        } else if let Some(s) = platform::take_handoff().filter(|_| cfg!(unix)) {
-            // back on the Linux desktop / logged back in on the Mac: the tabs come along
-            self.restore(s, false, true);
+        } else if let Some(s) = platform::take_handoff() {
+            // back on the Linux desktop / logged back in on the Mac, or a Windows switch that
+            // didn't reach Lights Out: the tabs saved at the switch are the newest
+            self.restore(s, false);
         } else if let Some(s) = platform::take_handback() {
             // back in Windows: the tabs from Lights Out come along (conversations continue)
-            self.restore(s, true, true);
+            self.restore(s, true);
         } else if self.cfg.history.keep {
             if let Some(s) = session::load(&session::local_file(&self.session)) {
-                self.restore(s, false, false);
+                self.restore(s, false);
             }
         }
         if platform::drive_read_only() {

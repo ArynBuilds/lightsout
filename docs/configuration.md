@@ -70,7 +70,7 @@ Two plain files describe how tabs are handed over. Your own copies in `~/.config
 
 | File | What it holds |
 |---|---|
-| `resume.conf` | How a program continues after a switch: `program = command`. See [Agents](agents.md#how-conversations-continue). |
+| `resume.conf` | How a program continues when its tab is reopened: `program = command`. See [Agents](agents.md#how-conversations-continue). |
 | `per-system.conf` | Folders in your home that hold programs for one system only (for example `.cargo`, `.nvm`), so Windows and Lights Out each keep their own copy. |
 
 ## Where things are kept

@@ -98,34 +98,20 @@ for dev in $PARTS; do
   if cryptsetup bitlkDump "$dev" >/dev/null 2>&1; then
     [ -n "$KEY" ] || continue
     if ! out=$(printf '%s' "$KEY" | cryptsetup open --type bitlk --key-file - "$dev" winc 2>&1); then
-      say "unlock of $dev failed: $out"
-      printf '%s' "$KEY" | cryptsetup --debug open --type bitlk --key-file - "$dev" winc >> "$LOG" 2>&1
-      [ -b /dev/mapper/winc ] || continue
+      say "could not unlock $dev: $out"
+      continue
     fi
-    # Our own device node for the unlocked drive, made from the kernel's numbers
-    # (there is no device manager here, so /dev/mapper may be missing or stale).
-    try=""
-    for d in /sys/block/dm-*; do
-      [ "$(cat "$d/dm/name" 2>/dev/null)" = winc ] || continue
-      rm -f /dev/lo-winc; mknod /dev/lo-winc b $(tr ':' ' ' < "$d/dev") && try=/dev/lo-winc
-      say "unlocked $dev as $(basename "$d") ($(cat "$d/dev"), $(( $(cat "$d/size") / 2048 )) MB)"
-    done
-    if [ -z "$try" ]; then
-      say "unlocked $dev but found no device for it (/dev/mapper: $(ls -la /dev/mapper 2>&1 | tr '\n' ' '))"
-      try=/dev/mapper/winc
-    fi
-    say "first bytes: $(head -c 11 "$try" 2>&1 | tail -c 8 | tr -c 'A-Za-z0-9 ' '.') | file systems: $(grep -o 'ntfs3*' /proc/filesystems | tr '\n' ' ')| /mnt/c: $(ls -ld /mnt/c 2>&1)"
+    try=/dev/mapper/winc
   else
     blkid "$dev" 2>/dev/null | grep -q 'TYPE="ntfs"' || continue
     try=$dev
   fi
-  if out=$(mount -t ntfs3 -o ro "$try" /mnt/c 2>&1); then
+  if mount -t ntfs3 -o ro "$try" /mnt/c 2>/dev/null; then
     if [ -f /mnt/c/LightsOut/system.img ]; then CDEV=$try; break; fi
-    [ "$try" != "$dev" ] && say "opened $dev, but no LightsOut/system.img on it: $(ls /mnt/c 2>&1 | head -n 12 | tr '\n' ' ')"
     umount /mnt/c
-  else
-    # busybox may report the error of its mount.TYPE helper; -i skips the helper to show the real one
-    [ "$try" != "$dev" ] && say "unlocked $dev but could not read it: $out | without helper: $(mount -i -t ntfs3 -o ro "$try" /mnt/c 2>&1 && umount /mnt/c && echo worked) | blkid: $(blkid "$try" 2>&1) | $(dmesg | tail -n 4 | tr '\n' ' ')"
+  elif [ "$try" != "$dev" ]; then
+    # busybox reports the error of its missing mount.ntfs3 helper; -i shows the real one
+    say "unlocked $dev but could not open it: $(mount -i -t ntfs3 -o ro "$try" /mnt/c 2>&1 && umount /mnt/c) ($(grep -c ntfs3 /proc/filesystems) ntfs3 driver; $(dmesg | tail -n 3 | tr '\n' ' '))"
   fi
   [ "$try" != "$dev" ] && cryptsetup close winc
 done
@@ -145,6 +131,11 @@ fi
 NTOPTS="$RW,uid=1000,gid=1000,iocharset=utf8,windows_names"
 mount -t ntfs3 -o "$NTOPTS,nocase" "$CDEV" /mnt/c 2>/dev/null || mount -t ntfs3 -o "$NTOPTS" "$CDEV" /mnt/c 2>/dev/null \
   || { RW=ro; mount -t ntfs3 -o ro,uid=1000,gid=1000,iocharset=utf8 "$CDEV" /mnt/c; say "drive opened read-only"; }
+# the driver can quietly open it read-only (e.g. the file system claims more room than
+# the partition has): trust what is mounted, not what was asked for
+if [ "$RW" = rw ] && ! awk '$2=="/mnt/c" && $4 ~ /^rw(,|$)/ {ok=1} END {exit !ok}' /proc/mounts; then
+  RW=ro; say "C: opened read-only by the driver: $(dmesg | grep ntfs3 | tail -n 2 | tr '\n' ' ')"
+fi
 [ "$RW" = rw ] || fail "The system file needs a writable drive. Restart Windows normally (not hibernate), then try again."
 
 # ---- start the Lights Out system from its file

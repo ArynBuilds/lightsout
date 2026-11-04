@@ -3,6 +3,8 @@
 # with a fake Windows "C:" (NTFS) and checks the whole chain, twice:
 #   boot 1: one-time key handoff gets sealed into the TPM, system boots, writes to C:
 #   boot 2: key is unsealed from the TPM, system boots again
+#   boot 3: the partition is cut 64 MB shorter than the file system says (as on a PC where
+#           the partition shrank), so the driver can only open C: read-only: it must stop
 #   after:  the NTFS "C:" must be cleanly closed (Windows would not complain)
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -78,6 +80,10 @@ losetup -d "$cdev"
 pkill swtpm 2>/dev/null || true; sleep 1
 swtpm socket --tpm2 --tpmstate dir="$w/tpm" --ctrl type=unixio,path="$w/tpm.sock" --daemon
 echo "=== boot 2 (unseal)"; boot "$w/serial2.log"; grep -aE "lightsout:|LIGHTSOUT-SELFTEST" "$w/serial2.log" || true
+sgdisk -d 2 -n 2:${c_start}:+$(( c_s - 131072 )) -t 2:0700 "$w/disk.img" >/dev/null
+pkill swtpm 2>/dev/null || true; sleep 1
+swtpm socket --tpm2 --tpmstate dir="$w/tpm" --ctrl type=unixio,path="$w/tpm.sock" --daemon
+echo "=== boot 3 (C: shorter than its file system)"; boot "$w/serial3.log"; grep -a "lightsout:" "$w/serial3.log" || true
 
 # ---- checks
 ok=1
@@ -95,6 +101,8 @@ check "$w/serial2.log" "LIGHTSOUT-SELFTEST: split=ok" "project got its own Linux
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: home=/mnt/c/Users/tester per-system-local=yes" "home is the Windows user folder, programs kept per system"
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: resume-claude=claude = claude --continue" "resume list shipped as data"
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: api: PANE  ROOM .*TAB  STATE" "control commands work inside Lights Out"
+check "$w/serial3.log" "C: opened read-only by the driver" "boot 3 noticed C: opened read-only"
+check "$w/serial3.log" "The system file needs a writable drive" "boot 3 stopped instead of running read-only"
 cdev=$(losetup -f --show -o $(( c_start * 512 )) --sizelimit $(( c_s * 512 )) "$w/disk.img")
 if ntfs-3g.probe --readwrite "$cdev"; then echo "PASS: C: closed cleanly"; else echo "FAIL: C: left dirty (code $?)"; ok=0; fi
 losetup -d "$cdev"

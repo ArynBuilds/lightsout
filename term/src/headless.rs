@@ -83,6 +83,7 @@ pub fn run(session: &str) {
             cwd: platform::home().to_string_lossy().to_string(),
             command: None,
             screen: None,
+            session: None,
         };
         let pane = start(&waker, session, &mut next, &mut panes, &p);
         rooms.push(Room {
@@ -172,6 +173,7 @@ pub fn run(session: &str) {
                             cwd,
                             command: cmd.clone(),
                             screen: None,
+                            session: None,
                         };
                         // a new command runs right away (not just typed in)
                         let pane = start_now(&waker, session, &mut next, &mut panes, &p);
@@ -239,7 +241,10 @@ fn start(
     panes: &mut HashMap<u64, Pane>,
     p: &SavedPane,
 ) -> Option<u64> {
-    let resume = p.command.as_deref().and_then(platform::resume_command);
+    let resume = p
+        .command
+        .as_deref()
+        .and_then(|c| platform::resume_command(c, p.session.as_deref()));
     let id = spawn(waker, session, next, panes, p, resume.as_deref())?;
     if resume.is_none() {
         if let (Some(cmd), Some(pane)) = (&p.command, panes.get(&id)) {
@@ -315,12 +320,14 @@ fn handback(rooms: &[Room], panes: &HashMap<u64, Pane>) -> Saved {
                                 cwd: s.saved.cwd.clone(),
                                 command: s.saved.command.clone(),
                                 screen: Some(p.text(80)),
+                                session: s.saved.session.clone(),
                             },
                             // it ended: a shell in the same folder keeps the layout
                             None => SavedPane {
                                 cwd: s.saved.cwd.clone(),
                                 command: None,
                                 screen: Some(p_text_or(&s.saved)),
+                                session: None,
                             },
                         })
                         .collect(),

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.2-rc.4
+
+A test build (`irm https://lightsout.sh/rc | iex`).
+
+- **Your agents come back running:** reopening Lights Out (after a restart, or when the window or terminal was closed) continues each agent's conversation instead of only typing its command back in.
+- **Each Claude tab gets its own chat back:** Lights Out remembers which chat each tab had and resumes exactly that one (`claude --resume`). Before, every Claude tab in the same folder reopened the newest chat.
+- **A switch that didn't reach Lights Out:** back in Windows, the tabs saved at the switch come back.
+- **Battery saver:** when Windows holds the switch back, Lights Out says so instead of waiting silently.
+- **Read-only C: is caught:** if the drive can only be opened read-only, Lights Out stops and says why instead of starting without being able to save.
+- **Updates keep the system file only while its Linux kernel matches** the new starter's. Otherwise the new system file is installed, so drivers such as Wi-Fi keep working.
+
 ## 0.3.2-rc.3
 
 A test build (`irm https://lightsout.sh/rc | iex`).

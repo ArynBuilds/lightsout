@@ -86,7 +86,7 @@ Lights Out recognises common questions by itself. If one of your tools asks in i
 
 ## Closing the window
 
-Closing the window doesn't stop your agents: they keep running, and `lightsout` brings the window back. **Quit** in actions stops everything. Your tabs come back the next time you open Lights Out, each in its folder, with its command typed back in for you to run (agents continue by themselves only when you switch to or from Lights Out).
+Closing the window doesn't stop your agents: they keep running, and `lightsout` brings the window back. **Quit** in actions stops everything. Your tabs come back the next time you open Lights Out, each in its folder: agents continue their conversations (see [Agents](agents.md#how-conversations-continue)), and any other command is typed back in for you to run.
 
 ## Inside any terminal
 

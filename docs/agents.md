@@ -8,11 +8,11 @@ Install agents the way their makers describe, inside Lights Out or before. In Li
 
 ## How conversations continue
 
-When you switch to or from Lights Out, each tab is handed over with its folder and the command it ran. Agents that can continue a conversation are started that way:
+Whenever Lights Out reopens your tabs (you open it again after a restart, or switch to or from Lights Out), each tab comes back in its folder with the command it ran. Agents that can continue a conversation are started that way, each tab with its own chat:
 
 | Agent | Continues with |
 |---|---|
-| `claude` | `claude --continue` |
+| `claude` | `claude --resume <its chat>` (`claude --continue` when the chat isn't known) |
 | `codex` | `codex resume --last` |
 | `opencode` | `opencode --continue` |
 | `aider` | `aider --restore-chat-history` |
@@ -22,6 +22,8 @@ Any other command is typed back into its tab, without being run, so you decide. 
 ```ini
 # program = the command that continues it
 mytool = mytool --resume
+# with {id}: that exact session, when the agent's session ID is known
+mytool = mytool --resume {id}
 ```
 
 ## States
