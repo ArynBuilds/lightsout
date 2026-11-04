@@ -5,6 +5,7 @@
 
 mod api;
 mod config;
+mod headless;
 mod keys;
 mod layout;
 mod platform;
@@ -31,7 +32,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
-use tab::{Pane, Size, UserEvent};
+use tab::{Pane, Size, UserEvent, Waker};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -430,7 +431,7 @@ impl App {
         };
         let id = self.next_id;
         self.next_id += 1;
-        match Pane::spawn(id, &self.proxy, &self.session, cwd, program, args, command, size, self.cell(), env) {
+        match Pane::spawn(id, &Waker::Window(self.proxy.clone()), &self.session, cwd, program, args, command, size, self.cell(), env) {
             Ok(p) => {
                 self.panes.insert(id, p);
                 self.dirty = true;
@@ -821,8 +822,8 @@ impl App {
             if let Some(s) = platform::take_handoff() {
                 self.restore(s, platform::image());
             }
-        } else if let Some(s) = platform::take_handoff().filter(|_| cfg!(target_os = "linux")) {
-            // back on the Linux desktop: the tabs from Lights Out come along
+        } else if let Some(s) = platform::take_handoff().filter(|_| cfg!(unix)) {
+            // back on the Linux desktop / logged back in on the Mac: the tabs come along
             self.restore(s, false);
         } else if let Some(s) = platform::take_handback() {
             // back in Windows: the tabs from Lights Out come along (conversations continue)
@@ -2020,7 +2021,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.window = Some(window);
         self.surface = Some(surface);
         self._context = Some(context);
-        if api::serve(&self.session, self.proxy.clone()).is_err() {
+        if api::serve(&self.session, Waker::Window(self.proxy.clone())).is_err() {
             self.toast("Control commands are unavailable (could not open the local port)".into(), ALERT);
         }
         self.start();
@@ -2205,11 +2206,13 @@ impl ApplicationHandler<UserEvent> for App {
             match rx.try_recv() {
                 Ok(Ok(())) => {
                     self.switching = None;
-                    if cfg!(target_os = "linux") {
-                        std::process::exit(0); // the desktop is stopping; Lights Out reopens these tabs
+                    if cfg!(target_os = "linux") || platform::mac_logging_out() {
+                        // Linux: the desktop is stopping; Mac: the background service takes
+                        // over and you're logged out. Either way these tabs reopen there.
+                        std::process::exit(0);
                     }
                     if cfg!(target_os = "macos") {
-                        // the Mac keeps this window: full screen, then the screen goes off
+                        // Mac staying signed in: this window keeps the agents, full screen, screen off
                         if let Some(w) = &self.window {
                             w.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
                         }
@@ -2332,6 +2335,7 @@ fn client(session: &str, args: &[String]) -> i32 {
         "screen" => ("screen", json!({ "on": positional.first().map(|s| s != "off").unwrap_or(true) })),
         "power" => ("power", json!({})),
         "switch" | "windows" => ("switch", json!({})),
+        "handback" => ("handback", json!({})),
         _ => {
             eprint!("{HELP}");
             return 2;
@@ -2451,9 +2455,20 @@ fn uninstall() -> i32 {
 /// `lightsout-app`: the window itself.
 pub fn main_entry() {
     let (session, rest) = parse_args();
+    if rest.first().map(String::as_str) == Some("--headless") {
+        alacritty_terminal::tty::setup_env();
+        return headless::run(&session);
+    }
+    // Mac sign-in: open only when coming back from Lights Out
+    if rest.first().map(String::as_str) == Some("--if-returning") && !platform::in_lightsout() {
+        return;
+    }
+    let rest: Vec<String> = rest.into_iter().filter(|a| a != "--if-returning").collect();
     if !rest.is_empty() {
         return run_command(&session, &rest);
     }
+    // Mac: back from Lights Out, take the tabs from the background service first
+    platform::mac_return(&session);
     // already running? bring that window back instead of opening a second one
     if api::call(&session, "show", json!({})).is_ok() {
         return;

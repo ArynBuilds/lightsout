@@ -21,7 +21,34 @@ install_mac() {
   say "Installing (asks for your Mac password once)"
   $SUDO mkdir -p /usr/local/bin /usr/local/lib/lightsout
   $SUDO install -m 755 "$src/bin/lightsout" "$src/bin/lightsout-app" /usr/local/bin/
-  $SUDO install -m 755 "$src/lib/switch" "$src/lib/uninstall.sh" /usr/local/lib/lightsout/
+  $SUDO install -m 755 "$src/lib/switch" "$src/lib/logout-later" "$src/lib/uninstall.sh" /usr/local/lib/lightsout/
+  home=$(dscl . -read "/Users/$ME" NFSHomeDirectory | awk '{print $2}')
+  # the background service that keeps agents running while you're logged out
+  $SUDO tee /usr/local/lib/lightsout/sh.lightsout.agents.plist >/dev/null <<P
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>sh.lightsout.agents</string>
+<key>UserName</key><string>$ME</string>
+<key>ProgramArguments</key><array><string>/usr/local/bin/lightsout-app</string><string>--headless</string></array>
+<key>EnvironmentVariables</key><dict><key>HOME</key><string>$home</string><key>USER</key><string>$ME</string><key>SHELL</key><string>$(dscl . -read "/Users/$ME" UserShell | awk '{print $2}')</string><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
+<key>WorkingDirectory</key><string>$home</string>
+<key>RunAtLoad</key><true/>
+<key>ProcessType</key><string>Standard</string>
+</dict></plist>
+P
+  $SUDO chmod 644 /usr/local/lib/lightsout/sh.lightsout.agents.plist
+  # signing back in after Lights Out: the app opens and takes your tabs back
+  mkdir -p "$home/Library/LaunchAgents"
+  cat > "$home/Library/LaunchAgents/sh.lightsout.return.plist" <<P
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>sh.lightsout.return</string>
+<key>ProgramArguments</key><array><string>/usr/local/bin/lightsout-app</string><string>--if-returning</string></array>
+<key>RunAtLoad</key><true/>
+</dict></plist>
+P
   echo "$ME ALL=(root) NOPASSWD: /usr/local/lib/lightsout/switch" > "$tmp/sudoers"
   $SUDO visudo -cf "$tmp/sudoers" >/dev/null && $SUDO install -m 440 "$tmp/sudoers" /etc/sudoers.d/lightsout
   # a small app so Lights Out is in Launchpad, Spotlight and the Dock

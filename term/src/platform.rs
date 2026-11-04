@@ -19,6 +19,28 @@ pub fn image() -> bool {
 }
 
 /// On a Linux PC itself: the desktop is stopped and only Lights Out runs.
+/// Mac: the helper chose to log out (the background service runs the agents),
+/// rather than staying signed in (local servers would end with a log-out).
+static MAC_LOGOUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn mac_logging_out() -> bool {
+    MAC_LOGOUT.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Mac: back from Lights Out. Takes the tabs from the background service and
+/// puts the Mac's settings back. Returns true when there was something to take.
+pub fn mac_return(session: &str) -> bool {
+    if !cfg!(target_os = "macos") || !in_place() {
+        return false;
+    }
+    let had = crate::api::call(session, "handback", serde_json::json!({})).is_ok();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let _ = Command::new("sudo").args(["-n", LINUX_SWITCH, "in"]).status();
+    #[cfg(target_os = "macos")]
+    mac_reopen_apps();
+    had
+}
+
 pub fn in_place() -> bool {
     if cfg!(target_os = "macos") {
         // the Mac stays on one desktop; the helper marks Lights Out as on
@@ -394,12 +416,22 @@ pub fn enter_lightsout(saved: &crate::session::Saved) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         // Mac: the same window stays (agents never stop); everything else goes quiet
-        let _ = saved;
+        // the tabs go to the background service that keeps agents running while
+        // you're logged out; the helper waits for this app to close, starts it,
+        // and logs you out (apps with unsaved work still ask first)
+        save_handoff(saved);
         mac_quit_apps();
-        // the helper leaves this app and everything it started alone
         let pid = std::process::id().to_string();
         return match Command::new("sudo").args(["-n", LINUX_SWITCH, "out", &pid]).output() {
-            Ok(o) if o.status.success() => Ok(()),
+            Ok(o) if o.status.success() => {
+                let logout = String::from_utf8_lossy(&o.stdout).contains("logout");
+                MAC_LOGOUT.store(logout, std::sync::atomic::Ordering::SeqCst);
+                if !logout {
+                    // staying signed in: this window keeps the agents, nothing to hand over
+                    let _ = std::fs::remove_file(handoff_dir().join("tabs.json"));
+                }
+                Ok(())
+            }
             _ => Err("Lights Out isn't set up on this Mac yet. Install it with: curl -fsSL https://lightsout.sh | sh".into()),
         };
     }
@@ -490,6 +522,13 @@ pub fn drive_read_only() -> bool {
             .is_ok_and(|m| m.lines().any(|l| l.split_whitespace().nth(1) == Some("/mnt/c") && l.split_whitespace().nth(3).is_some_and(|o| o.split(',').any(|x| x == "ro"))))
 }
 
+/// Saves tabs for the other side of a switch (headless service -> app).
+pub fn save_handoff(saved: &crate::session::Saved) {
+    let dir = handoff_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    crate::session::save(&dir.join("tabs.json"), saved);
+}
+
 /// Windows: tabs coming back from Lights Out (read once, then removed).
 pub fn take_handback() -> Option<crate::session::Saved> {
     if !cfg!(windows) {
@@ -499,6 +538,11 @@ pub fn take_handback() -> Option<crate::session::Saved> {
     let saved = crate::session::load(&f);
     let _ = std::fs::remove_file(f);
     saved
+}
+
+/// The waiting tabs, without removing them.
+pub fn peek_handoff() -> Option<crate::session::Saved> {
+    crate::session::load(&handoff_dir().join("tabs.json"))
 }
 
 /// Tabs handed over from Windows (read once, then removed).

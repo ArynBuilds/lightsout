@@ -31,7 +31,7 @@ jobs:
       - name: Check scripts
         run: |
           for f in installer/install.sh linux/*.sh linux/switch os/overlay/usr/local/sbin/lightsout-power; do sh -n "$f"; done
-          shellcheck -S error installer/install.sh linux/*.sh linux/switch mac/switch mac/uninstall.sh
+          shellcheck -S error installer/install.sh linux/*.sh linux/switch mac/switch mac/logout-later mac/uninstall.sh
       - name: Build and package
         run: |
           (cd term && cargo build --release)
@@ -98,7 +98,7 @@ jobs:
           for b in lightsout lightsout-app; do
             lipo -create -output $d/bin/$b term/target/aarch64-apple-darwin/release/$b term/target/x86_64-apple-darwin/release/$b
           done
-          cp mac/switch mac/uninstall.sh $d/lib/
+          cp mac/switch mac/logout-later mac/uninstall.sh $d/lib/
           chmod +x $d/bin/* $d/lib/*
           tar -C out -czf out/lightsout-macos.tar.gz lightsout-macos
       - name: Test on this Mac (install, app, Lights Out on/off, uninstall)
@@ -117,24 +117,45 @@ jobs:
           lightsout list
           pmset -g | grep -i sleepdisabled
           app=$(pgrep -n lightsout-app)
-          sudo -n /usr/local/lib/lightsout/switch out "$app"
+          sudo -n /usr/local/lib/lightsout/switch out "$app" stay
           S="/Library/Application Support/LightsOut"
           test -f "$S/active"
           pmset -g | grep -iE "sleepdisabled|lowpowermode"
           echo "background processes slowed: $(wc -l < "$S/throttled")"; test "$(wc -l < "$S/throttled")" -gt 0
-          echo "helpers stopped:"; cat "$S/agents"
           ! grep -qx "$app" "$S/throttled"   # Lights Out itself is never slowed
           lightsout list                       # and still answers
           sudo -n /usr/local/lib/lightsout/switch in
           test ! -f "$S/active"
           test ! -f "$S/throttled"
+          # --- logged-out mode: agents in the background service (the log-out
+          # itself can't run here: it would log out this test machine)
+          test -f /usr/local/lib/lightsout/sh.lightsout.agents.plist
+          lightsout-app --session x --if-returning; ! pgrep -f "session x"   # normal sign-in: stays closed
+          pkill lightsout-app || true; sleep 2
+          sudo -n /usr/local/lib/lightsout/switch out 0 stay
+          sudo launchctl bootstrap system /usr/local/lib/lightsout/sh.lightsout.agents.plist
+          for i in $(seq 1 30); do lightsout list >/dev/null 2>&1 && break; sleep 1; done
+          lightsout list
+          ps -o user=,command= -p "$(pgrep -f 'lightsout-app --headless')"
+          id=$(lightsout new -- sh -c 'echo hello-service; sleep 300')
+          sleep 5
+          lightsout read "$id" | grep hello-service
+          # signing back in: the app takes the tabs back, the Mac's settings return
+          lightsout-app > app2.log 2>&1 &
+          for i in $(seq 1 30); do pgrep -f 'lightsout-app --headless' >/dev/null || break; sleep 1; done
+          ! pgrep -f 'lightsout-app --headless'
+          for i in $(seq 1 30); do lightsout list >/dev/null 2>&1 && break; sleep 1; done
+          lightsout list | tee back.txt
+          test "$(grep -c Room back.txt)" -ge 2
+          test ! -f "$S/active"
+          pkill lightsout-app || true
           pkill lightsout-app || true
           sudo sh /usr/local/lib/lightsout/uninstall.sh
           test ! -e /usr/local/bin/lightsout
           echo "MAC TEST PASSED"
       - name: Logs
         if: failure()
-        run: cat app.log || true
+        run: cat app.log app2.log || true
       - uses: actions/upload-artifact@v4
         with:
           name: lightsout-macos

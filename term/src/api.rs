@@ -8,9 +8,14 @@ use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Duration;
-use winit::event_loop::EventLoopProxy;
 
 pub fn state_dir() -> PathBuf {
+    if cfg!(target_os = "macos") {
+        // the same place for the app and the logged-out service
+        let d = crate::platform::data_dir().join("run");
+        let _ = std::fs::create_dir_all(&d);
+        return d;
+    }
     let base = if cfg!(windows) {
         std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir)
     } else {
@@ -32,7 +37,7 @@ pub struct Request {
 }
 
 /// Starts listening; requests arrive in the UI as UserEvent::Api.
-pub fn serve(session: &str, proxy: EventLoopProxy<UserEvent>) -> std::io::Result<()> {
+pub fn serve(session: &str, proxy: crate::tab::Waker) -> std::io::Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
     let mut t = [0u8; 16];
@@ -48,7 +53,7 @@ pub fn serve(session: &str, proxy: EventLoopProxy<UserEvent>) -> std::io::Result
     Ok(())
 }
 
-fn handle(stream: TcpStream, proxy: EventLoopProxy<UserEvent>, token: String) {
+fn handle(stream: TcpStream, proxy: crate::tab::Waker, token: String) {
     let mut line = String::new();
     if BufReader::new(&stream).read_line(&mut line).is_err() {
         return;
@@ -60,7 +65,7 @@ fn handle(stream: TcpStream, proxy: EventLoopProxy<UserEvent>, token: String) {
         let (tx, rx) = mpsc::channel();
         let cmd = req["cmd"].as_str().unwrap_or("").to_string();
         let wait_secs = if cmd == "wait" { req["args"]["timeout"].as_u64().unwrap_or(600) + 5 } else { 15 };
-        let _ = proxy.send_event(UserEvent::Api(Request { cmd, args: req["args"].clone(), reply: tx }));
+        proxy.send(UserEvent::Api(Request { cmd, args: req["args"].clone(), reply: tx }));
         rx.recv_timeout(Duration::from_secs(wait_secs)).unwrap_or(json!({ "error": "no answer from Lights Out" }))
     };
     let mut s = &stream;

@@ -1,0 +1,25 @@
+#!/bin/sh
+# Lights Out on a Mac, step 2 (started by `switch out`, runs as root):
+# wait for the app to close, start the background service with your agents,
+# then log you out. Apps with unsaved work still ask before closing.
+pid=$1 uid=$2 me=$3 plist=$4
+i=0
+while kill -0 "$pid" 2>/dev/null && [ $i -lt 60 ]; do sleep 0.5; i=$((i + 1)); done
+launchctl bootout system/sh.lightsout.agents 2>/dev/null
+launchctl bootstrap system "$plist" || exit 1
+# the service is up and answering before anything is closed
+ok=""
+i=0
+while [ $i -lt 30 ]; do
+  sudo -H -u "$me" /usr/local/bin/lightsout list >/dev/null 2>&1 && { ok=1; break; }
+  sleep 1; i=$((i + 1))
+done
+if [ -z "$ok" ]; then
+  # the service didn't start: stay logged in and reopen the app (it takes the tabs back)
+  launchctl bootout system/sh.lightsout.agents 2>/dev/null
+  launchctl asuser "$uid" sudo -H -u "$me" open -a "Lights Out"
+  exit 1
+fi
+launchctl asuser "$uid" sudo -H -u "$me" osascript -e 'tell application "loginwindow" to «event aevtrlgo»'
+sleep 5
+pmset displaysleepnow

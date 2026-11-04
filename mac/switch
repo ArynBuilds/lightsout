@@ -1,22 +1,23 @@
 #!/bin/sh
 # Lights Out on a Mac (runs as root through sudo, allowed for the installing user).
-#   out PID  Lights Out: Low Power Mode, never sleep (lid closed keeps running),
-#          Spotlight indexing, Time Machine and Bluetooth off, third-party
-#          background helpers stopped, everything else (except Lights Out = PID
-#          and its agents) pushed to the lowest background priority
+#   out PID [stay]  Lights Out: Low Power Mode, never sleep (lid closed keeps
+#          running), Spotlight indexing, Time Machine and Bluetooth off. Then,
+#          once the app (PID) has closed, the background service takes over the
+#          agents and you're logged out, so almost nothing else runs.
+#          Stays signed in instead ("stay", no service installed, or local
+#          servers running that a log-out would end): nothing is stopped; every
+#          other process runs at the lowest priority (servers and Lights Out excepted).
 #   in     Lights On: everything put back exactly as it was
 #   awake  the app is open: closing the lid doesn't stop it
 #   sleep  the app closed: your sleep setting is back
 S="/Library/Application Support/LightsOut"
+AGENTS=/usr/local/lib/lightsout/sh.lightsout.agents.plist
 mkdir -p "$S"
 pm() { pmset -g | awk -v k="$1" '$1==k {print $2}'; }
 remember() { [ -f "$S/$1" ] || printf '%s' "$2" > "$S/$1"; }
 bt() { command -v blueutil >/dev/null && blueutil "$@"; }
 ME="${SUDO_USER:-$(stat -f %Su /dev/console)}"
 UID_ME=$(id -u "$ME")
-# security, management, VPN and password tools are never touched
-KEEP='com\.apple\.|lightsout|jamf|crowdstrike|falcon|sentinel|kandji|mosyle|intune|addigy|wdav|defender|sophos|zscaler|cisco|globalprotect|paloalto|okta|1password|bitwarden|tailscale|wireguard|vpn|nord|expressvpn|cloudflare'
-
 # Lights Out and every process it started (agents, their tools)
 tree() {
   ps -axo pid=,ppid= | awk -v root="$1" '
@@ -24,17 +25,21 @@ tree() {
     END { n = split(root, q, " "); for (i = 1; i <= n; i++) { print q[i]; m = split(kids[q[i]], k, " "); for (j = 1; j <= m; j++) q[++n] = k[j] } }'
 }
 
+# local servers of this user (databases, dev servers: anything listening on a
+# port), outside Lights Out itself: agents' work may need them
+servers() {
+  t=" $(tree "${1:-0}" | xargs) "
+  lsof -nP -iTCP -sTCP:LISTEN -u "$ME" -Fp 2>/dev/null | sed -n 's/^p//p' | sort -u | while read -r p; do
+    case "$t" in *" $p "*) ;; *) echo "$p" ;; esac
+  done
+}
+
+# Staying signed in: nothing is stopped; every other process of this user runs at
+# the lowest background priority (efficiency cores only), except Lights Out with
+# its agents and local servers.
 quiet_background() {
-  : > "$S/agents"; : > "$S/throttled"
-  # third-party background helpers of this user (sync clients, updaters...): stop, remember
-  launchctl asuser "$UID_ME" sudo -u "$ME" launchctl list 2>/dev/null | awk 'NR > 1 { print $3 }' |
-    grep -viE "$KEEP" | grep -v '^0x' | while read -r label; do
-      path=$(launchctl print "gui/$UID_ME/$label" 2>/dev/null | awk '$1 == "path" { print $3; exit }')
-      [ -f "$path" ] || continue
-      launchctl bootout "gui/$UID_ME/$label" 2>/dev/null && printf '%s|%s\n' "$label" "$path" >> "$S/agents"
-    done
-  # everything else of this user: lowest background priority (efficiency cores only)
-  keep=" $(tree "${1:-0}" | tr '\n' ' ') "
+  : > "$S/throttled"
+  keep=" $(tree "${1:-0}" | xargs) $(servers "${1:-0}" | xargs) "
   ps -U "$ME" -o pid=,comm= | while read -r pid comm; do
     case "$keep" in *" $pid "*) continue ;; esac
     case "$comm" in *loginwindow*|*WindowServer*) continue ;; esac
@@ -44,10 +49,7 @@ quiet_background() {
 
 wake_background() {
   [ -f "$S/throttled" ] && while read -r pid; do taskpolicy -B -p "$pid" 2>/dev/null; done < "$S/throttled"
-  [ -f "$S/agents" ] && while IFS='|' read -r label path; do
-    launchctl bootstrap "gui/$UID_ME" "$path" 2>/dev/null
-  done < "$S/agents"
-  rm -f "$S/throttled" "$S/agents"
+  rm -f "$S/throttled"
 }
 
 case "${1:-}" in
@@ -63,11 +65,19 @@ case "${1:-}" in
     mdutil -a -i off >/dev/null 2>&1
     tmutil disable 2>/dev/null
     bt -p 0 2>/dev/null
-    quiet_background "${2:-}"
     touch "$S/active"
+    # log out only when nothing your agents may need would end with it
+    if [ -f "$AGENTS" ] && [ "${3:-}" != stay ] && [ -n "${2:-}" ] && [ -z "$(servers "$2")" ]; then
+      nohup /usr/local/lib/lightsout/logout-later "$2" "$UID_ME" "$ME" "$AGENTS" >/dev/null 2>&1 &
+      echo logout
+    else
+      quiet_background "${2:-}"
+      echo stay
+    fi
     ;;
   in)
     [ -f "$S/active" ] || exit 0
+    launchctl bootout system/sh.lightsout.agents 2>/dev/null
     v=$(cat "$S/lowpowermode" 2>/dev/null); [ -n "$v" ] && pmset -a lowpowermode "$v" 2>/dev/null
     v=$(cat "$S/sleepdisabled" 2>/dev/null); [ -f "$S/awake" ] || { [ -n "$v" ] && pmset -a disablesleep "$v"; }
     [ "$(cat "$S/spotlight" 2>/dev/null)" = on ] && mdutil -a -i on >/dev/null 2>&1

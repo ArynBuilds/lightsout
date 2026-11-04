@@ -21,15 +21,35 @@ pub enum UserEvent {
     BarText(usize, String),
 }
 
+/// Where terminal events go: the window's event loop, or a channel (headless).
+#[derive(Clone)]
+pub enum Waker {
+    Window(EventLoopProxy<UserEvent>),
+    Channel(std::sync::mpsc::Sender<UserEvent>),
+}
+
+impl Waker {
+    pub fn send(&self, e: UserEvent) {
+        match self {
+            Waker::Window(p) => {
+                let _ = p.send_event(e);
+            }
+            Waker::Channel(t) => {
+                let _ = t.send(e);
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Proxy {
     id: u64,
-    proxy: EventLoopProxy<UserEvent>,
+    waker: Waker,
 }
 
 impl EventListener for Proxy {
     fn send_event(&self, event: Event) {
-        let _ = self.proxy.send_event(UserEvent::Term(self.id, event));
+        self.waker.send(UserEvent::Term(self.id, event));
     }
 }
 
@@ -74,7 +94,7 @@ impl Pane {
     #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         id: u64,
-        proxy: &EventLoopProxy<UserEvent>,
+        waker: &Waker,
         session: &str,
         cwd: PathBuf,
         program: String,
@@ -84,7 +104,7 @@ impl Pane {
         cell: (u32, u32),
         extra_env: Vec<(String, String)>,
     ) -> std::io::Result<Pane> {
-        let p = Proxy { id, proxy: proxy.clone() };
+        let p = Proxy { id, waker: waker.clone() };
         let term = Term::new(term::Config::default(), &size, p.clone());
         let term = Arc::new(FairMutex::new(term));
         let mut env = HashMap::new();
