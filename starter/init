@@ -102,28 +102,32 @@ for dev in $PARTS; do
       printf '%s' "$KEY" | cryptsetup --debug open --type bitlk --key-file - "$dev" winc >> "$LOG" 2>&1
       [ -b /dev/mapper/winc ] || continue
     fi
-    # no device manager here: make the /dev/mapper entry ourselves if it is missing
-    if [ ! -b /dev/mapper/winc ]; then
-      for d in /sys/block/dm-*; do
-        [ "$(cat "$d/dm/name" 2>/dev/null)" = winc ] || continue
-        mkdir -p /dev/mapper; mknod /dev/mapper/winc b $(tr ':' ' ' < "$d/dev") 2>/dev/null
-        say "made /dev/mapper/winc for $(basename "$d")"
-      done
+    # Our own device node for the unlocked drive, made from the kernel's numbers
+    # (there is no device manager here, so /dev/mapper may be missing or stale).
+    try=""
+    for d in /sys/block/dm-*; do
+      [ "$(cat "$d/dm/name" 2>/dev/null)" = winc ] || continue
+      rm -f /dev/lo-winc; mknod /dev/lo-winc b $(tr ':' ' ' < "$d/dev") && try=/dev/lo-winc
+      say "unlocked $dev as $(basename "$d") ($(cat "$d/dev"), $(( $(cat "$d/size") / 2048 )) MB)"
+    done
+    if [ -z "$try" ]; then
+      say "unlocked $dev but found no device for it (/dev/mapper: $(ls -la /dev/mapper 2>&1 | tr '\n' ' '))"
+      try=/dev/mapper/winc
     fi
-    [ -b /dev/mapper/winc ] || say "unlocked $dev but /dev/mapper/winc is missing ($(ls /dev/mapper 2>&1 | tr '\n' ' '))"
-    try=/dev/mapper/winc
+    say "first bytes: $(head -c 11 "$try" 2>&1 | tail -c 8 | tr -c 'A-Za-z0-9 ' '.') | file systems: $(grep -o 'ntfs3*' /proc/filesystems | tr '\n' ' ')| /mnt/c: $(ls -ld /mnt/c 2>&1)"
   else
     blkid "$dev" 2>/dev/null | grep -q 'TYPE="ntfs"' || continue
     try=$dev
   fi
   if out=$(mount -t ntfs3 -o ro "$try" /mnt/c 2>&1); then
     if [ -f /mnt/c/LightsOut/system.img ]; then CDEV=$try; break; fi
-    [ "$try" = /dev/mapper/winc ] && say "opened $dev, but no LightsOut/system.img on it: $(ls /mnt/c 2>&1 | head -n 12 | tr '\n' ' ')"
+    [ "$try" != "$dev" ] && say "opened $dev, but no LightsOut/system.img on it: $(ls /mnt/c 2>&1 | head -n 12 | tr '\n' ' ')"
     umount /mnt/c
   else
-    [ "$try" = /dev/mapper/winc ] && say "unlocked $dev but could not read it: $out ($(dmesg | tail -n 3 | tr '\n' ' '))"
+    # busybox may report the error of its mount.TYPE helper; -i skips the helper to show the real one
+    [ "$try" != "$dev" ] && say "unlocked $dev but could not read it: $out | without helper: $(mount -i -t ntfs3 -o ro "$try" /mnt/c 2>&1 && umount /mnt/c && echo worked) | blkid: $(blkid "$try" 2>&1) | $(dmesg | tail -n 4 | tr '\n' ' ')"
   fi
-  [ "$try" = /dev/mapper/winc ] && cryptsetup close winc
+  [ "$try" != "$dev" ] && cryptsetup close winc
 done
 KEY=""
 [ -n "$CDEV" ] || fail "Could not open the Windows drive (no key, or Lights Out isn't installed on it)."

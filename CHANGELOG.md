@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.2-rc.2
+
+A test build (`irm https://lightsout.sh/rc | iex`).
+
+- **Opening a BitLocker drive:** the starter opens the unlocked drive through its own device entry, and logs what it finds when that fails.
+
 ## 0.3.2-rc.1
 
 A test build. Install it over your current Lights Out with `irm https://lightsout.sh/rc | iex` (Windows) or `curl -fsSL https://lightsout.sh/rc | sh` (Linux and Mac).
