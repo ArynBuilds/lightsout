@@ -21,8 +21,10 @@ pkgs=(
   cryptsetup-bin tpm2-tools ntfs-3g
   # screen: cage shows exactly one full-screen app (our terminal)
   sway swaybg foot wlopm brightnessctl libxkbcommon0 libwayland-client0 libgl1-mesa-dri libegl1 fonts-jetbrains-mono fonts-noto-color-emoji fonts-dejavu-core fonts-symbola
-  # kernel modules + firmware (the starter boots this same kernel)
-  linux-image-amd64 linux-cpupower
+  # kernel modules + firmware (the starter boots this same kernel). The kernel is Debian's
+  # signed one from trixie-backports: before Linux 7.1 the NTFS driver can't open a long-used
+  # Windows C: (it fails quietly when the file table's map spans several records).
+  linux-image-amd64/trixie-backports linux-cpupower
   firmware-linux-free firmware-misc-nonfree firmware-iwlwifi firmware-intel-graphics
   firmware-sof-signed firmware-realtek firmware-atheros firmware-mediatek firmware-brcm80211
   firmware-amd-graphics
@@ -32,7 +34,8 @@ mmdebstrap --variant=minbase --components="main contrib non-free non-free-firmwa
   --include="$(IFS=,; echo "${pkgs[*]}")" \
   --customize-hook="cp -a $here/overlay/. \"\$1\"/" \
   --customize-hook="chroot \"\$1\" bash /usr/local/lib/lightsout/setup.sh" \
-  trixie "$root" http://deb.debian.org/debian
+  trixie "$root" http://deb.debian.org/debian \
+  "deb http://deb.debian.org/debian trixie-backports main contrib non-free non-free-firmware"
 
 # Our terminal (built separately) if present
 for b in lightsout lightsout-app; do

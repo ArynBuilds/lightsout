@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.2-rc.5
+
+A test build (`irm https://lightsout.sh/rc | iex`).
+
+- **Lights Out opens a long-used Windows C:.** The Linux kernel moves from Debian's 6.12 to Debian's signed 7.2 (trixie-backports). Before Linux 7.1, the NTFS driver couldn't open a drive whose file table had grown large and spread out, common on PCs used for a while, and failed with a bare "No such file or directory".
+- Updating downloads the system file again once, because its kernel changed.
+
 ## 0.3.2-rc.4
 
 A test build (`irm https://lightsout.sh/rc | iex`).

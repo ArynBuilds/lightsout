@@ -296,7 +296,10 @@ jobs:
         run: |
           bash starter/build.sh
           # the installer keeps a system file only with the starter's kernel: both must say the same
-          test "$(cat starter/out/EFI/lightsout/kernel-version)" = "$(cat os/out/boot/kernel-version)"
+          v=$(cat starter/out/EFI/lightsout/kernel-version)
+          test "$v" = "$(cat os/out/boot/kernel-version)"
+          # Linux 7.1+: older NTFS drivers can't open a long-used Windows C: (quiet "No such file")
+          test "$(printf '%s\n' 7.1 "${v%%-*}" | sort -V | head -n 1)" = 7.1
       - name: Upload starter
         uses: actions/upload-artifact@v4
         with:
