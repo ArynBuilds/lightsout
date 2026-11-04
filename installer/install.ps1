@@ -187,6 +187,15 @@ bcdedit /set '{fwbootmgr}' displayorder $id /addlast | Out-Null   # Windows stay
 # ---------------------------------------------------------------- 6. terminal + switch task
 Step 'Installing the Lights Out terminal'
 Get-Process lightsout-app -ErrorAction SilentlyContinue | Stop-Process -Force
+# a running lightsout.exe (Lights Out kept running in the background for a terminal) can't be
+# overwritten, but it can be moved aside: it keeps running, its agents too; the new one is used next time
+Get-ChildItem "$LO\bin\*.old" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+foreach ($exe in 'lightsout.exe', 'lightsout-app.exe') {
+  $cur = Join-Path "$LO\bin" $exe
+  if (Test-Path $cur) {
+    try { Remove-Item $cur -Force -ErrorAction Stop } catch { Move-Item $cur "$cur.$([DateTime]::Now.Ticks).old" -Force }
+  }
+}
 Copy-Item (Join-Path $Source 'term\lightsout.exe'), (Join-Path $Source 'term\lightsout-app.exe') "$LO\bin\" -Force
 $un = Join-Path $Source 'term\uninstall.ps1'
 if (-not (Test-Path $un) -and $PSScriptRoot) { $un = Join-Path $PSScriptRoot 'uninstall.ps1' }
