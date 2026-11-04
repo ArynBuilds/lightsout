@@ -23,10 +23,10 @@ install_mac() {
   $SUDO install -m 755 "$src/bin/lightsout" "$src/bin/lightsout-app" /usr/local/bin/
   $SUDO install -m 755 "$src/lib/switch" "$src/lib/logout-later" "$src/lib/uninstall.sh" /usr/local/lib/lightsout/
   home=$(dscl . -read "/Users/$ME" NFSHomeDirectory | awk '{print $2}')
-  # Log-out mode (agents in a background service while you're logged out) is
-  # still being verified; LIGHTSOUT_MAC_LOGOUT=1 turns it on. Without it, Lights
-  # Out stays signed in and slows everything else down.
-  if [ "${LIGHTSOUT_MAC_LOGOUT:-0}" = 1 ]; then
+  # Log-out mode: in Lights Out your agents run in a background service and you
+  # are logged out, so only macOS's core and your agents run.
+  # LIGHTSOUT_MAC_LOGOUT=0 keeps you signed in instead (everything else slowed down).
+  if [ "${LIGHTSOUT_MAC_LOGOUT:-1}" = 1 ]; then
     # the background service that keeps agents running while you're logged out
     $SUDO tee /Library/LaunchDaemons/sh.lightsout.agents.plist >/dev/null <<P
 <?xml version="1.0" encoding="UTF-8"?>
@@ -74,7 +74,7 @@ P
 <key>CFBundleIdentifier</key><string>sh.lightsout.app</string>
 <key>CFBundleExecutable</key><string>lightsout</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.2.1</string>
+<key>CFBundleShortVersionString</key><string>0.3.0</string>
 <key>LSMinimumSystemVersion</key><string>11.0</string>
 </dict></plist>
 P

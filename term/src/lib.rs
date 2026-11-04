@@ -2382,6 +2382,18 @@ Control the running app (also for agents; details: `lightsout skill`):
   lightsout list | new | send | read | wait | explain | focus | notify | screen | power | switch
 ";
 
+/// One word of a command, quoted for the shell that runs it (PowerShell on Windows, sh elsewhere).
+fn shell_word(w: &str) -> String {
+    let plain = !w.is_empty() && w.chars().all(|c| c.is_ascii_alphanumeric() || "-_./=:,@%+".contains(c));
+    if plain {
+        w.to_string()
+    } else if cfg!(windows) {
+        format!("'{}'", w.replace('\'', "''"))
+    } else {
+        format!("'{}'", w.replace('\'', r"'\''"))
+    }
+}
+
 fn client(session: &str, args: &[String]) -> i32 {
     let rest: Vec<String> = args[1..].to_vec();
     let flag = |name: &str| rest.iter().position(|a| a == name);
@@ -2404,7 +2416,8 @@ fn client(session: &str, args: &[String]) -> i32 {
             positional.push(a.clone());
         }
     }
-    let after_dashes = flag("--").map(|i| rest[i + 1..].join(" "));
+    // the words after `--` keep their quoting: `-- sh -c 'echo hi; sleep 5'` stays one command
+    let after_dashes = flag("--").map(|i| rest[i + 1..].iter().map(|w| shell_word(w)).collect::<Vec<_>>().join(" "));
     let pane = |n: usize| -> Value {
         match positional.get(n).map(String::as_str) {
             Some("self") | None => json!(std::env::var("LIGHTSOUT_PANE").unwrap_or_default()),
@@ -2574,4 +2587,16 @@ pub fn main_entry() {
     platform::lid_keep_running();
     let _ = event_loop.run_app(&mut app);
     platform::lid_restore();
+}
+
+#[cfg(test)]
+mod quoting_tests {
+    #[test]
+    fn words_keep_their_quoting() {
+        assert_eq!(super::shell_word("claude"), "claude");
+        assert_eq!(super::shell_word("echo hi; sleep 5"), "'echo hi; sleep 5'");
+        if cfg!(windows) {
+            assert_eq!(super::shell_word("it's"), "'it''s'");
+        }
+    }
 }
