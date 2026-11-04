@@ -48,7 +48,8 @@ newest() {   # the newest $1 package of Fedora's updates, else of the release
   local repo url f
   for repo in "updates/$FEDORA/Everything/x86_64/Packages" "releases/$FEDORA/Everything/x86_64/os/Packages"; do
     url="https://dl.fedoraproject.org/pub/fedora/linux/$repo/${1:0:1}"
-    f=$(curl -fsSL "$url/" | grep -oE "\"$1-[0-9][^\"]*\.x86_64\.rpm\"" | tr -d '"' | sort -V | tail -n 1)
+    # (no match is fine: then the next folder is tried)
+    f=$(curl -fsSL "$url/" | grep -oE "\"$1-[0-9][^\"]*\.x86_64\.rpm\"" | tr -d '"' | sort -V | tail -n 1) || true
     if [ -n "$f" ]; then curl -fsSL -o "$fed/$f" "$url/$f"; return; fi
   done
   echo "no $1 package in Fedora $FEDORA" >&2; exit 1
