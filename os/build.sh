@@ -20,7 +20,7 @@ pkgs=(
   # drive unlock + TPM
   cryptsetup-bin tpm2-tools ntfs-3g
   # screen: cage shows exactly one full-screen app (our terminal)
-  sway swaybg foot wlopm brightnessctl libxkbcommon0 libwayland-client0 libgl1-mesa-dri libegl1 fonts-jetbrains-mono fonts-noto-color-emoji
+  sway swaybg foot wlopm brightnessctl libxkbcommon0 libwayland-client0 libgl1-mesa-dri libegl1 fonts-jetbrains-mono fonts-noto-color-emoji fonts-dejavu-core fonts-symbola
   # kernel modules + firmware (the starter boots this same kernel)
   linux-image-amd64 linux-cpupower
   firmware-linux-free firmware-misc-nonfree firmware-iwlwifi firmware-intel-graphics

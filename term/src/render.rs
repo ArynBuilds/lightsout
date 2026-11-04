@@ -7,6 +7,56 @@ use std::collections::HashMap;
 static REGULAR: &[u8] = include_bytes!("../assets/JetBrainsMono-Regular.ttf");
 static BOLD: &[u8] = include_bytes!("../assets/JetBrainsMono-Bold.ttf");
 
+/// System fonts asked, in order, for a character the built-in font doesn't have
+/// (symbols, Braille spinners, box pieces, emoji outlines...). Any program's
+/// characters are covered the same way; nothing is tied to one program.
+fn fallback_files() -> Vec<std::path::PathBuf> {
+    use std::path::PathBuf;
+    let mut v: Vec<PathBuf> = Vec::new();
+    if cfg!(windows) {
+        let dir = PathBuf::from(std::env::var_os("WINDIR").unwrap_or_else(|| "C:\\Windows".into())).join("Fonts");
+        for f in ["seguisym.ttf", "consola.ttf", "segoeui.ttf", "seguiemj.ttf", "cambria.ttc", "msgothic.ttc", "malgun.ttf", "simsun.ttc"] {
+            v.push(dir.join(f));
+        }
+    } else if cfg!(target_os = "macos") {
+        for f in [
+            "/System/Library/Fonts/Menlo.ttc",
+            "/System/Library/Fonts/Apple Symbols.ttf",
+            "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+            "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        ] {
+            v.push(PathBuf::from(f));
+        }
+    } else {
+        // the usual places first, then every other font on the system
+        for f in [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/ancient-scripts/Symbola_hint.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansSymbols-Regular.ttf",
+        ] {
+            v.push(PathBuf::from(f));
+        }
+        let mut more = Vec::new();
+        let mut dirs = vec![PathBuf::from("/usr/share/fonts"), PathBuf::from("/usr/local/share/fonts")];
+        while let Some(d) = dirs.pop() {
+            let Ok(rd) = std::fs::read_dir(&d) else { continue };
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    dirs.push(p);
+                } else if p.extension().is_some_and(|x| x == "ttf" || x == "otf") && !v.contains(&p) {
+                    more.push(p);
+                }
+            }
+        }
+        more.sort();
+        v.extend(more);
+    }
+    v
+}
+
 pub struct Fonts {
     regular: Font,
     bold: Font,
@@ -15,6 +65,9 @@ pub struct Fonts {
     pub cell_h: u32,
     pub ascent: f32,
     cache: HashMap<(char, bool), (Metrics, Vec<u8>)>,
+    /// Fallback fonts: the files, and each one once it was needed (None = can't be read).
+    fallback_files: Vec<std::path::PathBuf>,
+    fallback_fonts: Vec<Option<Option<Font>>>,
 }
 
 impl Fonts {
@@ -27,6 +80,8 @@ impl Fonts {
             cell_h: 1,
             ascent: 0.0,
             cache: HashMap::new(),
+            fallback_files: Vec::new(),
+            fallback_fonts: Vec::new(),
         };
         f.set_size(px);
         f
@@ -43,11 +98,44 @@ impl Fonts {
     }
 
     fn glyph(&mut self, c: char, bold: bool) -> &(Metrics, Vec<u8>) {
-        let (regular, bold_font, px) = (&self.regular, &self.bold, self.px);
-        self.cache.entry((c, bold)).or_insert_with(|| {
-            let font = if bold { bold_font } else { regular };
-            font.rasterize(c, px)
-        })
+        if !self.cache.contains_key(&(c, bold)) {
+            let g = self.rasterize(c, bold);
+            self.cache.insert((c, bold), g);
+        }
+        &self.cache[&(c, bold)]
+    }
+
+    fn rasterize(&mut self, c: char, bold: bool) -> (Metrics, Vec<u8>) {
+        let font = if bold { &self.bold } else { &self.regular };
+        if c.is_ascii() || font.lookup_glyph_index(c) != 0 {
+            return font.rasterize(c, self.px);
+        }
+        // not in the built-in font: the first system font that has it
+        if self.fallback_files.is_empty() {
+            self.fallback_files = fallback_files();
+            self.fallback_fonts = vec![None; self.fallback_files.len()];
+        }
+        for i in 0..self.fallback_files.len() {
+            if self.fallback_fonts[i].is_none() {
+                let loaded = std::fs::read(&self.fallback_files[i]).ok().and_then(|bytes| Font::from_bytes(bytes, FontSettings::default()).ok());
+                self.fallback_fonts[i] = Some(loaded);
+            }
+            let Some(Some(f)) = &self.fallback_fonts[i] else { continue };
+            if f.lookup_glyph_index(c) == 0 {
+                continue;
+            }
+            // keep it inside two cells (wide characters) and the line height
+            let mut px = self.px;
+            let m = f.metrics(c, px);
+            let max_w = (self.cell_w * 2) as f32;
+            let max_h = self.cell_h as f32;
+            if m.width as f32 > max_w || m.height as f32 > max_h {
+                let k = (max_w / m.width.max(1) as f32).min(max_h / m.height.max(1) as f32);
+                px *= k.clamp(0.3, 1.0);
+            }
+            return f.rasterize(c, px);
+        }
+        font.rasterize(c, self.px)
     }
 }
 
@@ -123,5 +211,19 @@ impl Canvas<'_> {
             cx += f.cell_w as i32;
         }
         cx
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    /// Characters agents draw that the built-in font lacks get a real glyph from the
+    /// system's fonts (not an empty box).
+    #[test]
+    fn missing_characters_come_from_system_fonts() {
+        let mut f = super::Fonts::new(16.0);
+        for c in ['⏺', '⎿', '✻', '✢', '⠋', '✓', '❯', '●', '🚀'] {
+            let (m, bitmap) = f.glyph(c, false).clone();
+            assert!(m.width > 0 && bitmap.iter().any(|&a| a > 0), "no glyph for {c:?}");
+        }
     }
 }
