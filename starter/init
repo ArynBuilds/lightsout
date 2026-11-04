@@ -97,15 +97,31 @@ for dev in $PARTS; do
   [ "$dev" = "$(awk '$2=="/esp"{print $1}' /proc/mounts)" ] && continue
   if cryptsetup bitlkDump "$dev" >/dev/null 2>&1; then
     [ -n "$KEY" ] || continue
-    printf '%s' "$KEY" | cryptsetup open --type bitlk --key-file - "$dev" winc 2>/dev/null || continue
+    if ! out=$(printf '%s' "$KEY" | cryptsetup open --type bitlk --key-file - "$dev" winc 2>&1); then
+      say "unlock of $dev failed: $out"
+      printf '%s' "$KEY" | cryptsetup --debug open --type bitlk --key-file - "$dev" winc >> "$LOG" 2>&1
+      [ -b /dev/mapper/winc ] || continue
+    fi
+    # no device manager here: make the /dev/mapper entry ourselves if it is missing
+    if [ ! -b /dev/mapper/winc ]; then
+      for d in /sys/block/dm-*; do
+        [ "$(cat "$d/dm/name" 2>/dev/null)" = winc ] || continue
+        mkdir -p /dev/mapper; mknod /dev/mapper/winc b $(tr ':' ' ' < "$d/dev") 2>/dev/null
+        say "made /dev/mapper/winc for $(basename "$d")"
+      done
+    fi
+    [ -b /dev/mapper/winc ] || say "unlocked $dev but /dev/mapper/winc is missing ($(ls /dev/mapper 2>&1 | tr '\n' ' '))"
     try=/dev/mapper/winc
   else
     blkid "$dev" 2>/dev/null | grep -q 'TYPE="ntfs"' || continue
     try=$dev
   fi
-  if mount -t ntfs3 -o ro "$try" /mnt/c 2>/dev/null; then
+  if out=$(mount -t ntfs3 -o ro "$try" /mnt/c 2>&1); then
     if [ -f /mnt/c/LightsOut/system.img ]; then CDEV=$try; break; fi
+    [ "$try" = /dev/mapper/winc ] && say "opened $dev, but no LightsOut/system.img on it: $(ls /mnt/c 2>&1 | head -n 12 | tr '\n' ' ')"
     umount /mnt/c
+  else
+    [ "$try" = /dev/mapper/winc ] && say "unlocked $dev but could not read it: $out ($(dmesg | tail -n 3 | tr '\n' ' '))"
   fi
   [ "$try" = /dev/mapper/winc ] && cryptsetup close winc
 done
@@ -133,6 +149,8 @@ if ! mount -o loop,noatime /mnt/c/LightsOut/system.img /newroot 2>/run/lightsout
   say "system file: $(ls -la /mnt/c/LightsOut/system.img 2>&1)"
   fail "system file could not be opened"
 fi
+# the system file keeps its own drivers; an older one may not have them for this starter's kernel
+[ -d "/newroot/lib/modules/$(uname -r)" ] || say "warning: the system file has no drivers for kernel $(uname -r) (it has: $(ls /newroot/lib/modules 2>&1 | tr '\n' ' '))"
 mkdir -p /newroot/mnt/c /newroot/boot/efi
 mount --move /mnt/c /newroot/mnt/c
 mount --move /esp /newroot/boot/efi

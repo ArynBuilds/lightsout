@@ -4,6 +4,14 @@
 # only Lights Out runs; Lights On brings the desktop back (no restart).
 set -eu
 BASE="${LIGHTSOUT_BASE:-https://github.com/ArynBuilds/lightsout/releases/latest/download}"
+# stable = the latest release; rc = the newest test build (lightsout.sh/rc sends this installer with rc here)
+CHANNEL=stable
+if [ "$CHANNEL" = rc ] && [ -z "${LIGHTSOUT_BASE:-}" ]; then
+  tag=$(curl -fsSL "https://api.github.com/repos/ArynBuilds/lightsout/releases?per_page=1" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)
+  [ -n "$tag" ] || { echo "Lights Out: could not find the newest test build" >&2; exit 1; }
+  BASE="https://github.com/ArynBuilds/lightsout/releases/download/$tag"
+  printf 'Test build: %s\n' "$tag"
+fi
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
 stop() { printf 'Lights Out: %s\n' "$*" >&2; exit 1; }
 

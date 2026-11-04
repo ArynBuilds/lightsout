@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.2-rc.1
+
+A test build. Install it over your current Lights Out with `irm https://lightsout.sh/rc | iex` (Windows) or `curl -fsSL https://lightsout.sh/rc | sh` (Linux and Mac).
+
+- **Opening a BitLocker drive:** if Linux doesn't create the drive's entry by itself, the starter now makes it. When the drive still can't be opened, the starter shows and saves the exact reason.
+- **The switch works on battery:** Windows' default "only when plugged in" rule no longer holds it back.
+- **Test builds:** `lightsout.sh/rc` installs the newest test build.
+
 ## 0.3.1
 
 - **Faster updates:** re-running the installer no longer downloads the 634 MB system again; it keeps the one you have, so an update is about 40 MB.

@@ -20,6 +20,9 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+# stable = the latest release; rc = the newest test build (lightsout.sh/rc sends this installer with 'rc' here)
+$Channel = 'stable'
+$Site = if ($Channel -eq 'rc') { 'https://lightsout.sh/rc' } else { 'https://lightsout.sh' }
 # admin rights: reopen this installer in an admin window
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
   Write-Host 'Lights Out needs admin rights to install. Confirm the Windows prompt...'
@@ -27,10 +30,17 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
     $a = "-NoProfile -ExecutionPolicy Bypass -NoExit -File `"$PSCommandPath`""
     if ($Source) { $a += " -Source `"$Source`"" }
   } else {
-    $a = '-NoProfile -ExecutionPolicy Bypass -NoExit -Command "irm https://lightsout.sh | iex"'
+    $a = "-NoProfile -ExecutionPolicy Bypass -NoExit -Command `"irm $Site | iex`""
   }
   Start-Process powershell -Verb RunAs -ArgumentList $a
   return
+}
+if ($Channel -eq 'rc' -and -not $env:LIGHTSOUT_BASE -and -not $Source) {
+  # the newest release of any kind (test builds included)
+  $tag = ((Invoke-RestMethod 'https://api.github.com/repos/ArynBuilds/lightsout/releases?per_page=10') | Where-Object { -not $_.draft } | Select-Object -First 1).tag_name
+  if (-not $tag) { Write-Host 'STOP: could not find the newest test build' -ForegroundColor Red; return }
+  $Base = "https://github.com/ArynBuilds/lightsout/releases/download/$tag"
+  Write-Host "Test build: $tag" -ForegroundColor Yellow
 }
 $LO = 'C:\LightsOut'
 New-Item -ItemType Directory -Force "$LO\config", "$LO\bin", "$LO\handoff", "$LO\wifi", "$LO\logs" | Out-Null
@@ -235,7 +245,7 @@ shutdown /r /t 0 /c 'Switching to Lights Out'
 schtasks /end /tn '\LightsOut\Enter' 2>$null | Out-Null
 schtasks /create /tn '\LightsOut\Enter' /tr "powershell.exe -NoProfile -ExecutionPolicy Bypass -File $LO\bin\enter.ps1" /sc once /st 00:00 /sd 01/01/2000 /ru SYSTEM /rl HIGHEST /f | Out-Null
 # Windows' default only starts a task when plugged in; Lights Out must also work on battery
-Set-ScheduledTask -TaskPath '\LightsOut\'-TaskName Enter -Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 10)) | Out-Null
+Set-ScheduledTask -TaskPath '\LightsOut\' -TaskName Enter -Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 10)) | Out-Null
 # allow the signed-in user to start (only) this task
 $svc = New-Object -ComObject Schedule.Service; $svc.Connect()
 $svc.GetFolder('\LightsOut').GetTask('Enter').SetSecurityDescriptor('D:(A;;FA;;;BA)(A;;FA;;;SY)(A;;GRGX;;;AU)', 0)
@@ -250,7 +260,7 @@ finally { mountvol "`$(`$letter):" /D }
 [IO.File]::WriteAllText("$LO\bin\cleanup.ps1", $cleanup)
 schtasks /create /tn '\LightsOut\Cleanup' /tr "powershell.exe -NoProfile -ExecutionPolicy Bypass -File $LO\bin\cleanup.ps1" /sc onstart /ru SYSTEM /rl HIGHEST /f | Out-Null
 # Windows' default only starts a task when plugged in; Lights Out must also work on battery
-Set-ScheduledTask -TaskPath '\LightsOut\'-TaskName Cleanup -Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 10)) | Out-Null
+Set-ScheduledTask -TaskPath '\LightsOut\' -TaskName Cleanup -Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 10)) | Out-Null
 $lnk = (New-Object -ComObject WScript.Shell).CreateShortcut("$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Lights Out.lnk")
 $lnk.TargetPath = "$LO\bin\lightsout-app.exe"; $lnk.WorkingDirectory = $env:USERPROFILE; $lnk.Save()
 

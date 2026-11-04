@@ -44,6 +44,7 @@ jobs:
           chmod +x $d/bin/* $d/lib/* $d/sbin/*
           tar -C out -czf out/lightsout-linux-x64.tar.gz lightsout-linux-x64
       - name: Test the terminal view (closing it leaves the agents running; again over SSH)
+        if: ${{ !contains(github.ref, '-rc') }}  # test builds (vX-rc.N) skip the tests: you test them yourself
         run: |
           set -ex
           B=$PWD/term/target/release
@@ -81,6 +82,7 @@ jobs:
           sudo rm -f /usr/local/bin/lightsout
           echo "TERMINAL VIEW TEST PASSED"
       - name: Test on this Linux machine (install, Lights Out screen, power restore, uninstall)
+        if: ${{ !contains(github.ref, '-rc') }}  # test builds (vX-rc.N) skip the tests: you test them yourself
         run: |
           set -ex
           LIGHTSOUT_BASE="file://$PWD/out" sh installer/install.sh
@@ -139,6 +141,7 @@ jobs:
           chmod +x $d/bin/* $d/lib/*
           tar -C out -czf out/lightsout-macos.tar.gz lightsout-macos
       - name: Test on this Mac (install, app, Lights Out on/off, uninstall)
+        if: ${{ !contains(github.ref, '-rc') }}  # test builds (vX-rc.N) skip the tests: you test them yourself
         run: |
           set -ex
           sh -n mac/switch
@@ -166,6 +169,7 @@ jobs:
           test ! -f "$S/throttled"
           echo "MAC TEST PASSED"
       - name: Log-out mode (agents in the background service, sign-in return)
+        if: ${{ !contains(github.ref, '-rc') }}  # test builds (vX-rc.N) skip the tests: you test them yourself
         run: |
           set -ex
           S="/Library/Application Support/LightsOut"
@@ -202,7 +206,7 @@ jobs:
           lightsout read 1 --lines 30 2>&1 || true
           for p in $(pgrep -f 'lightsout-app --headless'); do ps -o pid,user,command -g "$(ps -o pgid= -p $p)" || true; pgrep -lP "$p" || true; done
       - name: Uninstall (Mac)
-        if: always()
+        if: ${{ always() && !contains(github.ref, '-rc') }}
         run: |
           set -ex
           pkill lightsout-app || true
@@ -261,8 +265,10 @@ jobs:
           retention-days: 14
           compression-level: 0
       - name: Free disk space
+        if: ${{ !contains(github.ref, '-rc') }}  # test builds (vX-rc.N) skip the tests: you test them yourself
         run: rm -rf os/rootfs starter/root term/target ~/.cargo/registry && df -h / /mnt | tail -n 2
       - name: Test in a virtual PC (UEFI + TPM + NTFS C:)
+        if: ${{ !contains(github.ref, '-rc') }}  # test builds (vX-rc.N) skip the tests: you test them yourself
         run: VMTEST_DIR=/mnt/vmtest bash test/vm-test.sh
       - name: Logs
         if: always()
@@ -296,4 +302,4 @@ jobs:
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" rel/* -R "$GITHUB_REPOSITORY" --title "Lights Out $GITHUB_REF_NAME" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" rel/* -R "$GITHUB_REPOSITORY" --title "Lights Out $GITHUB_REF_NAME" --generate-notes $(case "$GITHUB_REF_NAME" in *-*) echo --prerelease ;; esac)
