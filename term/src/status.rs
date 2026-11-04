@@ -47,6 +47,8 @@ pub struct Detector {
     pub reason: String,
     pub changed: Instant,
     last_output: Instant,
+    /// Last time the main part of the screen changed (not just the bottom rows).
+    last_work: Instant,
     working_since: Option<Instant>,
     bell: bool,
 }
@@ -58,6 +60,7 @@ impl Default for Detector {
             reason: "nothing has happened yet".into(),
             changed: Instant::now(),
             last_output: Instant::now() - Duration::from_secs(60),
+            last_work: Instant::now() - Duration::from_secs(60),
             working_since: None,
             bell: false,
         }
@@ -67,6 +70,11 @@ impl Default for Detector {
 impl Detector {
     pub fn on_output(&mut self) {
         self.last_output = Instant::now();
+    }
+
+    /// The main part of the screen changed: real work, not a status line redraw.
+    pub fn on_work(&mut self) {
+        self.last_work = Instant::now();
     }
 
     pub fn on_bell(&mut self) {
@@ -89,7 +97,7 @@ impl Detector {
     /// Re-reads the last lines of the screen. Returns the new state if it changed.
     pub fn update(&mut self, tail: &str, focused: bool, extra_needs: &[String]) -> Option<State> {
         let lower = tail.to_lowercase();
-        let recent = self.last_output.elapsed() < Duration::from_millis(1500);
+        let recent = self.last_work.elapsed() < Duration::from_millis(1500);
         let needs = NEEDS_YOU.iter().map(|s| s.to_string()).chain(extra_needs.iter().map(|s| s.to_lowercase())).find(|p| lower.contains(p.as_str()));
         let busy = BUSY.iter().find(|p| lower.contains(*p)).map(|s| s.to_string()).or_else(|| {
             tail.chars().find(|c| SPINNER.contains(c)).map(|c| format!("a spinner ({c}) is on screen"))
@@ -104,7 +112,7 @@ impl Detector {
             (State::Working, format!("busy sign on screen: \"{b}\""))
         } else if self.state == State::Done && !focused {
             (State::Done, self.reason.clone())
-        } else if self.working_since.is_some_and(|t| self.last_output.saturating_duration_since(t) >= Duration::from_secs(3)) && !focused {
+        } else if self.working_since.is_some_and(|t| self.last_work.saturating_duration_since(t) >= Duration::from_secs(3)) && !focused {
             (State::Done, "it worked for a while and has gone quiet".into())
         } else {
             (State::Idle, "quiet, no question on screen".into())
@@ -123,5 +131,42 @@ impl Detector {
         } else {
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::thread::sleep;
+
+    /// Output that never touches the main content (a status line, a spinner at the
+    /// bottom, another session's activity) is not work: no "done", no notification.
+    #[test]
+    fn status_line_redraws_are_not_work() {
+        let mut d = Detector::default();
+        for _ in 0..20 {
+            d.on_output();
+            d.update("> \n  ? for shortcuts", false, &[]);
+            sleep(Duration::from_millis(200));
+        }
+        sleep(Duration::from_millis(1600));
+        d.update("> \n  ? for shortcuts", false, &[]);
+        assert_eq!(d.state, State::Idle, "{}", d.reason);
+    }
+
+    /// Real work (the main content keeps changing) for a while, then quiet: done.
+    #[test]
+    fn real_work_then_quiet_is_done() {
+        let mut d = Detector::default();
+        for _ in 0..18 {
+            d.on_output();
+            d.on_work();
+            d.update("writing the tests", false, &[]);
+            sleep(Duration::from_millis(200));
+        }
+        assert_eq!(d.state, State::Working);
+        sleep(Duration::from_millis(1600));
+        d.update("all 12 tests passed", false, &[]);
+        assert_eq!(d.state, State::Done, "{}", d.reason);
     }
 }

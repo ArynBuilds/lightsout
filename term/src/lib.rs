@@ -657,6 +657,9 @@ impl App {
             if !watching && !p.det.recently_active() && p.det.state == State::Idle {
                 continue;
             }
+            if p.body_changed() {
+                p.det.on_work();
+            }
             let tail = p.tail();
             if let Some(s) = p.det.update(&tail, focused == Some(*id), &extra) {
                 changes.push((*id, s));

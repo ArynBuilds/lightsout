@@ -53,6 +53,9 @@ impl EventListener for Proxy {
     }
 }
 
+/// Rows at the bottom of a pane that don't count as work when they change.
+const BOTTOM_ROWS: i32 = 6;
+
 #[derive(Clone, Copy, PartialEq)]
 pub struct Size {
     pub cols: usize,
@@ -84,6 +87,8 @@ pub struct Pane {
     pub size: Size,
     /// The program running inside the shell, e.g. "claude" (None = just the shell).
     pub running: Option<String>,
+    /// Fingerprint of the screen without its bottom rows (see `body_changed`).
+    body: u64,
 }
 
 pub fn window_size(size: Size, cell_w: u32, cell_h: u32) -> WindowSize {
@@ -130,7 +135,7 @@ impl Pane {
         event_loop.spawn();
         let folder = cwd.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "shell".into());
         let title = command.as_deref().and_then(|c| c.split_whitespace().next()).map(str::to_string).unwrap_or(folder);
-        Ok(Pane { id, title, term, tx, cwd, command, shell_pid, det: Detector::default(), size, running: None })
+        Ok(Pane { id, title, term, tx, cwd, command, shell_pid, det: Detector::default(), size, running: None, body: 0 })
     }
 
     pub fn input(&self, bytes: Vec<u8>) {
@@ -202,6 +207,21 @@ impl Pane {
     }
 
     /// The last few non-empty lines, for reading the agent's state.
+    /// Whether the main part of the screen changed since the last look. The bottom
+    /// rows are left out: agents redraw their input box, status line and spinners
+    /// there all the time (also when another session works), which is not work.
+    pub fn body_changed(&mut self) -> bool {
+        use std::hash::{Hash, Hasher};
+        let rows = self.term.lock().grid().screen_lines() as i32;
+        let lines = self.lines(0, (rows - BOTTOM_ROWS).max(1));
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        lines.hash(&mut h);
+        let now = h.finish();
+        let changed = now != self.body;
+        self.body = now;
+        changed
+    }
+
     pub fn tail(&self) -> String {
         let rows = self.term.lock().grid().screen_lines() as i32;
         let lines: Vec<String> = self.lines(0, rows).into_iter().filter(|l| !l.trim().is_empty()).collect();
