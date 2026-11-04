@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.0
+
+The first full release. Everything from 0.3.0-rc.1 and rc.2, plus:
+
+- **Runs inside any terminal:** type `lightsout` in PowerShell, cmd, bash, zsh or any terminal app and it opens right there, like tmux. Shortcuts there are Ctrl+B then the key (F1 opens actions); `lightsout --window` opens the window.
+- **Close the terminal, keep working:** your agents keep running in the background; `lightsout` brings you back to the same screen. Ctrl+B D detaches on purpose.
+- **Rooms on a server:** `lightsout room add me@server` (or actions → New room on a server...) makes a room whose agents run on that server, 24/7. It shows live, reconnects by itself and lists what runs there. `lightsout open me@server` shows everything on a server.
+- **Room commands:** `lightsout room add | list | remove`.
+- **For agents:** a skill (`npx skills add ArynBuilds/lightsout`, or `lightsout skill`), and lightsout.sh/llms.txt with the docs for agents.
+- **Many rooms, tabs and agents:** the rooms, the running list, the tab bar and the actions list scroll.
+- **Actions:** nothing is chosen until you use the arrow keys; click any action to run it.
+- **The mouse reaches programs** that use it (editors, `htop`); Shift keeps it for selecting.
+- **Sidebar:** "rooms" and "running" headings.
+- **Removed:** saved machines in the settings file (rooms on a server replace them).
+
 ## 0.3.0-rc.2
 
 - **No more freezes:** saving your tabs no longer waits for Windows to list the running commands.
