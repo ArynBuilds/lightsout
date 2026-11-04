@@ -116,11 +116,18 @@ jobs:
           sleep 4
           lightsout list
           pmset -g | grep -i sleepdisabled
-          sudo -n /usr/local/lib/lightsout/switch out
-          test -f "/Library/Application Support/LightsOut/active"
+          app=$(pgrep -n lightsout-app)
+          sudo -n /usr/local/lib/lightsout/switch out "$app"
+          S="/Library/Application Support/LightsOut"
+          test -f "$S/active"
           pmset -g | grep -iE "sleepdisabled|lowpowermode"
+          echo "background processes slowed: $(wc -l < "$S/throttled")"; test "$(wc -l < "$S/throttled")" -gt 0
+          echo "helpers stopped:"; cat "$S/agents"
+          ! grep -qx "$app" "$S/throttled"   # Lights Out itself is never slowed
+          lightsout list                       # and still answers
           sudo -n /usr/local/lib/lightsout/switch in
-          test ! -f "/Library/Application Support/LightsOut/active"
+          test ! -f "$S/active"
+          test ! -f "$S/throttled"
           pkill lightsout-app || true
           sudo sh /usr/local/lib/lightsout/uninstall.sh
           test ! -e /usr/local/bin/lightsout

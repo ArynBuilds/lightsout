@@ -1,7 +1,9 @@
 #!/bin/sh
 # Lights Out on a Mac (runs as root through sudo, allowed for the installing user).
-#   out    Lights Out: Low Power Mode, never sleep (lid closed keeps running),
-#          Spotlight indexing, Time Machine and Bluetooth off
+#   out PID  Lights Out: Low Power Mode, never sleep (lid closed keeps running),
+#          Spotlight indexing, Time Machine and Bluetooth off, third-party
+#          background helpers stopped, everything else (except Lights Out = PID
+#          and its agents) pushed to the lowest background priority
 #   in     Lights On: everything put back exactly as it was
 #   awake  the app is open: closing the lid doesn't stop it
 #   sleep  the app closed: your sleep setting is back
@@ -10,6 +12,43 @@ mkdir -p "$S"
 pm() { pmset -g | awk -v k="$1" '$1==k {print $2}'; }
 remember() { [ -f "$S/$1" ] || printf '%s' "$2" > "$S/$1"; }
 bt() { command -v blueutil >/dev/null && blueutil "$@"; }
+ME="${SUDO_USER:-$(stat -f %Su /dev/console)}"
+UID_ME=$(id -u "$ME")
+# security, management, VPN and password tools are never touched
+KEEP='com\.apple\.|lightsout|jamf|crowdstrike|falcon|sentinel|kandji|mosyle|intune|addigy|wdav|defender|sophos|zscaler|cisco|globalprotect|paloalto|okta|1password|bitwarden|tailscale|wireguard|vpn|nord|expressvpn|cloudflare'
+
+# Lights Out and every process it started (agents, their tools)
+tree() {
+  ps -axo pid=,ppid= | awk -v root="$1" '
+    { kids[$2] = kids[$2] " " $1 }
+    END { n = split(root, q, " "); for (i = 1; i <= n; i++) { print q[i]; m = split(kids[q[i]], k, " "); for (j = 1; j <= m; j++) q[++n] = k[j] } }'
+}
+
+quiet_background() {
+  : > "$S/agents"; : > "$S/throttled"
+  # third-party background helpers of this user (sync clients, updaters...): stop, remember
+  launchctl asuser "$UID_ME" sudo -u "$ME" launchctl list 2>/dev/null | awk 'NR > 1 { print $3 }' |
+    grep -viE "$KEEP" | grep -v '^0x' | while read -r label; do
+      path=$(launchctl print "gui/$UID_ME/$label" 2>/dev/null | awk '$1 == "path" { print $3; exit }')
+      [ -f "$path" ] || continue
+      launchctl bootout "gui/$UID_ME/$label" 2>/dev/null && printf '%s|%s\n' "$label" "$path" >> "$S/agents"
+    done
+  # everything else of this user: lowest background priority (efficiency cores only)
+  keep=" $(tree "${1:-0}" | tr '\n' ' ') "
+  ps -U "$ME" -o pid=,comm= | while read -r pid comm; do
+    case "$keep" in *" $pid "*) continue ;; esac
+    case "$comm" in *loginwindow*|*WindowServer*) continue ;; esac
+    taskpolicy -b -p "$pid" 2>/dev/null && echo "$pid" >> "$S/throttled"
+  done
+}
+
+wake_background() {
+  [ -f "$S/throttled" ] && while read -r pid; do taskpolicy -B -p "$pid" 2>/dev/null; done < "$S/throttled"
+  [ -f "$S/agents" ] && while IFS='|' read -r label path; do
+    launchctl bootstrap "gui/$UID_ME" "$path" 2>/dev/null
+  done < "$S/agents"
+  rm -f "$S/throttled" "$S/agents"
+}
 
 case "${1:-}" in
   out)
@@ -24,6 +63,7 @@ case "${1:-}" in
     mdutil -a -i off >/dev/null 2>&1
     tmutil disable 2>/dev/null
     bt -p 0 2>/dev/null
+    quiet_background "${2:-}"
     touch "$S/active"
     ;;
   in)
@@ -33,6 +73,7 @@ case "${1:-}" in
     [ "$(cat "$S/spotlight" 2>/dev/null)" = on ] && mdutil -a -i on >/dev/null 2>&1
     [ "$(cat "$S/timemachine" 2>/dev/null)" = 1 ] && tmutil enable 2>/dev/null
     v=$(cat "$S/bluetooth" 2>/dev/null); [ -n "$v" ] && bt -p "$v" 2>/dev/null
+    wake_background
     rm -f "$S/active" "$S/lowpowermode" "$S/spotlight" "$S/timemachine" "$S/bluetooth"
     [ -f "$S/awake" ] || rm -f "$S/sleepdisabled"
     ;;
@@ -47,6 +88,6 @@ case "${1:-}" in
     v=$(cat "$S/sleepdisabled" 2>/dev/null); [ -n "$v" ] && pmset -a disablesleep "$v"
     rm -f "$S/sleepdisabled"
     ;;
-  *) echo "usage: switch out|in|awake|sleep" >&2; exit 2 ;;
+  *) echo "usage: switch out PID|in|awake|sleep" >&2; exit 2 ;;
 esac
 exit 0

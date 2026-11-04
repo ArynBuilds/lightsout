@@ -396,7 +396,12 @@ pub fn enter_lightsout(saved: &crate::session::Saved) -> Result<(), String> {
         // Mac: the same window stays (agents never stop); everything else goes quiet
         let _ = saved;
         mac_quit_apps();
-        return linux_switch("out");
+        // the helper leaves this app and everything it started alone
+        let pid = std::process::id().to_string();
+        return match Command::new("sudo").args(["-n", LINUX_SWITCH, "out", &pid]).output() {
+            Ok(o) if o.status.success() => Ok(()),
+            _ => Err("Lights Out isn't set up on this Mac yet. Install it with: curl -fsSL https://lightsout.sh | sh".into()),
+        };
     }
     #[allow(unreachable_code)]
     if cfg!(target_os = "linux") {
