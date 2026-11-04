@@ -231,6 +231,8 @@ bcdedit /set '{fwbootmgr}' bootsequence '$id' | Out-Null
 shutdown /r /t 0 /c 'Switching to Lights Out'
 "@
 [IO.File]::WriteAllText("$LO\bin\enter.ps1", $enter)
+# a switch still waiting from before (for example one held back on battery) would block the next one
+schtasks /end /tn '\LightsOut\Enter' 2>$null | Out-Null
 schtasks /create /tn '\LightsOut\Enter' /tr "powershell.exe -NoProfile -ExecutionPolicy Bypass -File $LO\bin\enter.ps1" /sc once /st 00:00 /sd 01/01/2000 /ru SYSTEM /rl HIGHEST /f | Out-Null
 # Windows' default only starts a task when plugged in; Lights Out must also work on battery
 Set-ScheduledTask -TaskPath '\LightsOut\'-TaskName Enter -Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 10)) | Out-Null
