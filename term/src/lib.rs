@@ -13,6 +13,7 @@ mod render;
 mod session;
 mod status;
 mod tab;
+mod tui;
 
 use alacritty_terminal::event::Event as TermEvent;
 use alacritty_terminal::index::{Column, Line, Point, Side};
@@ -36,13 +37,13 @@ use tab::{Pane, Size, UserEvent, Waker};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Fullscreen, Window, WindowId};
 
 const PALETTE: [u32; 16] = [
-    0x1c1c1c, 0xe06c75, 0x98c379, 0xe5c07b, 0x61afef, 0xc678dd, 0x56b6c2, 0xd6d6d6,
-    0x5c6370, 0xff7b86, 0xb5e890, 0xffd88a, 0x82c4ff, 0xdd9bf0, 0x7fd6e0, 0xffffff,
+    0x1c1c1c, 0xe06c75, 0x98c379, 0xe5c07b, 0x61afef, 0xc678dd, 0x56b6c2, 0xd6d6d6, 0x5c6370,
+    0xff7b86, 0xb5e890, 0xffd88a, 0x82c4ff, 0xdd9bf0, 0x7fd6e0, 0xffffff,
 ];
 const BAR: u32 = 0x000000; // full black: OLED pixels stay off
 const BAR_ACTIVE: u32 = 0x000000;
@@ -200,10 +201,24 @@ struct Item {
 
 enum Overlay {
     None,
-    Palette { title: String, items: Vec<Item>, filter: String, sel: usize },
-    Menu { x: i32, y: i32, items: Vec<Item>, sel: usize },
+    Palette {
+        title: String,
+        items: Vec<Item>,
+        filter: String,
+        sel: usize,
+    },
+    Menu {
+        x: i32,
+        y: i32,
+        items: Vec<Item>,
+        sel: usize,
+    },
     Confirm(Confirm),
-    Ask { title: String, text: String, purpose: Purpose },
+    Ask {
+        title: String,
+        text: String,
+        purpose: Purpose,
+    },
 }
 
 /// A list that scrolls with the mouse wheel.
@@ -239,8 +254,16 @@ struct Waiter {
 }
 
 enum Drag {
-    Divider { tab: usize, path: Vec<bool>, side_by_side: bool, area: Rect },
-    Select { pane: u64, origin: Rect },
+    Divider {
+        tab: usize,
+        path: Vec<bool>,
+        side_by_side: bool,
+        area: Rect,
+    },
+    Select {
+        pane: u64,
+        origin: Rect,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -257,7 +280,13 @@ enum Hit {
 }
 
 struct App {
-    proxy: EventLoopProxy<UserEvent>,
+    proxy: Waker,
+    /// Set to end the app (the window's loop or the terminal's loop ends then).
+    pub quit: bool,
+    /// A redraw is due (the loop that owns the screen picks it up).
+    redraw: bool,
+    /// Running inside another terminal (`lightsout` typed in a shell): cells, not pixels.
+    pub tui: bool,
     session: String,
     window: Option<Rc<Window>>,
     surface: Option<softbuffer::Surface<Rc<Window>, Rc<Window>>>,
@@ -328,7 +357,10 @@ impl Default for UiState {
 }
 
 fn load_ui() -> UiState {
-    std::fs::read_to_string(api::state_dir().join("ui.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    std::fs::read_to_string(api::state_dir().join("ui.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
 }
 
 fn save_ui(u: &UiState) {
@@ -346,11 +378,14 @@ fn theme_from(c: &config::Config) -> Theme {
 }
 
 impl App {
-    fn new(proxy: EventLoopProxy<UserEvent>, session: String) -> Self {
+    pub(crate) fn new(proxy: Waker, session: String) -> Self {
         let loaded = config::load();
         let theme = theme_from(&loaded.config);
         let mut app = App {
             proxy,
+            quit: false,
+            redraw: false,
+            tui: false,
             session,
             window: None,
             surface: None,
@@ -401,7 +436,11 @@ impl App {
             hidden: false,
             sidebar: load_ui().sidebar,
             running_at: Instant::now() - Duration::from_secs(10),
-            rooms: vec![Room { name: "Room 1".into(), tabs: Vec::new(), active: 0 }],
+            rooms: vec![Room {
+                name: "Room 1".into(),
+                tabs: Vec::new(),
+                active: 0,
+            }],
             room: 0,
         };
         if let Some(e) = loaded.error {
@@ -413,17 +452,58 @@ impl App {
     // ------------------------------------------------------------ geometry
 
     fn bar_h(&self) -> i32 {
+        if self.tui {
+            return 1;
+        }
         self.fonts.cell_h as i32 + 10
+    }
+
+    /// Space between a pane's edge and its text: pixels in the window, none in a terminal.
+    fn padx(&self) -> i32 {
+        if self.tui {
+            0
+        } else {
+            PADX
+        }
+    }
+
+    fn pady(&self) -> i32 {
+        if self.tui {
+            0
+        } else {
+            2
+        }
+    }
+
+    /// The first row of a menu, below its top edge.
+    fn menu_inset(&self) -> i32 {
+        if self.tui {
+            1
+        } else {
+            4
+        }
     }
 
     fn content(&self) -> Rect {
         let bh = self.bar_h();
         let sw = self.sidebar_w();
-        Rect { x: sw, y: bh, w: self.size.0 as i32 - sw, h: self.size.1 as i32 - bh }
+        Rect {
+            x: sw,
+            y: bh,
+            w: self.size.0 as i32 - sw,
+            h: self.size.1 as i32 - bh,
+        }
     }
 
     /// The agent list on the left (Ctrl+Shift+B), about 26 characters wide.
     fn sidebar_w(&self) -> i32 {
+        if self.tui {
+            return if self.sidebar && self.size.0 > 70 {
+                24
+            } else {
+                0
+            };
+        }
         if self.sidebar && self.size.0 as i32 > 60 * self.fonts.cell_w as i32 {
             26 * self.fonts.cell_w as i32
         } else {
@@ -434,10 +514,21 @@ impl App {
     fn popup_rect(&self) -> Rect {
         let c = self.content();
         let (w, h) = (c.w * 8 / 10, c.h * 8 / 10);
-        Rect { x: c.x + (c.w - w) / 2, y: c.y + (c.h - h) / 2, w, h }
+        Rect {
+            x: c.x + (c.w - w) / 2,
+            y: c.y + (c.h - h) / 2,
+            w,
+            h,
+        }
     }
 
     fn grid_size(&self, r: Rect) -> Size {
+        if self.tui {
+            return Size {
+                cols: r.w.max(2) as usize,
+                rows: r.h.max(2) as usize,
+            };
+        }
         let cols = ((r.w - 2 * PADX).max(0) as u32 / self.fonts.cell_w).max(2) as usize;
         let rows = ((r.h - 4).max(0) as u32 / self.fonts.cell_h).max(2) as usize;
         Size { cols, rows }
@@ -448,14 +539,21 @@ impl App {
     }
 
     fn active_rects(&self) -> Vec<(u64, Rect)> {
-        self.tabs.get(self.active).map(|t| t.layout.layout(self.content()).0).unwrap_or_default()
+        self.tabs
+            .get(self.active)
+            .map(|t| t.layout.layout(self.content()).0)
+            .unwrap_or_default()
     }
 
     fn resize_all(&mut self) {
         let content = self.content();
         let cell = self.cell();
         let mut sizes = Vec::new();
-        for t in self.tabs.iter().chain(self.rooms.iter().flat_map(|r| r.tabs.iter())) {
+        for t in self
+            .tabs
+            .iter()
+            .chain(self.rooms.iter().flat_map(|r| r.tabs.iter()))
+        {
             for (id, r) in t.layout.layout(content).0 {
                 sizes.push((id, self.grid_size(r)));
             }
@@ -473,10 +571,19 @@ impl App {
 
     // ------------------------------------------------------------ panes and tabs
 
-    fn spawn(&mut self, cwd: PathBuf, command: Option<String>, env: Vec<(String, String)>, size: Size) -> Option<u64> {
+    fn spawn(
+        &mut self,
+        cwd: PathBuf,
+        command: Option<String>,
+        env: Vec<(String, String)>,
+        size: Size,
+    ) -> Option<u64> {
         let cwd = if cwd.is_dir() { cwd } else { platform::home() };
         if platform::in_lightsout() {
-            let _ = std::process::Command::new("sudo").args(["-n", "/usr/local/sbin/lightsout-split"]).arg(&cwd).status();
+            let _ = std::process::Command::new("sudo")
+                .args(["-n", "/usr/local/sbin/lightsout-split"])
+                .arg(&cwd)
+                .status();
         }
         let (program, args) = match &command {
             Some(c) => platform::agent(c),
@@ -484,7 +591,18 @@ impl App {
         };
         let id = self.next_id;
         self.next_id += 1;
-        match Pane::spawn(id, &Waker::Window(self.proxy.clone()), &self.session, cwd, program, args, command, size, self.cell(), env) {
+        match Pane::spawn(
+            id,
+            &self.proxy,
+            &self.session,
+            cwd,
+            program,
+            args,
+            command,
+            size,
+            self.cell(),
+            env,
+        ) {
             Ok(p) => {
                 self.panes.insert(id, p);
                 self.dirty = true;
@@ -497,18 +615,35 @@ impl App {
         }
     }
 
-    fn new_tab(&mut self, cwd: PathBuf, command: Option<String>, env: Vec<(String, String)>) -> Option<u64> {
+    fn new_tab(
+        &mut self,
+        cwd: PathBuf,
+        command: Option<String>,
+        env: Vec<(String, String)>,
+    ) -> Option<u64> {
         let size = self.grid_size(self.content());
         let id = self.spawn(cwd, command, env, size)?;
-        self.tabs.push(TabView { layout: Node::Leaf(id), focus: id });
+        self.tabs.push(TabView {
+            layout: Node::Leaf(id),
+            focus: id,
+        });
         self.active = self.tabs.len() - 1;
         Some(id)
     }
 
-    fn split(&mut self, side_by_side: bool, command: Option<String>, target: Option<u64>) -> Option<u64> {
+    fn split(
+        &mut self,
+        side_by_side: bool,
+        command: Option<String>,
+        target: Option<u64>,
+    ) -> Option<u64> {
         let target = target.or_else(|| self.tabs.get(self.active).map(|t| t.focus))?;
         let ti = self.tab_of(target)?;
-        let cwd = self.panes.get(&target).map(|p| p.cwd.clone()).unwrap_or_else(platform::home);
+        let cwd = self
+            .panes
+            .get(&target)
+            .map(|p| p.cwd.clone())
+            .unwrap_or_else(platform::home);
         let size = self.grid_size(self.content());
         let id = self.spawn(cwd, command, Vec::new(), size)?;
         self.tabs[ti].layout.split(target, id, side_by_side);
@@ -519,15 +654,21 @@ impl App {
     }
 
     fn tab_of(&self, pane: u64) -> Option<usize> {
-        self.tabs.iter().position(|t| t.layout.leaves().contains(&pane))
+        self.tabs
+            .iter()
+            .position(|t| t.layout.leaves().contains(&pane))
     }
 
     fn focused(&self) -> Option<u64> {
-        self.popup.or_else(|| self.tabs.get(self.active).map(|t| t.focus))
+        self.popup
+            .or_else(|| self.tabs.get(self.active).map(|t| t.focus))
     }
 
     fn cwd(&self) -> PathBuf {
-        self.focused().and_then(|id| self.panes.get(&id)).map(|p| p.cwd.clone()).unwrap_or_else(platform::home)
+        self.focused()
+            .and_then(|id| self.panes.get(&id))
+            .map(|p| p.cwd.clone())
+            .unwrap_or_else(platform::home)
     }
 
     /// Which room a pane is in.
@@ -535,7 +676,9 @@ impl App {
         if self.tab_of(pane).is_some() {
             return Some(self.room);
         }
-        self.rooms.iter().position(|r| r.tabs.iter().any(|t| t.layout.leaves().contains(&pane)))
+        self.rooms
+            .iter()
+            .position(|r| r.tabs.iter().any(|t| t.layout.leaves().contains(&pane)))
     }
 
     fn switch_room(&mut self, i: usize) {
@@ -559,30 +702,36 @@ impl App {
     fn new_room(&mut self) {
         let cwd = self.cwd();
         let n = self.rooms.len() + 1;
-        self.rooms.push(Room { name: format!("Room {n}"), tabs: Vec::new(), active: 0 });
+        self.rooms.push(Room {
+            name: format!("Room {n}"),
+            tabs: Vec::new(),
+            active: 0,
+        });
         self.switch_room(self.rooms.len() - 1);
         self.new_tab(cwd, None, Vec::new());
     }
 
     /// The current room is empty: drop it and go to a neighbour (or start fresh).
-    fn leave_empty_room(&mut self, el: &ActiveEventLoop) {
+    fn leave_empty_room(&mut self) {
         if self.rooms.len() > 1 {
             let gone = self.room;
             self.rooms.remove(gone);
             let next = gone.min(self.rooms.len() - 1);
             self.tabs = std::mem::take(&mut self.rooms[next].tabs);
-            self.active = self.rooms[next].active.min(self.tabs.len().saturating_sub(1));
+            self.active = self.rooms[next]
+                .active
+                .min(self.tabs.len().saturating_sub(1));
             self.room = next;
         } else if platform::in_lightsout() {
             self.new_tab(platform::home(), None, Vec::new());
         } else {
             // the last tab closed: start fresh next time
             let _ = std::fs::remove_file(session::local_file(&self.session));
-            el.exit();
+            self.quit = true;
         }
     }
 
-    fn close_room(&mut self, el: &ActiveEventLoop) {
+    fn close_room(&mut self) {
         let ids: Vec<u64> = self.tabs.iter().flat_map(|t| t.layout.leaves()).collect();
         for id in ids {
             if let Some(p) = self.panes.remove(&id) {
@@ -590,7 +739,7 @@ impl App {
             }
         }
         self.tabs.clear();
-        self.leave_empty_room(el);
+        self.leave_empty_room();
         self.resize_all();
     }
 
@@ -608,7 +757,7 @@ impl App {
         self.dirty = true;
     }
 
-    fn close_pane(&mut self, id: u64, el: &ActiveEventLoop) {
+    fn close_pane(&mut self, id: u64) {
         // a pane in another room closes there, without switching rooms
         if self.popup != Some(id) {
             if let Some(r) = self.room_of(id).filter(|r| *r != self.room) {
@@ -653,13 +802,17 @@ impl App {
             p.shutdown();
         }
         if self.tabs.is_empty() {
-            self.leave_empty_room(el);
+            self.leave_empty_room();
         }
         self.resize_all();
     }
 
     fn toast(&mut self, text: String, color: u32) {
-        self.toasts.push(Toast { text, color, at: Instant::now() });
+        self.toasts.push(Toast {
+            text,
+            color,
+            at: Instant::now(),
+        });
         if self.toasts.len() > 4 {
             self.toasts.remove(0);
         }
@@ -683,7 +836,11 @@ impl App {
 
     fn status_tick(&mut self) {
         self.status_at = Instant::now();
-        let focused = if self.window_focused && !self.hidden && !self.screen_off { self.focused() } else { None };
+        let focused = if self.window_focused && !self.hidden && !self.screen_off {
+            self.focused()
+        } else {
+            None
+        };
         let extra = self.cfg.status.needs_you.clone();
         let watching = !self.waiters.is_empty();
         let mut changes = Vec::new();
@@ -705,7 +862,9 @@ impl App {
             let running = platform::running_programs(&pids);
             platform::stay_awake(running.values().any(|r| r.is_some()));
             for p in self.panes.values_mut() {
-                let now = p.shell_pid.and_then(|pid| running.get(&pid).cloned().flatten());
+                let now = p
+                    .shell_pid
+                    .and_then(|pid| running.get(&pid).cloned().flatten());
                 if now != p.running {
                     p.running = now;
                     self.dirty = true;
@@ -723,7 +882,11 @@ impl App {
     }
 
     fn alert(&mut self, id: u64, s: State) {
-        let name = self.panes.get(&id).map(|p| p.title.clone()).unwrap_or_default();
+        let name = self
+            .panes
+            .get(&id)
+            .map(|p| p.title.clone())
+            .unwrap_or_default();
         let text = match s {
             State::NeedsYou => format!("{name} needs you  (Ctrl+Shift+J)"),
             _ => format!("{name} is done  (Ctrl+Shift+J)"),
@@ -732,7 +895,11 @@ impl App {
             self.toast(text, if s == State::NeedsYou { ALERT } else { DONE });
         }
         if self.cfg.notify.sound && !platform::in_lightsout() {
-            let file = if s == State::NeedsYou { &self.cfg.notify.sound_needs_you } else { &self.cfg.notify.sound_done };
+            let file = if s == State::NeedsYou {
+                &self.cfg.notify.sound_needs_you
+            } else {
+                &self.cfg.notify.sound_done
+            };
             platform::sound(file, s == State::NeedsYou);
         }
     }
@@ -773,16 +940,33 @@ impl App {
             .iter()
             .enumerate()
             .map(|(ri, r)| {
-                let (tabs, active) = if ri == self.room { (&self.tabs, self.active) } else { (&r.tabs, r.active) };
-                session::SavedRoom { name: r.name.clone(), tabs: self.saved_tabs(tabs, running, screen_lines), active }
+                let (tabs, active) = if ri == self.room {
+                    (&self.tabs, self.active)
+                } else {
+                    (&r.tabs, r.active)
+                };
+                session::SavedRoom {
+                    name: r.name.clone(),
+                    tabs: self.saved_tabs(tabs, running, screen_lines),
+                    active,
+                }
             })
             .collect();
-        Saved { tabs: Vec::new(), active: 0, rooms, room: self.room }
+        Saved {
+            tabs: Vec::new(),
+            active: 0,
+            rooms,
+            room: self.room,
+        }
     }
 
-    fn saved_tabs(&self, tabs: &[TabView], running: &HashMap<u32, Option<String>>, screen_lines: usize) -> Vec<SavedTab> {
-        tabs
-            .iter()
+    fn saved_tabs(
+        &self,
+        tabs: &[TabView],
+        running: &HashMap<u32, Option<String>>,
+        screen_lines: usize,
+    ) -> Vec<SavedTab> {
+        tabs.iter()
             .map(|t| {
                 let ids = t.layout.leaves();
                 let index = |id: u64| ids.iter().position(|x| *x == id).unwrap_or(0) as u64;
@@ -791,18 +975,28 @@ impl App {
                     .filter_map(|id| self.panes.get(id))
                     .map(|p| SavedPane {
                         cwd: p.cwd.to_string_lossy().to_string(),
-                        command: p.shell_pid.and_then(|pid| running.get(&pid).cloned().flatten()).or_else(|| p.command.clone()),
+                        command: p
+                            .shell_pid
+                            .and_then(|pid| running.get(&pid).cloned().flatten())
+                            .or_else(|| p.command.clone()),
                         screen: (screen_lines > 0).then(|| p.text(screen_lines)),
                     })
                     .collect();
-                SavedTab { layout: t.layout.remap(&index), panes, focus: index(t.focus) as usize }
+                SavedTab {
+                    layout: t.layout.remap(&index),
+                    panes,
+                    focus: index(t.focus) as usize,
+                }
             })
             .collect()
     }
 
     fn save_session(&mut self) {
         self.saved_at = Instant::now();
-        if !self.cfg.history.keep || platform::in_lightsout() || (self.tabs.is_empty() && self.rooms.iter().all(|r| r.tabs.is_empty())) {
+        if !self.cfg.history.keep
+            || platform::in_lightsout()
+            || (self.tabs.is_empty() && self.rooms.iter().all(|r| r.tabs.is_empty()))
+        {
             return;
         }
         let s = self.saved(200);
@@ -814,7 +1008,11 @@ impl App {
     fn restore(&mut self, saved: Saved, from_windows: bool, continue_agents: bool) {
         let mut rooms = saved.rooms;
         if rooms.is_empty() && !saved.tabs.is_empty() {
-            rooms.push(session::SavedRoom { name: "Room 1".into(), tabs: saved.tabs, active: saved.active });
+            rooms.push(session::SavedRoom {
+                name: "Room 1".into(),
+                tabs: saved.tabs,
+                active: saved.active,
+            });
         }
         if rooms.is_empty() {
             return;
@@ -825,37 +1023,69 @@ impl App {
             self.restore_tabs(&r.tabs, from_windows, continue_agents, ri);
             let tabs = std::mem::take(&mut self.tabs);
             if !tabs.is_empty() {
-                self.rooms.push(Room { name: r.name.clone(), active: r.active.min(tabs.len() - 1), tabs });
+                self.rooms.push(Room {
+                    name: r.name.clone(),
+                    active: r.active.min(tabs.len() - 1),
+                    tabs,
+                });
             }
         }
         if self.rooms.is_empty() {
-            self.rooms.push(Room { name: "Room 1".into(), tabs: Vec::new(), active: 0 });
+            self.rooms.push(Room {
+                name: "Room 1".into(),
+                tabs: Vec::new(),
+                active: 0,
+            });
         }
         self.room = saved.room.min(self.rooms.len() - 1);
         self.tabs = std::mem::take(&mut self.rooms[self.room].tabs);
-        self.active = self.rooms[self.room].active.min(self.tabs.len().saturating_sub(1));
+        self.active = self.rooms[self.room]
+            .active
+            .min(self.tabs.len().saturating_sub(1));
         self.resize_all();
     }
 
-    fn restore_tabs(&mut self, saved_tabs: &[SavedTab], from_windows: bool, continue_agents: bool, room: usize) {
+    fn restore_tabs(
+        &mut self,
+        saved_tabs: &[SavedTab],
+        from_windows: bool,
+        continue_agents: bool,
+        room: usize,
+    ) {
         for (ti, t) in saved_tabs.iter().enumerate() {
             let mut ids = Vec::new();
             for (n, p) in t.panes.iter().enumerate() {
-                let cwd = if from_windows { platform::map_path(&p.cwd) } else { PathBuf::from(&p.cwd) };
+                let cwd = if from_windows {
+                    platform::map_path(&p.cwd)
+                } else {
+                    PathBuf::from(&p.cwd)
+                };
                 if from_windows {
                     platform::link_claude_history(&p.cwd, &cwd);
                 }
                 let mut env = Vec::new();
                 if let Some(screen) = p.screen.as_ref().filter(|s| !s.trim().is_empty()) {
-                    let f = std::env::temp_dir().join(format!("lightsout-screen-{room}-{ti}-{n}.txt"));
+                    let f =
+                        std::env::temp_dir().join(format!("lightsout-screen-{room}-{ti}-{n}.txt"));
                     if std::fs::write(&f, screen).is_ok() {
-                        env.push(("LIGHTSOUT_SCREEN".to_string(), f.to_string_lossy().to_string()));
+                        env.push((
+                            "LIGHTSOUT_SCREEN".to_string(),
+                            f.to_string_lossy().to_string(),
+                        ));
                     }
                 }
                 // after a switch: a known way to continue (resume.conf) runs; otherwise,
                 // and always when just reopening, the command is typed back in
-                let resume = p.command.as_deref().filter(|_| continue_agents).and_then(platform::resume_command);
-                let typed = if resume.is_none() { p.command.clone() } else { None };
+                let resume = p
+                    .command
+                    .as_deref()
+                    .filter(|_| continue_agents)
+                    .and_then(platform::resume_command);
+                let typed = if resume.is_none() {
+                    p.command.clone()
+                } else {
+                    None
+                };
                 let size = self.grid_size(self.content());
                 let id = self.spawn(cwd, resume, env, size);
                 if let (Some(id), Some(cmd)) = (id, typed) {
@@ -865,7 +1095,9 @@ impl App {
                 }
                 ids.push(id);
             }
-            let Some(first) = ids.iter().flatten().next().copied() else { continue };
+            let Some(first) = ids.iter().flatten().next().copied() else {
+                continue;
+            };
             let map = |i: u64| ids.get(i as usize).copied().flatten().unwrap_or(first);
             let layout = t.layout.remap(&map);
             let focus = ids.get(t.focus).copied().flatten().unwrap_or(first);
@@ -893,22 +1125,47 @@ impl App {
             self.toast("C: is read-only: Windows was hibernated. Shut Windows down fully (or restart) before Lights Out to save files.".into(), ALERT);
         }
         if self.tabs.is_empty() {
-            let start = std::env::current_dir().ok().filter(|d| d.is_dir()).unwrap_or_else(platform::home);
+            let start = std::env::current_dir()
+                .ok()
+                .filter(|d| d.is_dir())
+                .unwrap_or_else(platform::home);
             self.new_tab(start, None, Vec::new());
         }
         self.start_bar_items();
     }
 
     fn start_bar_items(&mut self) {
-        self.bar_texts = self.cfg.bar.items.iter().map(|i| i.text.clone().unwrap_or_default()).collect();
+        self.bar_texts = self
+            .cfg
+            .bar
+            .items
+            .iter()
+            .map(|i| i.text.clone().unwrap_or_default())
+            .collect();
         for (n, item) in self.cfg.bar.items.iter().enumerate() {
-            let Some(cmd) = item.command.clone() else { continue };
+            let Some(cmd) = item.command.clone() else {
+                continue;
+            };
             let (proxy, every) = (self.proxy.clone(), item.every.max(5));
             std::thread::spawn(move || loop {
-                let (sh, flag) = if cfg!(windows) { ("cmd", "/C") } else { ("sh", "-c") };
+                let (sh, flag) = if cfg!(windows) {
+                    ("cmd", "/C")
+                } else {
+                    ("sh", "-c")
+                };
                 let out = platform::quiet(sh).args([flag, &cmd]).output();
-                let text = out.map(|o| String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").chars().take(40).collect()).unwrap_or_default();
-                if proxy.send_event(UserEvent::BarText(n, text)).is_err() {
+                let text = out
+                    .map(|o| {
+                        String::from_utf8_lossy(&o.stdout)
+                            .lines()
+                            .next()
+                            .unwrap_or("")
+                            .chars()
+                            .take(40)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if !proxy.send(UserEvent::BarText(n, text)) {
                     break;
                 }
                 std::thread::sleep(Duration::from_secs(every));
@@ -925,14 +1182,21 @@ impl App {
             let _ = tx.send(platform::enter_lightsout(&saved));
         });
         self.switching = Some(rx);
-        self.toast("Switching to Lights Out... saving your tabs".into(), self.theme.accent);
+        self.toast(
+            "Switching to Lights Out... saving your tabs".into(),
+            self.theme.accent,
+        );
     }
 
     // ------------------------------------------------------------ actions
 
     fn actions(&self) -> Vec<Item> {
         let lo = platform::in_lightsout();
-        let item = |label: &str, hint: &str, action: Action| Item { label: label.into(), hint: hint.into(), action };
+        let item = |label: &str, hint: &str, action: Action| Item {
+            label: label.into(),
+            hint: hint.into(),
+            action,
+        };
         let mut v = vec![
             item("New tab", "Ctrl+Shift+T", Action::NewTab),
             item("Start an agent...", "Ctrl+Shift+A", Action::RunCommand),
@@ -940,7 +1204,11 @@ impl App {
             item("Split down", "Ctrl+Shift+Down", Action::SplitDown),
             item("Move between panes", "Alt+arrows", Action::NextTab),
             item("Close pane", "Ctrl+Shift+W", Action::ClosePane),
-            item("Jump to the agent that needs you", "Ctrl+Shift+J", Action::Jump),
+            item(
+                "Jump to the agent that needs you",
+                "Ctrl+Shift+J",
+                Action::Jump,
+            ),
             item("Next tab", "Ctrl+Tab", Action::NextTab),
             item("Previous tab", "Ctrl+Shift+Tab", Action::PrevTab),
             item("Open output in an editor", "Ctrl+Shift+E", Action::Editor),
@@ -951,31 +1219,63 @@ impl App {
             item("New room", "Ctrl+Shift+N", Action::NewRoom),
             item("Rename this room", "", Action::RenameRoom),
             item("Delete this room (stops its agents)", "", Action::CloseRoom),
-            item("Show / hide the sidebar", "Ctrl+Shift+B", Action::ToggleSidebar),
+            item(
+                "Show / hide the sidebar",
+                "Ctrl+Shift+B",
+                Action::ToggleSidebar,
+            ),
             item("Settings", "Ctrl+,", Action::Settings),
         ];
         if platform::wifi_available() {
             v.push(item("Wi-Fi...", "", Action::Wifi));
         }
         if lo {
-            v.push(item("Screen off (any key turns it on)", "Ctrl+Shift+O", Action::ScreenOff));
-            let back = if platform::image() { "Lights On (back to Windows)" } else { "Lights On (back to the desktop)" };
+            v.push(item(
+                "Screen off (any key turns it on)",
+                "Ctrl+Shift+O",
+                Action::ScreenOff,
+            ));
+            let back = if platform::image() {
+                "Lights On (back to Windows)"
+            } else {
+                "Lights On (back to the desktop)"
+            };
             v.push(item(back, "Ctrl+Shift+L", Action::BackToWindows));
         } else {
-            let what = if cfg!(windows) { "Lights Out (Windows off, only this terminal)" } else { "Lights Out (desktop off, only this terminal)" };
+            let what = if cfg!(windows) {
+                "Lights Out (Windows off, only this terminal)"
+            } else {
+                "Lights Out (desktop off, only this terminal)"
+            };
             v.push(item(what, "Ctrl+Shift+L", Action::Lights));
-            v.push(item("Quit (stops all agents)", "Ctrl+Shift+Q", Action::Quit));
+            v.push(item(
+                "Quit (stops all agents)",
+                "Ctrl+Shift+Q",
+                Action::Quit,
+            ));
         }
         for (i, r) in self.rooms.iter().enumerate() {
             if i != self.room {
-                v.push(item(&format!("Go to {}", r.name), "room", Action::GoRoom(i)));
+                v.push(item(
+                    &format!("Go to {}", r.name),
+                    "room",
+                    Action::GoRoom(i),
+                ));
             }
         }
         for m in &self.cfg.machine {
-            v.push(item(&format!("Connect to {}", m.name), &m.ssh, Action::Remote(m.ssh.clone())));
+            v.push(item(
+                &format!("Connect to {}", m.name),
+                &m.ssh,
+                Action::Remote(m.ssh.clone()),
+            ));
         }
         for (k, c) in &self.cfg.keys {
-            v.push(item(&format!("Run: {}", c.command), k, Action::Custom(c.clone())));
+            v.push(item(
+                &format!("Run: {}", c.command),
+                k,
+                Action::Custom(c.clone()),
+            ));
         }
         v
     }
@@ -983,7 +1283,10 @@ impl App {
     fn agent_items(&self) -> Vec<Item> {
         // the programs listed in resume.conf (data), plus "any command"
         let mut names: Vec<String> = Vec::new();
-        for f in [PathBuf::from("/usr/local/share/lightsout/resume.conf"), platform::home().join(".config/lightsout/resume.conf")] {
+        for f in [
+            PathBuf::from("/usr/local/share/lightsout/resume.conf"),
+            platform::home().join(".config/lightsout/resume.conf"),
+        ] {
             for line in std::fs::read_to_string(f).unwrap_or_default().lines() {
                 let line = line.trim();
                 if line.starts_with('#') {
@@ -1000,13 +1303,26 @@ impl App {
         if names.is_empty() {
             names = vec!["claude".into(), "codex".into()];
         }
-        let mut v: Vec<Item> = names.into_iter().map(|n| Item { label: n.clone(), hint: "new tab".into(), action: Action::Agent(n) }).collect();
-        v.push(Item { label: "Any other command...".into(), hint: "type it".into(), action: Action::RunCommand });
+        let mut v: Vec<Item> = names
+            .into_iter()
+            .map(|n| Item {
+                label: n.clone(),
+                hint: "new tab".into(),
+                action: Action::Agent(n),
+            })
+            .collect();
+        v.push(Item {
+            label: "Any other command...".into(),
+            hint: "type it".into(),
+            action: Action::RunCommand,
+        });
         v
     }
 
     fn join_wifi(&mut self, i: usize, password: Option<String>) {
-        let Some(ssid) = self.wifi_nets.get(i).map(|n| n.ssid.clone()) else { return };
+        let Some(ssid) = self.wifi_nets.get(i).map(|n| n.ssid.clone()) else {
+            return;
+        };
         let (tx, rx) = mpsc::channel();
         let name = ssid.clone();
         std::thread::spawn(move || {
@@ -1017,11 +1333,21 @@ impl App {
     }
 
     fn open_palette(&mut self) {
-        self.overlay = Overlay::Palette { title: "Everything Lights Out can do".into(), items: self.actions(), filter: String::new(), sel: 0 };
+        let mut items = self.actions();
+        if self.tui {
+            // inside a terminal, the terminal sets the font
+            items.retain(|i| !matches!(i.action, Action::FontBigger | Action::FontSmaller));
+        }
+        self.overlay = Overlay::Palette {
+            title: "Everything Lights Out can do".into(),
+            items,
+            filter: String::new(),
+            sel: 0,
+        };
         self.dirty = true;
     }
 
-    fn run(&mut self, a: Action, el: &ActiveEventLoop) {
+    fn run(&mut self, a: Action) {
         let cwd = self.cwd();
         match a {
             Action::NewTab => {
@@ -1031,14 +1357,22 @@ impl App {
                 self.new_tab(cwd, Some(c), Vec::new());
             }
             Action::RunCommand => {
-                self.overlay = Overlay::Ask { title: "Command to run in a new tab:".into(), text: String::new(), purpose: Purpose::Command }
+                self.overlay = Overlay::Ask {
+                    title: "Command to run in a new tab:".into(),
+                    text: String::new(),
+                    purpose: Purpose::Command,
+                }
             }
             Action::NewRoom => self.new_room(),
             Action::RenameRoom => {
                 let text = self.rooms[self.room].name.clone();
-                self.overlay = Overlay::Ask { title: "Room name:".into(), text, purpose: Purpose::RoomName(self.room) };
+                self.overlay = Overlay::Ask {
+                    title: "Room name:".into(),
+                    text,
+                    purpose: Purpose::RoomName(self.room),
+                };
             }
-            Action::CloseRoom => self.close_room(el),
+            Action::CloseRoom => self.close_room(),
             Action::GoRoom(i) => self.switch_room(i),
             Action::SplitRight => {
                 self.split(true, None, None);
@@ -1048,7 +1382,7 @@ impl App {
             }
             Action::ClosePane => {
                 if let Some(id) = self.focused() {
-                    self.close_pane(id, el);
+                    self.close_pane(id);
                 }
             }
             Action::NextTab => self.cycle(1),
@@ -1081,14 +1415,22 @@ impl App {
                         self.toast(format!("Already on {}", n.ssid), DIMTEXT);
                     } else if n.secure {
                         let title = format!("Password for {}:", n.ssid);
-                        self.overlay = Overlay::Ask { title, text: String::new(), purpose: Purpose::WifiPassword(i) };
+                        self.overlay = Overlay::Ask {
+                            title,
+                            text: String::new(),
+                            purpose: Purpose::WifiPassword(i),
+                        };
                     } else {
                         self.join_wifi(i, None);
                     }
                 }
             }
             Action::WifiOther => {
-                self.overlay = Overlay::Ask { title: "Network name:".into(), text: String::new(), purpose: Purpose::WifiName };
+                self.overlay = Overlay::Ask {
+                    title: "Network name:".into(),
+                    text: String::new(),
+                    purpose: Purpose::WifiName,
+                };
             }
             Action::ScreenOff => {
                 platform::screen(false);
@@ -1107,7 +1449,9 @@ impl App {
             Action::FontSmaller => self.set_font(self.fonts.px - 1.0),
             Action::ToggleSidebar => {
                 self.sidebar = !self.sidebar;
-                save_ui(&UiState { sidebar: self.sidebar });
+                save_ui(&UiState {
+                    sidebar: self.sidebar,
+                });
                 self.resize_all();
             }
             Action::Custom(k) => match k.mode.as_str() {
@@ -1145,7 +1489,10 @@ impl App {
     }
 
     fn copy(&mut self) {
-        let text = self.focused().and_then(|id| self.panes.get(&id)).and_then(|p| p.term.lock().selection_to_string());
+        let text = self
+            .focused()
+            .and_then(|id| self.panes.get(&id))
+            .and_then(|p| p.term.lock().selection_to_string());
         if let (Some(t), Some(c)) = (text, self.clipboard.as_mut()) {
             let _ = c.set_text(t);
             self.toast("Copied".into(), DIMTEXT);
@@ -1153,15 +1500,42 @@ impl App {
     }
 
     fn paste(&mut self) {
-        let Some(text) = self.clipboard.as_mut().and_then(|c| c.get_text().ok()) else { return };
-        let Some(p) = self.focused().and_then(|id| self.panes.get(&id)) else { return };
+        let Some(text) = self.clipboard.as_mut().and_then(|c| c.get_text().ok()) else {
+            return;
+        };
+        self.paste_text(text);
+    }
+
+    /// Pasted text goes to the open question or list filter, else to the focused pane.
+    fn paste_text(&mut self, text: String) {
+        match &mut self.overlay {
+            Overlay::Ask { text: t, .. } | Overlay::Palette { filter: t, .. } => {
+                t.push_str(text.lines().next().unwrap_or_default());
+                self.dirty = true;
+                return;
+            }
+            Overlay::None => {}
+            _ => return,
+        }
+        let Some(p) = self.focused().and_then(|id| self.panes.get(&id)) else {
+            return;
+        };
         let bracketed = p.term.lock().mode().contains(TermMode::BRACKETED_PASTE);
         let text = text.replace("\r\n", "\r").replace('\n', "\r");
-        p.input(if bracketed { format!("\x1b[200~{text}\x1b[201~") } else { text }.into_bytes());
+        p.input(
+            if bracketed {
+                format!("\x1b[200~{text}\x1b[201~")
+            } else {
+                text
+            }
+            .into_bytes(),
+        );
     }
 
     fn open_in_editor(&mut self) {
-        let Some(p) = self.focused().and_then(|id| self.panes.get(&id)) else { return };
+        let Some(p) = self.focused().and_then(|id| self.panes.get(&id)) else {
+            return;
+        };
         let file = std::env::temp_dir().join(format!("lightsout-output-{}.txt", p.id));
         let (text, cwd) = (p.text(100_000), p.cwd.clone());
         if std::fs::write(&file, text).is_ok() {
@@ -1194,11 +1568,11 @@ impl App {
         Some(parts.join("+"))
     }
 
-    fn shortcut(&mut self, key: &Key, el: &ActiveEventLoop) -> bool {
+    fn shortcut(&mut self, key: &Key) -> bool {
         // your own keys from the settings file come first
         if let Some(name) = self.key_name(key) {
             if let Some(k) = self.cfg.keys.get(&name).cloned() {
-                self.run(Action::Custom(k), el);
+                self.run(Action::Custom(k));
                 return true;
             }
         }
@@ -1214,7 +1588,12 @@ impl App {
                     return true;
                 }
                 (Some('a'), _) => {
-                    self.overlay = Overlay::Palette { title: "Start an agent in a new tab".into(), items: self.agent_items(), filter: String::new(), sel: 0 };
+                    self.overlay = Overlay::Palette {
+                        title: "Start an agent in a new tab".into(),
+                        items: self.agent_items(),
+                        filter: String::new(),
+                        sel: 0,
+                    };
                     self.dirty = true;
                     return true;
                 }
@@ -1274,7 +1653,11 @@ impl App {
             }
             return false;
         } else if m.shift_key() {
-            let rows = self.focused().and_then(|id| self.panes.get(&id)).map(|p| p.size.rows as i32).unwrap_or(20);
+            let rows = self
+                .focused()
+                .and_then(|id| self.panes.get(&id))
+                .map(|p| p.size.rows as i32)
+                .unwrap_or(20);
             match key {
                 Key::Named(NamedKey::PageUp) => self.scroll(rows / 2),
                 Key::Named(NamedKey::PageDown) => self.scroll(-rows / 2),
@@ -1285,7 +1668,7 @@ impl App {
         } else {
             return false;
         };
-        self.run(action, el);
+        self.run(action);
         true
     }
 
@@ -1297,7 +1680,7 @@ impl App {
     }
 
     /// Keys while a palette, menu, question or confirmation is open.
-    fn overlay_key(&mut self, key: &Key, text: Option<&str>, el: &ActiveEventLoop) -> bool {
+    fn overlay_key(&mut self, key: &Key, text: Option<&str>) -> bool {
         if matches!(self.overlay, Overlay::None) {
             return false;
         }
@@ -1320,13 +1703,16 @@ impl App {
                         for p in self.panes.values() {
                             p.shutdown();
                         }
-                        el.exit();
+                        self.quit = true;
                     }
                 }
             }
             return true;
         }
-        if let Overlay::Ask { text: t, purpose, .. } = &mut self.overlay {
+        if let Overlay::Ask {
+            text: t, purpose, ..
+        } = &mut self.overlay
+        {
             match key {
                 Key::Named(NamedKey::Escape) => self.overlay = Overlay::None,
                 Key::Named(NamedKey::Enter) => {
@@ -1347,9 +1733,18 @@ impl App {
                             Purpose::WifiPassword(i) => self.join_wifi(i, Some(value)),
                             Purpose::WifiName => {
                                 // a network that isn't listed (hidden, or a name macOS doesn't show)
-                                self.wifi_nets.push(platform::Net { ssid: value.clone(), secure: true, signal: 0, connected: false });
+                                self.wifi_nets.push(platform::Net {
+                                    ssid: value.clone(),
+                                    secure: true,
+                                    signal: 0,
+                                    connected: false,
+                                });
                                 let i = self.wifi_nets.len() - 1;
-                                self.overlay = Overlay::Ask { title: format!("Password for {value} (Esc if none):"), text: String::new(), purpose: Purpose::WifiPassword(i) };
+                                self.overlay = Overlay::Ask {
+                                    title: format!("Password for {value} (Esc if none):"),
+                                    text: String::new(),
+                                    purpose: Purpose::WifiPassword(i),
+                                };
                             }
                         }
                     }
@@ -1375,7 +1770,7 @@ impl App {
                 let action = visible.get(self.sel()).cloned();
                 self.overlay = Overlay::None;
                 if let Some(a) = action {
-                    self.run(a, el);
+                    self.run(a);
                 }
             }
             Key::Named(NamedKey::Backspace) => {
@@ -1400,7 +1795,11 @@ impl App {
         match &self.overlay {
             Overlay::Palette { items, filter, .. } => {
                 let f = filter.to_lowercase();
-                items.iter().filter(|i| f.is_empty() || i.label.to_lowercase().contains(&f)).map(|i| i.action.clone()).collect()
+                items
+                    .iter()
+                    .filter(|i| f.is_empty() || i.label.to_lowercase().contains(&f))
+                    .map(|i| i.action.clone())
+                    .collect()
             }
             Overlay::Menu { items, .. } => items.iter().map(|i| i.action.clone()).collect(),
             _ => Vec::new(),
@@ -1423,7 +1822,9 @@ impl App {
     }
 
     fn lock_key(&mut self, key: &Key) {
-        let Lock::Locked { salt, hash, wrong } = &mut self.lock else { return };
+        let Lock::Locked { salt, hash, wrong } = &mut self.lock else {
+            return;
+        };
         match key {
             Key::Named(NamedKey::Enter) => {
                 if platform::pin_matches(salt, hash, &self.pin) {
@@ -1456,32 +1857,86 @@ impl App {
                 return Some((p, r));
             }
         }
-        self.active_rects().into_iter().find(|(_, r)| r.contains(x, y))
+        self.active_rects()
+            .into_iter()
+            .find(|(_, r)| r.contains(x, y))
     }
 
     fn cell_point(&self, pane: u64, r: Rect, x: i32, y: i32) -> Option<(Point, Side)> {
         let p = self.panes.get(&pane)?;
         let (cw, ch) = (self.fonts.cell_w as i32, self.fonts.cell_h as i32);
-        let col = ((x - r.x - PADX).max(0) / cw).min(p.size.cols as i32 - 1);
-        let row = ((y - r.y - 2).max(0) / ch).min(p.size.rows as i32 - 1);
+        let (padx, pady) = (self.padx(), self.pady());
+        let col = ((x - r.x - padx).max(0) / cw).min(p.size.cols as i32 - 1);
+        let row = ((y - r.y - pady).max(0) / ch).min(p.size.rows as i32 - 1);
         let offset = p.term.lock().grid().display_offset() as i32;
-        let side = if (x - r.x - PADX).rem_euclid(cw) > cw / 2 { Side::Right } else { Side::Left };
+        let side = if !self.tui && (x - r.x - padx).rem_euclid(cw) > cw / 2 {
+            Side::Right
+        } else {
+            Side::Left
+        };
         Some((Point::new(Line(row - offset), Column(col as usize)), side))
     }
 
-    fn mouse_down(&mut self, button: MouseButton, el: &ActiveEventLoop) {
+    /// A key was pressed (from the window, or from the terminal Lights Out runs in).
+    pub(crate) fn key_press(&mut self, key: &Key, text: Option<&str>) {
+        if self.screen_off {
+            platform::screen(true);
+            self.screen_off = false;
+            self.dirty = true;
+            return;
+        }
+        if matches!(self.lock, Lock::Locked { .. }) {
+            self.lock_key(key);
+            return;
+        }
+        if self.overlay_key(key, text) {
+            return;
+        }
+        if self.shortcut(key) {
+            return;
+        }
+        let Some(id) = self.focused() else { return };
+        let mods = self.mods;
+        if let Some(p) = self.panes.get_mut(&id) {
+            p.det.seen();
+            let app_cursor = {
+                let mut term = p.term.lock();
+                term.selection = None;
+                term.mode().contains(TermMode::APP_CURSOR)
+            };
+            if let Some(bytes) = keys::to_bytes(key, text, mods, app_cursor) {
+                p.input(bytes);
+            }
+        }
+    }
+
+    pub(crate) fn mouse_down(&mut self, button: MouseButton) {
         let (x, y) = (self.mouse.x as i32, self.mouse.y as i32);
         self.dirty = true;
-        if let Overlay::Menu { x: mx, y: my, items, .. } = &self.overlay {
+        if let Overlay::Menu {
+            x: mx,
+            y: my,
+            items,
+            ..
+        } = &self.overlay
+        {
             // a click on a menu row runs it; anywhere else closes the menu
             let cw = self.fonts.cell_w as i32;
             let ch = self.fonts.cell_h as i32;
-            let mw = items.iter().map(|i| i.label.chars().count() + i.hint.chars().count() + 4).max().unwrap_or(10) as i32 * cw;
-            let row = (y - *my - 4) / ch;
-            let action = (x >= *mx && x < *mx + mw && y >= *my + 4 && row >= 0).then(|| items.get(row as usize).map(|i| i.action.clone())).flatten();
+            let mw = items
+                .iter()
+                .map(|i| i.label.chars().count() + i.hint.chars().count() + 4)
+                .max()
+                .unwrap_or(10) as i32
+                * cw;
+            let inset = self.menu_inset();
+            let row = (y - *my - inset) / ch;
+            let action = (x >= *mx && x < *mx + mw && y >= *my + inset && row >= 0)
+                .then(|| items.get(row as usize).map(|i| i.action.clone()))
+                .flatten();
             self.overlay = Overlay::None;
             if let Some(a) = action {
-                self.run(a, el);
+                self.run(a);
             }
             return;
         }
@@ -1489,21 +1944,33 @@ impl App {
             return;
         }
         if x < self.sidebar_w() {
-            let hit = self.hits.iter().find(|(r, _)| r.contains(x, y)).map(|h| h.1);
+            let hit = self
+                .hits
+                .iter()
+                .find(|(r, _)| r.contains(x, y))
+                .map(|h| h.1);
             match hit {
                 Some(Hit::Pane(id)) => self.focus(id),
                 Some(Hit::Room(i)) => self.switch_room(i),
                 Some(Hit::NewRoom) => self.new_room(),
                 Some(Hit::Palette) => self.open_palette(),
                 Some(Hit::Switch) => {
-                    self.overlay = Overlay::Confirm(if platform::in_lightsout() { Confirm::BackToWindows } else { Confirm::EnterLightsOut });
+                    self.overlay = Overlay::Confirm(if platform::in_lightsout() {
+                        Confirm::BackToWindows
+                    } else {
+                        Confirm::EnterLightsOut
+                    });
                 }
                 _ => {}
             }
             return;
         }
         if y < self.bar_h() {
-            let hit = self.hits.iter().find(|(r, _)| r.contains(x, y)).map(|h| h.1);
+            let hit = self
+                .hits
+                .iter()
+                .find(|(r, _)| r.contains(x, y))
+                .map(|h| h.1);
             match hit {
                 Some(Hit::TabsLeft) => {
                     self.tabs_first = self.tabs_first.saturating_sub(1);
@@ -1523,7 +1990,11 @@ impl App {
                 }
                 Some(Hit::Palette) => self.open_palette(),
                 Some(Hit::Switch) => {
-                    self.overlay = Overlay::Confirm(if platform::in_lightsout() { Confirm::BackToWindows } else { Confirm::EnterLightsOut });
+                    self.overlay = Overlay::Confirm(if platform::in_lightsout() {
+                        Confirm::BackToWindows
+                    } else {
+                        Confirm::EnterLightsOut
+                    });
                 }
                 _ => {}
             }
@@ -1532,20 +2003,28 @@ impl App {
         // dragging the line between two panes?
         if button == MouseButton::Left && self.popup.is_none() {
             if let Some(t) = self.tabs.get(self.active) {
+                let reach = if self.tui { 0 } else { 4 };
                 for d in t.layout.layout(self.content()).1 {
                     let near = if d.side_by_side {
-                        (x - d.at).abs() <= 4 && d.area.contains(d.at, y)
+                        (x - d.at).abs() <= reach && d.area.contains(d.at, y)
                     } else {
-                        (y - d.at).abs() <= 4 && d.area.contains(x, d.at)
+                        (y - d.at).abs() <= reach && d.area.contains(x, d.at)
                     };
                     if near {
-                        self.drag = Some(Drag::Divider { tab: self.active, path: d.path, side_by_side: d.side_by_side, area: d.area });
+                        self.drag = Some(Drag::Divider {
+                            tab: self.active,
+                            path: d.path,
+                            side_by_side: d.side_by_side,
+                            area: d.area,
+                        });
                         return;
                     }
                 }
             }
         }
-        let Some((pane, r)) = self.pane_at(x, y) else { return };
+        let Some((pane, r)) = self.pane_at(x, y) else {
+            return;
+        };
         if self.popup != Some(pane) {
             self.focus(pane);
         }
@@ -1553,13 +2032,18 @@ impl App {
             MouseButton::Left => {
                 if let Some((pt, side)) = self.cell_point(pane, r, x, y) {
                     if let Some(p) = self.panes.get(&pane) {
-                        p.term.lock().selection = Some(Selection::new(SelectionType::Simple, pt, side));
+                        p.term.lock().selection =
+                            Some(Selection::new(SelectionType::Simple, pt, side));
                     }
                     self.drag = Some(Drag::Select { pane, origin: r });
                 }
             }
             MouseButton::Right => {
-                let item = |l: &str, h: &str, a: Action| Item { label: l.into(), hint: h.into(), action: a };
+                let item = |l: &str, h: &str, a: Action| Item {
+                    label: l.into(),
+                    hint: h.into(),
+                    action: a,
+                };
                 let items = vec![
                     item("Copy", "Ctrl+Shift+C", Action::Copy),
                     item("Paste", "Ctrl+Shift+V", Action::Paste),
@@ -1568,7 +2052,12 @@ impl App {
                     item("Open output in an editor", "Ctrl+Shift+E", Action::Editor),
                     item("Close pane", "Ctrl+Shift+W", Action::ClosePane),
                 ];
-                self.overlay = Overlay::Menu { x, y, items, sel: 0 };
+                self.overlay = Overlay::Menu {
+                    x,
+                    y,
+                    items,
+                    sel: 0,
+                };
             }
             _ => {}
         }
@@ -1580,15 +2069,28 @@ impl App {
         if lines == 0 {
             return false;
         }
-        if let Overlay::Palette { items, filter, sel, .. } = &mut self.overlay {
+        if let Overlay::Palette {
+            items, filter, sel, ..
+        } = &mut self.overlay
+        {
             let f_l = filter.to_lowercase();
-            let shown = items.iter().filter(|i| f_l.is_empty() || i.label.to_lowercase().contains(&f_l)).count();
+            let shown = items
+                .iter()
+                .filter(|i| f_l.is_empty() || i.label.to_lowercase().contains(&f_l))
+                .count();
             *sel = (*sel as i32 - lines).clamp(0, shown.saturating_sub(1) as i32) as usize;
             self.dirty = true;
             return true;
         }
         let (mx, my) = (self.mouse.x as i32, self.mouse.y as i32);
-        let Some(area) = self.scroll_areas.iter().find(|(r, _)| r.contains(mx, my)).map(|a| a.1) else { return false };
+        let Some(area) = self
+            .scroll_areas
+            .iter()
+            .find(|(r, _)| r.contains(mx, my))
+            .map(|a| a.1)
+        else {
+            return false;
+        };
         let step = -lines.signum();
         let moved = |v: usize| (v as i32 + step).max(0) as usize;
         match area {
@@ -1600,11 +2102,33 @@ impl App {
         true
     }
 
+    /// The wheel: a list under the mouse scrolls, else the pane under it.
+    fn on_wheel(&mut self, lines: i32) {
+        if self.wheel(lines) {
+            return;
+        }
+        if let Some((id, _)) = self.pane_at(self.mouse.x as i32, self.mouse.y as i32) {
+            if let Some(p) = self.panes.get(&id) {
+                p.scroll(lines);
+                self.dirty = true;
+            }
+        }
+    }
+
     fn mouse_move(&mut self) {
         let (x, y) = (self.mouse.x as i32, self.mouse.y as i32);
         match &self.drag {
-            Some(Drag::Divider { tab, path, side_by_side, area }) => {
-                let ratio = if *side_by_side { (x - area.x) as f32 / area.w.max(1) as f32 } else { (y - area.y) as f32 / area.h.max(1) as f32 };
+            Some(Drag::Divider {
+                tab,
+                path,
+                side_by_side,
+                area,
+            }) => {
+                let ratio = if *side_by_side {
+                    (x - area.x) as f32 / area.w.max(1) as f32
+                } else {
+                    (y - area.y) as f32 / area.h.max(1) as f32
+                };
                 let (tab, path) = (*tab, path.clone());
                 if let Some(t) = self.tabs.get_mut(tab) {
                     t.layout.set_ratio(&path, ratio);
@@ -1629,7 +2153,11 @@ impl App {
     fn mouse_up(&mut self) {
         match self.drag.take() {
             Some(Drag::Select { pane, .. }) => {
-                let text = self.panes.get(&pane).and_then(|p| p.term.lock().selection_to_string()).filter(|t| !t.is_empty());
+                let text = self
+                    .panes
+                    .get(&pane)
+                    .and_then(|p| p.term.lock().selection_to_string())
+                    .filter(|t| !t.is_empty());
                 match text {
                     Some(t) => {
                         if let Some(c) = self.clipboard.as_mut() {
@@ -1650,9 +2178,13 @@ impl App {
 
     // ------------------------------------------------------------ API (`lightsout <command>`)
 
-    fn api(&mut self, req: api::Request, el: &ActiveEventLoop) {
+    fn api(&mut self, req: api::Request) {
         let a = req.args.clone();
-        let pane_arg = |a: &Value| -> Option<u64> { a["pane"].as_u64().or_else(|| a["pane"].as_str().and_then(|s| s.parse().ok())) };
+        let pane_arg = |a: &Value| -> Option<u64> {
+            a["pane"]
+                .as_u64()
+                .or_else(|| a["pane"].as_str().and_then(|s| s.parse().ok()))
+        };
         let resp = match req.cmd.as_str() {
             "show" => {
                 if let Some(w) = &self.window {
@@ -1660,12 +2192,16 @@ impl App {
                     w.focus_window();
                 }
                 self.hidden = false;
-                json!({ "ok": true })
+                json!({ "ok": true, "terminal": self.tui })
             }
             "list" => {
                 let mut v = Vec::new();
                 for (ri, room) in self.rooms.iter().enumerate() {
-                    let tabs = if ri == self.room { &self.tabs } else { &room.tabs };
+                    let tabs = if ri == self.room {
+                        &self.tabs
+                    } else {
+                        &room.tabs
+                    };
                     for (ti, t) in tabs.iter().enumerate() {
                         for id in t.layout.leaves() {
                             if let Some(p) = self.panes.get(&id) {
@@ -1677,8 +2213,14 @@ impl App {
                 json!({ "panes": v })
             }
             "new" => {
-                let cwd = a["cwd"].as_str().map(PathBuf::from).unwrap_or_else(|| self.cwd());
-                let cmd = a["command"].as_str().map(str::to_string).filter(|c| !c.is_empty());
+                let cwd = a["cwd"]
+                    .as_str()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| self.cwd());
+                let cmd = a["command"]
+                    .as_str()
+                    .map(str::to_string)
+                    .filter(|c| !c.is_empty());
                 let id = match a["split"].as_str() {
                     Some("right") => self.split(true, cmd, pane_arg(&a)),
                     Some("down") => self.split(false, cmd, pane_arg(&a)),
@@ -1701,7 +2243,9 @@ impl App {
                 None => json!({ "error": "no such pane" }),
             },
             "read" => match pane_arg(&a).and_then(|id| self.panes.get(&id)) {
-                Some(p) => json!({ "text": p.text(a["lines"].as_u64().unwrap_or(60) as usize), "state": p.det.state.name() }),
+                Some(p) => {
+                    json!({ "text": p.text(a["lines"].as_u64().unwrap_or(60) as usize), "state": p.det.state.name() })
+                }
                 None => json!({ "error": "no such pane" }),
             },
             "explain" => match pane_arg(&a).and_then(|id| self.panes.get(&id)) {
@@ -1716,12 +2260,20 @@ impl App {
                         Some("needs-you") => vec![State::NeedsYou],
                         _ => vec![State::Done, State::Idle, State::NeedsYou],
                     };
-                    let deadline = Instant::now() + Duration::from_secs(a["timeout"].as_u64().unwrap_or(600));
+                    let deadline =
+                        Instant::now() + Duration::from_secs(a["timeout"].as_u64().unwrap_or(600));
                     // give the agent a moment to start before checking
                     if let Some(p) = self.panes.get_mut(&id) {
                         p.det.on_output();
                     }
-                    self.waiters.push(Waiter { pane: id, until, deadline, reply: req.reply, since: Instant::now(), seen_busy: false });
+                    self.waiters.push(Waiter {
+                        pane: id,
+                        until,
+                        deadline,
+                        reply: req.reply,
+                        since: Instant::now(),
+                        seen_busy: false,
+                    });
                     return;
                 }
                 _ => json!({ "error": "no such pane" }),
@@ -1745,7 +2297,9 @@ impl App {
                 json!({ "ok": true })
             }
             "power" => match platform::battery() {
-                Some(b) => json!({ "percent": b.percent, "watts": b.watts, "charging": b.charging }),
+                Some(b) => {
+                    json!({ "percent": b.percent, "watts": b.watts, "charging": b.charging })
+                }
                 None => json!({ "battery": null }),
             },
             "switch" => {
@@ -1759,7 +2313,6 @@ impl App {
             _ => json!({ "error": format!("unknown command `{}`", req.cmd) }),
         };
         let _ = req.reply.send(resp);
-        let _ = el;
         self.dirty = true;
     }
 
@@ -1772,41 +2325,62 @@ impl App {
         self.battery_at = Instant::now();
         self.battery_text = match platform::battery() {
             Some(b) => {
-                let w = b.watts.filter(|w| *w > 0.05 && !b.charging).map(|w| format!(" {w:.1} W")).unwrap_or_default();
+                let w = b
+                    .watts
+                    .filter(|w| *w > 0.05 && !b.charging)
+                    .map(|w| format!(" {w:.1} W"))
+                    .unwrap_or_default();
                 format!("{}{}%{}", if b.charging { "+" } else { "" }, b.percent, w)
             }
             None => String::new(),
         };
     }
 
-    fn draw(&mut self) {
-        let t = self.theme;
-        let (w, h) = self.size;
-        let bar = self.bar_h();
-        let content = self.content();
-        let active_rects = self.active_rects();
-        let dividers = self.tabs.get(self.active).map(|tv| tv.layout.layout(content).1).unwrap_or_default();
-        let focused = self.focused();
+    /// What the bar and sidebar show: each tab's title and state; each room and what runs in it.
+    #[allow(clippy::type_complexity)]
+    fn summary(&self) -> (Vec<(String, State)>, Vec<(String, Vec<AgentRow>)>) {
         let tab_states: Vec<(String, State)> = self
             .tabs
             .iter()
             .map(|tv| {
                 let leaves = tv.layout.leaves();
-                let title = self.panes.get(&tv.focus).map(|p| p.title.clone()).unwrap_or_default();
-                let state = leaves.iter().filter_map(|id| self.panes.get(id)).map(|p| p.det.state).max_by_key(|s| urgency(*s)).unwrap_or(State::Idle);
-                (if leaves.len() > 1 { format!("{title} +{}", leaves.len() - 1) } else { title }, state)
+                let title = self
+                    .panes
+                    .get(&tv.focus)
+                    .map(|p| p.title.clone())
+                    .unwrap_or_default();
+                let state = leaves
+                    .iter()
+                    .filter_map(|id| self.panes.get(id))
+                    .map(|p| p.det.state)
+                    .max_by_key(|s| urgency(*s))
+                    .unwrap_or(State::Idle);
+                (
+                    if leaves.len() > 1 {
+                        format!("{title} +{}", leaves.len() - 1)
+                    } else {
+                        title
+                    },
+                    state,
+                )
             })
             .collect();
-        let popup = self.popup.map(|p| (p, self.popup_rect()));
-        let sel = self.sel();
-        let sw = self.sidebar_w();
         let agent_of = |id: u64| -> Option<AgentRow> {
             let p = self.panes.get(&id)?;
             let program = p.running.clone()?;
-            let folder = p.cwd.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let folder = p
+                .cwd
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
             // runtimes like node/python say little; their window title usually says more
-            let generic = ["node", "python", "python3", "bun", "deno", "java", "ruby"].contains(&program.as_str());
-            let name = if generic && !p.title.is_empty() && p.title != folder { p.title.clone() } else { program };
+            let generic = ["node", "python", "python3", "bun", "deno", "java", "ruby"]
+                .contains(&program.as_str());
+            let name = if generic && !p.title.is_empty() && p.title != folder {
+                p.title.clone()
+            } else {
+                program
+            };
             Some((id, name, p.det.state, folder))
         };
         let rooms: Vec<(String, Vec<AgentRow>)> = self
@@ -1815,18 +2389,52 @@ impl App {
             .enumerate()
             .map(|(ri, r)| {
                 let tabs = if ri == self.room { &self.tabs } else { &r.tabs };
-                (r.name.clone(), tabs.iter().flat_map(|tv| tv.layout.leaves()).filter_map(agent_of).collect())
+                (
+                    r.name.clone(),
+                    tabs.iter()
+                        .flat_map(|tv| tv.layout.leaves())
+                        .filter_map(agent_of)
+                        .collect(),
+                )
             })
             .collect();
+        (tab_states, rooms)
+    }
 
+    fn draw(&mut self) {
+        let t = self.theme;
+        let (w, h) = self.size;
+        let bar = self.bar_h();
+        let content = self.content();
+        let active_rects = self.active_rects();
+        let dividers = self
+            .tabs
+            .get(self.active)
+            .map(|tv| tv.layout.layout(content).1)
+            .unwrap_or_default();
+        let focused = self.focused();
+        let (tab_states, rooms) = self.summary();
+        let popup = self.popup.map(|p| (p, self.popup_rect()));
+        let sel = self.sel();
+        let sw = self.sidebar_w();
 
-        let Some(surface) = self.surface.as_mut() else { return };
-        let (Some(nw), Some(nh)) = (NonZeroU32::new(w), NonZeroU32::new(h)) else { return };
+        let Some(surface) = self.surface.as_mut() else {
+            return;
+        };
+        let (Some(nw), Some(nh)) = (NonZeroU32::new(w), NonZeroU32::new(h)) else {
+            return;
+        };
         if surface.resize(nw, nh).is_err() {
             return;
         }
-        let Ok(mut buffer) = surface.buffer_mut() else { return };
-        let mut cv = Canvas { buf: &mut buffer, w, h };
+        let Ok(mut buffer) = surface.buffer_mut() else {
+            return;
+        };
+        let mut cv = Canvas {
+            buf: &mut buffer,
+            w,
+            h,
+        };
         cv.fill(t.bg);
         let f = &mut self.fonts;
         let (cw, ch) = (f.cell_w as i32, f.cell_h as i32);
@@ -1836,8 +2444,19 @@ impl App {
             let cy = h as i32 / 2 - ch * 2;
             let s = "L I G H T S   O U T";
             cv.text(f, center(s), cy, s, true, t.fg);
-            let s = if *wrong > 0 { "Wrong PIN. Try again." } else { "Locked. Type your PIN and press Enter." };
-            cv.text(f, center(s), cy + ch * 2, s, false, if *wrong > 0 { t.fg } else { DIMTEXT });
+            let s = if *wrong > 0 {
+                "Wrong PIN. Try again."
+            } else {
+                "Locked. Type your PIN and press Enter."
+            };
+            cv.text(
+                f,
+                center(s),
+                cy + ch * 2,
+                s,
+                false,
+                if *wrong > 0 { t.fg } else { DIMTEXT },
+            );
             let dots: String = "●".repeat(self.pin.chars().count());
             cv.text(f, center(&dots), cy + ch * 4, &dots, false, t.fg);
             let _ = buffer.present();
@@ -1851,14 +2470,26 @@ impl App {
         self.scroll_areas.clear();
         let ty = 5;
         let lo = platform::in_lightsout();
-        let mut right: Vec<(String, Option<Hit>)> = self.bar_texts.iter().filter(|s| !s.is_empty()).map(|s| (s.clone(), None)).collect();
+        let mut right: Vec<(String, Option<Hit>)> = self
+            .bar_texts
+            .iter()
+            .filter(|s| !s.is_empty())
+            .map(|s| (s.clone(), None))
+            .collect();
         if sw == 0 {
             // no sidebar: its battery and buttons come up here
             right.push((self.battery_text.clone(), None));
-            right.push((if lo { "Lights On" } else { "Lights Out" }.into(), Some(Hit::Switch)));
+            right.push((
+                if lo { "Lights On" } else { "Lights Out" }.into(),
+                Some(Hit::Switch),
+            ));
             right.push(("actions".into(), Some(Hit::Palette)));
         }
-        let right_w: i32 = right.iter().filter(|(s, _)| !s.is_empty()).map(|(s, _)| (s.chars().count() as i32 + 1) * cw).sum();
+        let right_w: i32 = right
+            .iter()
+            .filter(|(s, _)| !s.is_empty())
+            .map(|(s, _)| (s.chars().count() as i32 + 1) * cw)
+            .sum();
         // tabs: as many as fit; the rest scroll (wheel, or ‹ ›)
         let labels: Vec<(String, i32)> = tab_states
             .iter()
@@ -1878,7 +2509,11 @@ impl App {
                 self.tabs_first = self.active;
             }
             while self.tabs_first < self.active {
-                let used: i32 = labels[self.tabs_first..=self.active].iter().map(|l| l.1 + 2).sum::<i32>() + 2 * cw;
+                let used: i32 = labels[self.tabs_first..=self.active]
+                    .iter()
+                    .map(|l| l.1 + 2)
+                    .sum::<i32>()
+                    + 2 * cw;
                 if x0 + used <= limit {
                     break;
                 }
@@ -1889,7 +2524,15 @@ impl App {
         let mut x = x0;
         if self.tabs_first > 0 {
             cv.text(f, x, ty, "‹", false, t.fg);
-            self.hits.push((Rect { x, y: 0, w: 2 * cw, h: bar }, Hit::TabsLeft));
+            self.hits.push((
+                Rect {
+                    x,
+                    y: 0,
+                    w: 2 * cw,
+                    h: bar,
+                },
+                Hit::TabsLeft,
+            ));
             x += 2 * cw;
         }
         let mut more_right = false;
@@ -1900,19 +2543,58 @@ impl App {
             }
             let (mark, mark_color) = state_mark(tab_states[i].1);
             cv.ch(f, x + cw / 2, ty, mark, false, mark_color);
-            cv.text(f, x + cw, ty, label, i == self.active, if i == self.active { t.fg } else { DIMTEXT });
-            self.hits.push((Rect { x, y: 0, w: *wpx, h: bar }, Hit::Tab(i)));
+            cv.text(
+                f,
+                x + cw,
+                ty,
+                label,
+                i == self.active,
+                if i == self.active { t.fg } else { DIMTEXT },
+            );
+            self.hits.push((
+                Rect {
+                    x,
+                    y: 0,
+                    w: *wpx,
+                    h: bar,
+                },
+                Hit::Tab(i),
+            ));
             x += wpx + 2;
         }
         if more_right {
             cv.text(f, x, ty, "›", false, t.fg);
-            self.hits.push((Rect { x, y: 0, w: 2 * cw, h: bar }, Hit::TabsRight));
+            self.hits.push((
+                Rect {
+                    x,
+                    y: 0,
+                    w: 2 * cw,
+                    h: bar,
+                },
+                Hit::TabsRight,
+            ));
             x += 2 * cw;
         }
         cv.text(f, x, ty, " + ", false, DIMTEXT);
-        self.hits.push((Rect { x, y: 0, w: 3 * cw, h: bar }, Hit::NewTab));
+        self.hits.push((
+            Rect {
+                x,
+                y: 0,
+                w: 3 * cw,
+                h: bar,
+            },
+            Hit::NewTab,
+        ));
         x += 3 * cw;
-        self.scroll_areas.push((Rect { x: sw, y: 0, w: w as i32 - sw, h: bar }, Scroll::Tabs));
+        self.scroll_areas.push((
+            Rect {
+                x: sw,
+                y: 0,
+                w: w as i32 - sw,
+                h: bar,
+            },
+            Scroll::Tabs,
+        ));
         let mut rx = w as i32 - PADX;
         for (s, hit) in right.into_iter().rev() {
             if s.is_empty() {
@@ -1923,16 +2605,36 @@ impl App {
             if rx < x + 4 * cw {
                 break;
             }
-            cv.text(f, rx, ty, &s, false, if hit.is_some() { t.fg } else { DIMTEXT });
+            cv.text(
+                f,
+                rx,
+                ty,
+                &s,
+                false,
+                if hit.is_some() { t.fg } else { DIMTEXT },
+            );
             if let Some(hh) = hit {
-                self.hits.push((Rect { x: rx, y: 0, w: wpx, h: bar }, hh));
+                self.hits.push((
+                    Rect {
+                        x: rx,
+                        y: 0,
+                        w: wpx,
+                        h: bar,
+                    },
+                    hh,
+                ));
             }
             rx -= cw;
         }
 
         // ---- sidebar: top half = rooms; bottom half = what runs in this room, one line each
         if sw > 0 {
-            let side = Rect { x: 0, y: 0, w: sw, h: h as i32 };
+            let side = Rect {
+                x: 0,
+                y: 0,
+                w: sw,
+                h: h as i32,
+            };
             cv.rect(side.x + side.w - 1, side.y, 1, side.h as u32, BORDER);
             let max_chars = (sw / cw - 3).max(4) as usize;
             let bottom = side.h - 3 * ch - 12;
@@ -1957,16 +2659,54 @@ impl App {
                 if let Some((name, _)) = rooms.get(i) {
                     let current = i == self.room;
                     let label: String = name.chars().take(max_chars).collect();
-                    cv.text(f, PADX, y, &label, current, if current { t.fg } else { DIMTEXT });
-                    self.hits.push((Rect { x: 0, y: y - 3, w: sw, h: row }, Hit::Room(i)));
+                    cv.text(
+                        f,
+                        PADX,
+                        y,
+                        &label,
+                        current,
+                        if current { t.fg } else { DIMTEXT },
+                    );
+                    self.hits.push((
+                        Rect {
+                            x: 0,
+                            y: y - 3,
+                            w: sw,
+                            h: row,
+                        },
+                        Hit::Room(i),
+                    ));
                 } else {
                     cv.text(f, PADX, y, "+ room", false, 0x55555c);
-                    self.hits.push((Rect { x: 0, y: y - 3, w: sw, h: row }, Hit::NewRoom));
+                    self.hits.push((
+                        Rect {
+                            x: 0,
+                            y: y - 3,
+                            w: sw,
+                            h: row,
+                        },
+                        Hit::NewRoom,
+                    ));
                 }
                 y += row;
             }
-            scroll_marks(&mut cv, f, sw - PADX - 2 * cw, 10, self.rooms_top > 0, self.rooms_top + fit < total);
-            self.scroll_areas.push((Rect { x: 0, y: 0, w: sw, h: mid }, Scroll::Rooms));
+            scroll_marks(
+                &mut cv,
+                f,
+                sw - PADX - 2 * cw,
+                10,
+                self.rooms_top > 0,
+                self.rooms_top + fit < total,
+            );
+            self.scroll_areas.push((
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: sw,
+                    h: mid,
+                },
+                Scroll::Rooms,
+            ));
             cv.rect(PADX, mid, (sw - 2 * PADX) as u32, 1, BORDER);
             // what runs in this room (agents and anything else): heading, space, one line each
             cv.text(f, PADX, mid + 12, "running", false, 0x55555c);
@@ -1975,8 +2715,23 @@ impl App {
             if let Some((_, agents)) = rooms.get(self.room) {
                 let fit = ((bottom - y0) / row).max(1) as usize;
                 self.running_top = self.running_top.min(agents.len().saturating_sub(fit));
-                scroll_marks(&mut cv, f, sw - PADX - 2 * cw, mid + 12, self.running_top > 0, self.running_top + fit < agents.len());
-                self.scroll_areas.push((Rect { x: 0, y: mid, w: sw, h: bottom - mid }, Scroll::Running));
+                scroll_marks(
+                    &mut cv,
+                    f,
+                    sw - PADX - 2 * cw,
+                    mid + 12,
+                    self.running_top > 0,
+                    self.running_top + fit < agents.len(),
+                );
+                self.scroll_areas.push((
+                    Rect {
+                        x: 0,
+                        y: mid,
+                        w: sw,
+                        h: bottom - mid,
+                    },
+                    Scroll::Running,
+                ));
                 for (id, title, state, folder) in agents.iter().skip(self.running_top).take(fit) {
                     let (mark, mark_color) = state_mark(*state);
                     cv.ch(f, PADX, y, mark, false, mark_color);
@@ -1987,7 +2742,15 @@ impl App {
                         let rest: String = folder.chars().take(max_chars - used).collect();
                         cv.text(f, PADX + (used as i32 + 1) * cw, y, &rest, false, DIMTEXT);
                     }
-                    self.hits.push((Rect { x: 0, y: y - 3, w: sw, h: row }, Hit::Pane(*id)));
+                    self.hits.push((
+                        Rect {
+                            x: 0,
+                            y: y - 3,
+                            w: sw,
+                            h: row,
+                        },
+                        Hit::Pane(*id),
+                    ));
                     y += row;
                 }
             }
@@ -1997,10 +2760,26 @@ impl App {
             // Windows: "Lights Out" switches over; in Lights Out: "Lights On" goes back to Windows
             let label = if lo { "Lights On" } else { "Lights Out" };
             cv.text(f, PADX, by + ch + 2, label, false, t.fg);
-            self.hits.push((Rect { x: PADX, y: by + ch, w: label.len() as i32 * cw, h: ch + 4 }, Hit::Switch));
+            self.hits.push((
+                Rect {
+                    x: PADX,
+                    y: by + ch,
+                    w: label.len() as i32 * cw,
+                    h: ch + 4,
+                },
+                Hit::Switch,
+            ));
             let ax = PADX + (label.len() as i32 + 3) * cw;
             cv.text(f, ax, by + ch + 2, "actions", false, t.fg);
-            self.hits.push((Rect { x: ax, y: by + ch, w: 7 * cw, h: ch + 4 }, Hit::Palette));
+            self.hits.push((
+                Rect {
+                    x: ax,
+                    y: by + ch,
+                    w: 7 * cw,
+                    h: ch + 4,
+                },
+                Hit::Palette,
+            ));
         }
 
         // ---- panes
@@ -2037,7 +2816,11 @@ impl App {
                 }
                 let px = r.x + PADX + cell.point.column.0 as i32 * cw;
                 let py = top + row * ch;
-                let width = if flags.contains(Flags::WIDE_CHAR) { 2 } else { 1 };
+                let width = if flags.contains(Flags::WIDE_CHAR) {
+                    2
+                } else {
+                    1
+                };
                 if bg != t.bg {
                     cv.rect(px, py, (cw * width) as u32, ch as u32, bg);
                 }
@@ -2047,7 +2830,10 @@ impl App {
                 }
             }
             let cur = content.cursor;
-            if content.mode.contains(TermMode::SHOW_CURSOR) && cur.shape != CursorShape::Hidden && focused == Some(p.id) {
+            if content.mode.contains(TermMode::SHOW_CURSOR)
+                && cur.shape != CursorShape::Hidden
+                && focused == Some(p.id)
+            {
                 let row = cur.point.line.0 + offset;
                 let px = r.x + PADX + cur.point.column.0 as i32 * cw;
                 let py = top + row * ch;
@@ -2089,9 +2875,17 @@ impl App {
 
         // ---- overlays
         match &self.overlay {
-            Overlay::Palette { title, items, filter, .. } => {
+            Overlay::Palette {
+                title,
+                items,
+                filter,
+                ..
+            } => {
                 let f_l = filter.to_lowercase();
-                let shown: Vec<&Item> = items.iter().filter(|i| f_l.is_empty() || i.label.to_lowercase().contains(&f_l)).collect();
+                let shown: Vec<&Item> = items
+                    .iter()
+                    .filter(|i| f_l.is_empty() || i.label.to_lowercase().contains(&f_l))
+                    .collect();
                 let pw = (w as i32 * 6 / 10).max(40 * cw).min(w as i32 - 20);
                 let px = (w as i32 - pw) / 2;
                 let rows = shown.len().min(16) as i32;
@@ -2107,13 +2901,30 @@ impl App {
                     if n == sel {
                         cv.rect(px + 2, y, (pw - 4) as u32, ch as u32, BAR_ACTIVE);
                     }
-                    cv.text(f, px + cw, y, &it.label, n == sel, if n == sel { t.fg } else { DIMTEXT });
+                    cv.text(
+                        f,
+                        px + cw,
+                        y,
+                        &it.label,
+                        n == sel,
+                        if n == sel { t.fg } else { DIMTEXT },
+                    );
                     let hx = px + pw - (it.hint.chars().count() as i32 + 1) * cw;
                     cv.text(f, hx, y, &it.hint, false, DIMTEXT);
                 }
             }
-            Overlay::Menu { x: mx, y: my, items, sel } => {
-                let mw = items.iter().map(|i| i.label.chars().count() + i.hint.chars().count() + 4).max().unwrap_or(10) as i32 * cw;
+            Overlay::Menu {
+                x: mx,
+                y: my,
+                items,
+                sel,
+            } => {
+                let mw = items
+                    .iter()
+                    .map(|i| i.label.chars().count() + i.hint.chars().count() + 4)
+                    .max()
+                    .unwrap_or(10) as i32
+                    * cw;
                 let mh = items.len() as i32 * ch + 8;
                 let (mx, my) = ((*mx).min(w as i32 - mw - 2), (*my).min(h as i32 - mh - 2));
                 cv.rect(mx - 1, my - 1, (mw + 2) as u32, (mh + 2) as u32, BORDER);
@@ -2123,8 +2934,22 @@ impl App {
                     if n == *sel {
                         cv.rect(mx + 2, y, (mw - 4) as u32, ch as u32, BAR_ACTIVE);
                     }
-                    cv.text(f, mx + cw, y, &it.label, n == *sel, if n == *sel { t.fg } else { 0xa8a8b0 });
-                    cv.text(f, mx + mw - (it.hint.chars().count() as i32 + 1) * cw, y, &it.hint, false, DIMTEXT);
+                    cv.text(
+                        f,
+                        mx + cw,
+                        y,
+                        &it.label,
+                        n == *sel,
+                        if n == *sel { t.fg } else { 0xa8a8b0 },
+                    );
+                    cv.text(
+                        f,
+                        mx + mw - (it.hint.chars().count() as i32 + 1) * cw,
+                        y,
+                        &it.hint,
+                        false,
+                        DIMTEXT,
+                    );
                 }
             }
             Overlay::Confirm(c) => {
@@ -2140,9 +2965,17 @@ impl App {
                 cv.rect(0, y - 4, w, (ch + 12) as u32, BAR_ACTIVE);
                 cv.text(f, PADX * 2, y, s, true, t.fg);
             }
-            Overlay::Ask { title, text, purpose } => {
+            Overlay::Ask {
+                title,
+                text,
+                purpose,
+            } => {
                 // passwords show as dots
-                let text = if matches!(purpose, Purpose::WifiPassword(_)) { "•".repeat(text.chars().count()) } else { text.clone() };
+                let text = if matches!(purpose, Purpose::WifiPassword(_)) {
+                    "•".repeat(text.chars().count())
+                } else {
+                    text.clone()
+                };
                 let y = h as i32 - 2 * ch - 12;
                 cv.rect(0, y - 4, w, (2 * ch + 16) as u32, BAR_ACTIVE);
                 cv.text(f, PADX * 2, y, title, true, t.fg);
@@ -2158,7 +2991,13 @@ impl App {
             toast_y -= ch + 10;
             let tx = w as i32 - tw - 12;
             let _ = toast.color;
-            cv.rect(tx - 1, toast_y - 1, (tw + 2) as u32, (ch + 8) as u32, BORDER);
+            cv.rect(
+                tx - 1,
+                toast_y - 1,
+                (tw + 2) as u32,
+                (ch + 8) as u32,
+                BORDER,
+            );
             cv.rect(tx, toast_y, tw as u32, (ch + 6) as u32, 0x000000);
             cv.text(f, tx + cw, toast_y + 3, &toast.text, false, t.fg);
         }
@@ -2178,8 +3017,15 @@ impl App {
                 let font_before = self.cfg.theme.font_size;
                 self.cfg = loaded.config;
                 self.theme = theme_from(&self.cfg);
-                if self.cfg.theme.font_size > 0.0 && self.cfg.theme.font_size != font_before {
-                    let scale = self.window.as_ref().map(|w| w.scale_factor() as f32).unwrap_or(1.0);
+                if !self.tui
+                    && self.cfg.theme.font_size > 0.0
+                    && self.cfg.theme.font_size != font_before
+                {
+                    let scale = self
+                        .window
+                        .as_ref()
+                        .map(|w| w.scale_factor() as f32)
+                        .unwrap_or(1.0);
                     self.set_font(self.cfg.theme.font_size * scale);
                 }
                 self.toast("Settings applied".into(), DIMTEXT);
@@ -2194,7 +3040,9 @@ impl ApplicationHandler<UserEvent> for App {
         if self.window.is_some() {
             return;
         }
-        let mut attrs = Window::default_attributes().with_title("Lights Out").with_inner_size(LogicalSize::new(1180, 740));
+        let mut attrs = Window::default_attributes()
+            .with_title("Lights Out")
+            .with_inner_size(LogicalSize::new(1180, 740));
         if platform::in_lightsout() {
             attrs = attrs.with_fullscreen(Some(Fullscreen::Borderless(None)));
         }
@@ -2203,7 +3051,11 @@ impl ApplicationHandler<UserEvent> for App {
         let surface = softbuffer::Surface::new(&context, window.clone()).expect("surface");
         let size = window.inner_size();
         self.size = (size.width.max(1), size.height.max(1));
-        let base = if self.cfg.theme.font_size > 0.0 { self.cfg.theme.font_size } else { 15.0 };
+        let base = if self.cfg.theme.font_size > 0.0 {
+            self.cfg.theme.font_size
+        } else {
+            15.0
+        };
         let mut px = base * window.scale_factor() as f32;
         if platform::in_lightsout() && self.cfg.theme.font_size <= 0.0 {
             px = px.max(self.size.1 as f32 / 58.0); // readable on high-resolution laptop screens
@@ -2212,13 +3064,16 @@ impl ApplicationHandler<UserEvent> for App {
         self.window = Some(window);
         self.surface = Some(surface);
         self._context = Some(context);
-        if api::serve(&self.session, Waker::Window(self.proxy.clone())).is_err() {
-            self.toast("Control commands are unavailable (could not open the local port)".into(), ALERT);
+        if api::serve(&self.session, self.proxy.clone()).is_err() {
+            self.toast(
+                "Control commands are unavailable (could not open the local port)".into(),
+                ALERT,
+            );
         }
         self.start();
     }
 
-    fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, _el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => {
                 if platform::in_lightsout() {
@@ -2251,14 +3106,17 @@ impl ApplicationHandler<UserEvent> for App {
                 self.mouse = position;
                 self.mouse_move();
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, .. } if self.screen_off => {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            } if self.screen_off => {
                 // a click or tap wakes the screen (and does nothing else)
                 platform::screen(true);
                 self.screen_off = false;
                 self.dirty = true;
             }
             WindowEvent::MouseInput { state, button, .. } => match state {
-                ElementState::Pressed => self.mouse_down(button, el),
+                ElementState::Pressed => self.mouse_down(button),
                 ElementState::Released => self.mouse_up(),
             },
             WindowEvent::MouseWheel { delta, .. } => {
@@ -2266,47 +3124,10 @@ impl ApplicationHandler<UserEvent> for App {
                     MouseScrollDelta::LineDelta(_, y) => (y * 3.0) as i32,
                     MouseScrollDelta::PixelDelta(p) => (p.y / self.fonts.cell_h as f64) as i32,
                 };
-                if self.wheel(lines) {
-                    return;
-                }
-                if let Some((id, _)) = self.pane_at(self.mouse.x as i32, self.mouse.y as i32) {
-                    if let Some(p) = self.panes.get(&id) {
-                        p.scroll(lines);
-                        self.dirty = true;
-                    }
-                }
+                self.on_wheel(lines);
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                if self.screen_off {
-                    platform::screen(true);
-                    self.screen_off = false;
-                    self.dirty = true;
-                    return;
-                }
-                if matches!(self.lock, Lock::Locked { .. }) {
-                    self.lock_key(&event.logical_key);
-                    return;
-                }
-                let text = event.text.as_ref().map(|s| s.to_string());
-                if self.overlay_key(&event.logical_key, text.as_deref(), el) {
-                    return;
-                }
-                if self.shortcut(&event.logical_key, el) {
-                    return;
-                }
-                let Some(id) = self.focused() else { return };
-                let mods = self.mods;
-                if let Some(p) = self.panes.get_mut(&id) {
-                    p.det.seen();
-                    let app_cursor = {
-                        let mut term = p.term.lock();
-                        term.selection = None;
-                        term.mode().contains(TermMode::APP_CURSOR)
-                    };
-                    if let Some(bytes) = keys::to_bytes(&event, mods, app_cursor) {
-                        p.input(bytes);
-                    }
-                }
+                self.key_press(&event.logical_key, event.text.as_deref());
             }
             WindowEvent::RedrawRequested => {
                 self.refresh_battery();
@@ -2318,9 +3139,33 @@ impl ApplicationHandler<UserEvent> for App {
         }
     }
 
-    fn user_event(&mut self, el: &ActiveEventLoop, event: UserEvent) {
+    fn user_event(&mut self, _el: &ActiveEventLoop, event: UserEvent) {
+        self.on_user_event(event);
+    }
+
+    fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+        if self.quit {
+            el.exit();
+            return;
+        }
+        let next = self.tick();
+        if std::mem::take(&mut self.redraw) {
+            if let Some(w) = &self.window {
+                w.request_redraw();
+            }
+        }
+        el.set_control_flow(match next {
+            Some(t) => ControlFlow::WaitUntil(t),
+            None => ControlFlow::Wait,
+        });
+    }
+}
+
+impl App {
+    /// Something happened in a pane, the control port or a bar item.
+    pub(crate) fn on_user_event(&mut self, event: UserEvent) {
         let (id, ev) = match event {
-            UserEvent::Api(req) => return self.api(req, el),
+            UserEvent::Api(req) => return self.api(req),
             UserEvent::BarText(n, s) => {
                 if let Some(slot) = self.bar_texts.get_mut(n) {
                     *slot = s;
@@ -2329,6 +3174,7 @@ impl ApplicationHandler<UserEvent> for App {
                 return;
             }
             UserEvent::Term(id, ev) => (id, ev),
+            UserEvent::Tty(_) => return, // the terminal front-end handles these itself
         };
         if !self.panes.contains_key(&id) {
             return;
@@ -2345,7 +3191,10 @@ impl ApplicationHandler<UserEvent> for App {
                 if let Some(p) = self.panes.get_mut(&id) {
                     // shells often set their program path as the title; the folder name is more useful
                     p.title = if lower.ends_with(".exe") || lower.contains(r"\system32\") {
-                        p.cwd.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or(s)
+                        p.cwd
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or(s)
                     } else {
                         s
                     };
@@ -2365,13 +3214,27 @@ impl ApplicationHandler<UserEvent> for App {
             }
             TermEvent::TextAreaSizeRequest(f) => {
                 if let Some(p) = self.panes.get(&id) {
-                    p.write_str(f(tab::window_size(p.size, self.fonts.cell_w, self.fonts.cell_h)));
+                    p.write_str(f(tab::window_size(
+                        p.size,
+                        self.fonts.cell_w,
+                        self.fonts.cell_h,
+                    )));
                 }
             }
             TermEvent::ColorRequest(idx, f) => {
-                let c = if idx < 16 { PALETTE[idx] } else if idx == 257 { self.theme.bg } else { self.theme.fg };
+                let c = if idx < 16 {
+                    PALETTE[idx]
+                } else if idx == 257 {
+                    self.theme.bg
+                } else {
+                    self.theme.fg
+                };
                 if let Some(p) = self.panes.get(&id) {
-                    p.write_str(f(Rgb { r: (c >> 16) as u8, g: (c >> 8) as u8, b: c as u8 }));
+                    p.write_str(f(Rgb {
+                        r: (c >> 16) as u8,
+                        g: (c >> 8) as u8,
+                        b: c as u8,
+                    }));
                 }
             }
             TermEvent::ClipboardStore(_, s) => {
@@ -2380,17 +3243,22 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             TermEvent::ClipboardLoad(_, f) => {
-                let text = self.clipboard.as_mut().and_then(|c| c.get_text().ok()).unwrap_or_default();
+                let text = self
+                    .clipboard
+                    .as_mut()
+                    .and_then(|c| c.get_text().ok())
+                    .unwrap_or_default();
                 if let Some(p) = self.panes.get(&id) {
                     p.write_str(f(&text));
                 }
             }
-            TermEvent::ChildExit(_) | TermEvent::Exit => self.close_pane(id, el),
+            TermEvent::ChildExit(_) | TermEvent::Exit => self.close_pane(id),
             _ => {}
         }
     }
 
-    fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+    /// Everything that is due now (panes, alerts, saving, redraws); answers when to look again.
+    pub(crate) fn tick(&mut self) -> Option<Instant> {
         let now = Instant::now();
         let mut next: Option<Instant> = None;
         let mut soon = |t: Instant| next = Some(next.map_or(t, |n: Instant| n.min(t)));
@@ -2405,14 +3273,32 @@ impl ApplicationHandler<UserEvent> for App {
                             .iter()
                             .enumerate()
                             .map(|(i, n)| Item {
-                                label: format!("{}  {}{}", bars[n.signal.min(4) as usize], n.ssid, if n.connected { "   (connected)" } else { "" }),
-                                hint: if n.secure { "locked".into() } else { "open".into() },
+                                label: format!(
+                                    "{}  {}{}",
+                                    bars[n.signal.min(4) as usize],
+                                    n.ssid,
+                                    if n.connected { "   (connected)" } else { "" }
+                                ),
+                                hint: if n.secure {
+                                    "locked".into()
+                                } else {
+                                    "open".into()
+                                },
                                 action: Action::WifiJoin(i),
                             })
                             .collect();
-                        items.push(Item { label: "Other network...".into(), hint: "type a name".into(), action: Action::WifiOther });
+                        items.push(Item {
+                            label: "Other network...".into(),
+                            hint: "type a name".into(),
+                            action: Action::WifiOther,
+                        });
                         self.wifi_nets = nets;
-                        self.overlay = Overlay::Palette { title: "Wi-Fi".into(), items, filter: String::new(), sel: 0 };
+                        self.overlay = Overlay::Palette {
+                            title: "Wi-Fi".into(),
+                            items,
+                            filter: String::new(),
+                            sel: 0,
+                        };
                     }
                     self.dirty = true;
                 }
@@ -2478,7 +3364,11 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
         // agent states: checked only while something is happening (nothing runs when everything is idle)
-        let busy = !self.waiters.is_empty() || self.panes.values().any(|p| p.det.recently_active() || p.det.state == State::Working);
+        let busy = !self.waiters.is_empty()
+            || self
+                .panes
+                .values()
+                .any(|p| p.det.recently_active() || p.det.state == State::Working);
         if busy {
             if now.duration_since(self.status_at) >= Duration::from_millis(500) {
                 self.status_tick();
@@ -2489,11 +3379,17 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
         let before = self.toasts.len();
-        self.toasts.retain(|t| t.at.elapsed() < Duration::from_secs(6));
+        self.toasts
+            .retain(|t| t.at.elapsed() < Duration::from_secs(6));
         if self.toasts.len() != before {
             self.dirty = true;
         }
-        if let Some(t) = self.toasts.iter().map(|t| t.at + Duration::from_secs(6)).min() {
+        if let Some(t) = self
+            .toasts
+            .iter()
+            .map(|t| t.at + Duration::from_secs(6))
+            .min()
+        {
             soon(t);
         }
         // settings: picked up when the file changes (checked every few seconds, only while the window is in front)
@@ -2510,17 +3406,12 @@ impl ApplicationHandler<UserEvent> for App {
         if self.dirty && !self.screen_off && !self.hidden {
             let frame = self.last_draw + FRAME;
             if now >= frame {
-                if let Some(w) = &self.window {
-                    w.request_redraw();
-                }
+                self.redraw = true;
             } else {
                 soon(frame);
             }
         }
-        el.set_control_flow(match next {
-            Some(t) => ControlFlow::WaitUntil(t),
-            None => ControlFlow::Wait,
-        });
+        next
     }
 }
 
@@ -2529,7 +3420,9 @@ impl ApplicationHandler<UserEvent> for App {
 const HELP: &str = "\
 Lights Out: the terminal for AI agents.
 
-  lightsout                       open the app (or bring its window back)
+  lightsout                       run Lights Out right here, in this terminal
+                                  (Ctrl+B then a key: P actions, T tab, W close, N room; F1 = actions)
+  lightsout --window              open it in its own window instead
   lightsout --session NAME        a separate, named set of tabs
   lightsout uninstall             remove Lights Out from this computer
 
@@ -2539,7 +3432,9 @@ Control the running app (also for agents; details: `lightsout skill`):
 
 /// One word of a command, quoted for the shell that runs it (PowerShell on Windows, sh elsewhere).
 fn shell_word(w: &str) -> String {
-    let plain = !w.is_empty() && w.chars().all(|c| c.is_ascii_alphanumeric() || "-_./=:,@%+".contains(c));
+    let plain = !w.is_empty()
+        && w.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./=:,@%+".contains(c));
     if plain {
         w.to_string()
     } else if cfg!(windows) {
@@ -2572,7 +3467,13 @@ fn client(session: &str, args: &[String]) -> i32 {
         }
     }
     // the words after `--` keep their quoting: `-- sh -c 'echo hi; sleep 5'` stays one command
-    let after_dashes = flag("--").map(|i| rest[i + 1..].iter().map(|w| shell_word(w)).collect::<Vec<_>>().join(" "));
+    let after_dashes = flag("--").map(|i| {
+        rest[i + 1..]
+            .iter()
+            .map(|w| shell_word(w))
+            .collect::<Vec<_>>()
+            .join(" ")
+    });
     let pane = |n: usize| -> Value {
         match positional.get(n).map(String::as_str) {
             Some("self") | None => json!(std::env::var("LIGHTSOUT_PANE").unwrap_or_default()),
@@ -2588,14 +3489,29 @@ fn client(session: &str, args: &[String]) -> i32 {
     };
     let (cmd, a) = match args[0].as_str() {
         "list" => ("list", json!({})),
-        "new" => ("new", json!({ "cwd": value("--cwd"), "command": after_dashes.or_else(|| (!positional.is_empty()).then(|| positional.join(" "))), "split": split })),
-        "send" => ("send", json!({ "pane": pane(0), "text": positional.iter().skip(1).cloned().collect::<Vec<_>>().join(" "), "enter": flag("--no-enter").is_none() })),
-        "read" => ("read", json!({ "pane": pane(0), "lines": value("--lines").and_then(|v| v.parse::<u64>().ok()).unwrap_or(60) })),
-        "wait" => ("wait", json!({ "pane": pane(0), "until": value("--until"), "timeout": value("--timeout").and_then(|v| v.parse::<u64>().ok()).unwrap_or(600) })),
+        "new" => (
+            "new",
+            json!({ "cwd": value("--cwd"), "command": after_dashes.or_else(|| (!positional.is_empty()).then(|| positional.join(" "))), "split": split }),
+        ),
+        "send" => (
+            "send",
+            json!({ "pane": pane(0), "text": positional.iter().skip(1).cloned().collect::<Vec<_>>().join(" "), "enter": flag("--no-enter").is_none() }),
+        ),
+        "read" => (
+            "read",
+            json!({ "pane": pane(0), "lines": value("--lines").and_then(|v| v.parse::<u64>().ok()).unwrap_or(60) }),
+        ),
+        "wait" => (
+            "wait",
+            json!({ "pane": pane(0), "until": value("--until"), "timeout": value("--timeout").and_then(|v| v.parse::<u64>().ok()).unwrap_or(600) }),
+        ),
         "explain" => ("explain", json!({ "pane": pane(0) })),
         "focus" => ("focus", json!({ "pane": pane(0) })),
         "notify" => ("notify", json!({ "text": positional.join(" ") })),
-        "screen" => ("screen", json!({ "on": positional.first().map(|s| s != "off").unwrap_or(true) })),
+        "screen" => (
+            "screen",
+            json!({ "on": positional.first().map(|s| s != "off").unwrap_or(true) }),
+        ),
         "power" => ("power", json!({})),
         "switch" | "windows" => ("switch", json!({})),
         "handback" => ("handback", json!({})),
@@ -2608,28 +3524,60 @@ fn client(session: &str, args: &[String]) -> i32 {
         Ok(v) => {
             match cmd {
                 "list" => {
-                    println!("{:<5} {:<12} {:<4} {:<10} {:<20} FOLDER", "PANE", "ROOM", "TAB", "STATE", "TITLE");
+                    println!(
+                        "{:<5} {:<12} {:<4} {:<10} {:<20} FOLDER",
+                        "PANE", "ROOM", "TAB", "STATE", "TITLE"
+                    );
                     for p in v["panes"].as_array().cloned().unwrap_or_default() {
                         println!(
                             "{:<5} {:<12} {:<4} {:<10} {:<20} {}",
                             p["id"],
-                            p["room"].as_str().unwrap_or("").chars().take(12).collect::<String>(),
+                            p["room"]
+                                .as_str()
+                                .unwrap_or("")
+                                .chars()
+                                .take(12)
+                                .collect::<String>(),
                             p["tab"],
                             p["state"].as_str().unwrap_or(""),
-                            p["title"].as_str().unwrap_or("").chars().take(20).collect::<String>(),
+                            p["title"]
+                                .as_str()
+                                .unwrap_or("")
+                                .chars()
+                                .take(20)
+                                .collect::<String>(),
                             p["cwd"].as_str().unwrap_or("")
                         );
                     }
                 }
                 "new" => println!("{}", v["id"]),
                 "read" => println!("{}", v["text"].as_str().unwrap_or("")),
-                "wait" => println!("{}{}", v["state"].as_str().unwrap_or(""), if v["timeout"].as_bool() == Some(true) { " (timed out)" } else { "" }),
-                "explain" => println!("{}: {}", v["state"].as_str().unwrap_or(""), v["reason"].as_str().unwrap_or("")),
+                "wait" => println!(
+                    "{}{}",
+                    v["state"].as_str().unwrap_or(""),
+                    if v["timeout"].as_bool() == Some(true) {
+                        " (timed out)"
+                    } else {
+                        ""
+                    }
+                ),
+                "explain" => println!(
+                    "{}: {}",
+                    v["state"].as_str().unwrap_or(""),
+                    v["reason"].as_str().unwrap_or("")
+                ),
                 "power" => match v["percent"].as_u64() {
                     Some(p) => println!(
                         "battery {p}%{}{}",
-                        v["watts"].as_f64().map(|w| format!(", drawing {w:.1} W")).unwrap_or_default(),
-                        if v["charging"].as_bool() == Some(true) { ", charging" } else { "" }
+                        v["watts"]
+                            .as_f64()
+                            .map(|w| format!(", drawing {w:.1} W"))
+                            .unwrap_or_default(),
+                        if v["charging"].as_bool() == Some(true) {
+                            ", charging"
+                        } else {
+                            ""
+                        }
                     ),
                     None => println!("no battery"),
                 },
@@ -2647,10 +3595,32 @@ fn client(session: &str, args: &[String]) -> i32 {
 /// `lightsout` (command line): runs a command, or opens the app.
 pub fn cli_entry() {
     let (session, rest) = parse_args();
-    if rest.is_empty() {
-        // open the app (or bring it back) without tying up this terminal
+    let window = rest.iter().any(|a| a == "--window" || a == "-w");
+    if rest.is_empty() || window {
+        // already open (here or in its window)? bring that one up instead of a second copy
+        if let Ok(v) = api::call(&session, "show", json!({})) {
+            if v["terminal"].as_bool() == Some(true) {
+                eprintln!("lightsout: already open in another terminal (one copy at a time)");
+            }
+            return;
+        }
+        use std::io::IsTerminal;
+        if !window && std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+            // typed in a terminal: Lights Out runs right here, like tmux
+            platform::mac_return(&session);
+            alacritty_terminal::tty::setup_env();
+            platform::lid_keep_running();
+            let code = tui::run(&session);
+            platform::lid_restore();
+            std::process::exit(code);
+        }
+        // open the window without tying up this terminal
         let mut app = std::env::current_exe().unwrap_or_default();
-        app.set_file_name(if cfg!(windows) { "lightsout-app.exe" } else { "lightsout-app" });
+        app.set_file_name(if cfg!(windows) {
+            "lightsout-app.exe"
+        } else {
+            "lightsout-app"
+        });
         let mut c = std::process::Command::new(app);
         if session != "default" {
             c.args(["--session", &session]);
@@ -2702,9 +3672,13 @@ fn uninstall() -> i32 {
             "Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File \"{}\"'",
             script.display()
         );
-        std::process::Command::new("powershell").args(["-NoProfile", "-Command", &cmd]).status()
+        std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", &cmd])
+            .status()
     } else {
-        std::process::Command::new("sudo").args(["sh", "/usr/local/lib/lightsout/uninstall.sh"]).status()
+        std::process::Command::new("sudo")
+            .args(["sh", "/usr/local/lib/lightsout/uninstall.sh"])
+            .status()
     };
     match status {
         Ok(s) if s.success() => 0,
@@ -2738,8 +3712,10 @@ pub fn main_entry() {
     }
     platform::fresh_environment();
     alacritty_terminal::tty::setup_env();
-    let event_loop = EventLoop::<UserEvent>::with_user_event().build().expect("event loop");
-    let mut app = App::new(event_loop.create_proxy(), session);
+    let event_loop = EventLoop::<UserEvent>::with_user_event()
+        .build()
+        .expect("event loop");
+    let mut app = App::new(Waker::Window(event_loop.create_proxy()), session);
     platform::lid_keep_running();
     let _ = event_loop.run_app(&mut app);
     platform::lid_restore();

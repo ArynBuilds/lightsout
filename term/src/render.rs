@@ -14,8 +14,18 @@ fn fallback_files() -> Vec<std::path::PathBuf> {
     use std::path::PathBuf;
     let mut v: Vec<PathBuf> = Vec::new();
     if cfg!(windows) {
-        let dir = PathBuf::from(std::env::var_os("WINDIR").unwrap_or_else(|| "C:\\Windows".into())).join("Fonts");
-        for f in ["seguisym.ttf", "consola.ttf", "segoeui.ttf", "seguiemj.ttf", "cambria.ttc", "msgothic.ttc", "malgun.ttf", "simsun.ttc"] {
+        let dir = PathBuf::from(std::env::var_os("WINDIR").unwrap_or_else(|| "C:\\Windows".into()))
+            .join("Fonts");
+        for f in [
+            "seguisym.ttf",
+            "consola.ttf",
+            "segoeui.ttf",
+            "seguiemj.ttf",
+            "cambria.ttc",
+            "msgothic.ttc",
+            "malgun.ttf",
+            "simsun.ttc",
+        ] {
             v.push(dir.join(f));
         }
     } else if cfg!(target_os = "macos") {
@@ -39,14 +49,20 @@ fn fallback_files() -> Vec<std::path::PathBuf> {
             v.push(PathBuf::from(f));
         }
         let mut more = Vec::new();
-        let mut dirs = vec![PathBuf::from("/usr/share/fonts"), PathBuf::from("/usr/local/share/fonts")];
+        let mut dirs = vec![
+            PathBuf::from("/usr/share/fonts"),
+            PathBuf::from("/usr/local/share/fonts"),
+        ];
         while let Some(d) = dirs.pop() {
-            let Ok(rd) = std::fs::read_dir(&d) else { continue };
+            let Ok(rd) = std::fs::read_dir(&d) else {
+                continue;
+            };
             for e in rd.flatten() {
                 let p = e.path();
                 if p.is_dir() {
                     dirs.push(p);
-                } else if p.extension().is_some_and(|x| x == "ttf" || x == "otf") && !v.contains(&p) {
+                } else if p.extension().is_some_and(|x| x == "ttf" || x == "otf") && !v.contains(&p)
+                {
                     more.push(p);
                 }
             }
@@ -87,12 +103,22 @@ impl Fonts {
         f
     }
 
+    /// Inside another terminal everything is measured in cells: one cell is 1 x 1.
+    pub fn use_cells(&mut self) {
+        self.cell_w = 1;
+        self.cell_h = 1;
+        self.ascent = 0.0;
+    }
+
     pub fn set_size(&mut self, px: f32) {
         self.px = px.clamp(8.0, 64.0);
         self.cache.clear();
         let m = self.regular.metrics('M', self.px);
         self.cell_w = m.advance_width.ceil().max(1.0) as u32;
-        let lm = self.regular.horizontal_line_metrics(self.px).expect("line metrics");
+        let lm = self
+            .regular
+            .horizontal_line_metrics(self.px)
+            .expect("line metrics");
         self.ascent = lm.ascent.ceil();
         self.cell_h = (lm.ascent - lm.descent + lm.line_gap).ceil().max(1.0) as u32 + 2;
     }
@@ -117,10 +143,14 @@ impl Fonts {
         }
         for i in 0..self.fallback_files.len() {
             if self.fallback_fonts[i].is_none() {
-                let loaded = std::fs::read(&self.fallback_files[i]).ok().and_then(|bytes| Font::from_bytes(bytes, FontSettings::default()).ok());
+                let loaded = std::fs::read(&self.fallback_files[i])
+                    .ok()
+                    .and_then(|bytes| Font::from_bytes(bytes, FontSettings::default()).ok());
                 self.fallback_fonts[i] = Some(loaded);
             }
-            let Some(Some(f)) = &self.fallback_fonts[i] else { continue };
+            let Some(Some(f)) = &self.fallback_fonts[i] else {
+                continue;
+            };
             if f.lookup_glyph_index(c) == 0 {
                 continue;
             }
@@ -223,7 +253,10 @@ mod tests {
         let mut f = super::Fonts::new(16.0);
         for c in ['⏺', '⎿', '✻', '✢', '⠋', '✓', '❯', '●', '🚀'] {
             let (m, bitmap) = f.glyph(c, false).clone();
-            assert!(m.width > 0 && bitmap.iter().any(|&a| a > 0), "no glyph for {c:?}");
+            assert!(
+                m.width > 0 && bitmap.iter().any(|&a| a > 0),
+                "no glyph for {c:?}"
+            );
         }
     }
 }

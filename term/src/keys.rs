@@ -1,13 +1,18 @@
 //! Keyboard to terminal bytes (xterm conventions, what agent TUIs expect).
 
-use winit::event::KeyEvent;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 fn csi_mod(m: ModifiersState) -> u8 {
     1 + m.shift_key() as u8 + 2 * m.alt_key() as u8 + 4 * m.control_key() as u8
 }
 
-pub fn to_bytes(ev: &KeyEvent, m: ModifiersState, app_cursor: bool) -> Option<Vec<u8>> {
+/// The bytes a key sends: `key` is what was pressed, `text` what it types (if anything).
+pub fn to_bytes(
+    key: &Key,
+    text: Option<&str>,
+    m: ModifiersState,
+    app_cursor: bool,
+) -> Option<Vec<u8>> {
     let modded = m.shift_key() || m.alt_key() || m.control_key();
     let cursor = |c: char| -> Vec<u8> {
         if modded {
@@ -31,7 +36,7 @@ pub fn to_bytes(ev: &KeyEvent, m: ModifiersState, app_cursor: bool) -> Option<Ve
         }
         b
     };
-    match &ev.logical_key {
+    match key {
         Key::Named(k) => {
             let b = match k {
                 NamedKey::Enter => alt(vec![b'\r']),
@@ -89,13 +94,13 @@ pub fn to_bytes(ev: &KeyEvent, m: ModifiersState, app_cursor: bool) -> Option<Ve
                     '^' | '6' => 0x1e,
                     '_' | '-' | '7' => 0x1f,
                     '8' | '?' => 0x7f,
-                    _ => return ev.text.as_ref().map(|t| alt(t.as_bytes().to_vec())),
+                    _ => return text.map(|t| alt(t.as_bytes().to_vec())),
                 };
                 return Some(alt(vec![byte]));
             }
-            let t = ev.text.as_ref().map(|t| t.to_string()).unwrap_or_else(|| s.to_string());
+            let t = text.map(|t| t.to_string()).unwrap_or_else(|| s.to_string());
             Some(alt(t.into_bytes()))
         }
-        _ => ev.text.as_ref().map(|t| t.as_bytes().to_vec()),
+        _ => text.map(|t| t.as_bytes().to_vec()),
     }
 }

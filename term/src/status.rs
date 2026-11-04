@@ -39,8 +39,16 @@ const NEEDS_YOU: &[&str] = &[
     "permission to",
 ];
 /// Signs that it is busy even when output pauses.
-const BUSY: &[&str] = &["esc to interrupt", "ctrl+c to interrupt", "esc to cancel", "thinking", "working..."];
-const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏', '✻', '✽', '✶', '✳', '✢'];
+const BUSY: &[&str] = &[
+    "esc to interrupt",
+    "ctrl+c to interrupt",
+    "esc to cancel",
+    "thinking",
+    "working...",
+];
+const SPINNER: &[char] = &[
+    '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏', '✻', '✽', '✶', '✳', '✢',
+];
 
 pub struct Detector {
     pub state: State,
@@ -98,10 +106,20 @@ impl Detector {
     pub fn update(&mut self, tail: &str, focused: bool, extra_needs: &[String]) -> Option<State> {
         let lower = tail.to_lowercase();
         let recent = self.last_work.elapsed() < Duration::from_millis(1500);
-        let needs = NEEDS_YOU.iter().map(|s| s.to_string()).chain(extra_needs.iter().map(|s| s.to_lowercase())).find(|p| lower.contains(p.as_str()));
-        let busy = BUSY.iter().find(|p| lower.contains(*p)).map(|s| s.to_string()).or_else(|| {
-            tail.chars().find(|c| SPINNER.contains(c)).map(|c| format!("a spinner ({c}) is on screen"))
-        });
+        let needs = NEEDS_YOU
+            .iter()
+            .map(|s| s.to_string())
+            .chain(extra_needs.iter().map(|s| s.to_lowercase()))
+            .find(|p| lower.contains(p.as_str()));
+        let busy = BUSY
+            .iter()
+            .find(|p| lower.contains(*p))
+            .map(|s| s.to_string())
+            .or_else(|| {
+                tail.chars()
+                    .find(|c| SPINNER.contains(c))
+                    .map(|c| format!("a spinner ({c}) is on screen"))
+            });
         let (state, reason) = if let Some(p) = needs {
             (State::NeedsYou, format!("the screen asks: \"{p}\""))
         } else if self.bell && !focused {
@@ -112,8 +130,15 @@ impl Detector {
             (State::Working, format!("busy sign on screen: \"{b}\""))
         } else if self.state == State::Done && !focused {
             (State::Done, self.reason.clone())
-        } else if self.working_since.is_some_and(|t| self.last_work.saturating_duration_since(t) >= Duration::from_secs(3)) && !focused {
-            (State::Done, "it worked for a while and has gone quiet".into())
+        } else if self
+            .working_since
+            .is_some_and(|t| self.last_work.saturating_duration_since(t) >= Duration::from_secs(3))
+            && !focused
+        {
+            (
+                State::Done,
+                "it worked for a while and has gone quiet".into(),
+            )
         } else {
             (State::Idle, "quiet, no question on screen".into())
         };

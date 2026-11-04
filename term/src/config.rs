@@ -65,7 +65,12 @@ pub struct Theme {
 }
 impl Default for Theme {
     fn default() -> Self {
-        Theme { background: "#000000".into(), foreground: "#d6d6d6".into(), accent: "#f5c542".into(), font_size: 0.0 }
+        Theme {
+            background: "#000000".into(),
+            foreground: "#d6d6d6".into(),
+            accent: "#f5c542".into(),
+            font_size: 0.0,
+        }
     }
 }
 
@@ -79,7 +84,12 @@ pub struct Notify {
 }
 impl Default for Notify {
     fn default() -> Self {
-        Notify { popup: true, sound: false, sound_done: String::new(), sound_needs_you: String::new() }
+        Notify {
+            popup: true,
+            sound: false,
+            sound_done: String::new(),
+            sound_needs_you: String::new(),
+        }
     }
 }
 
@@ -134,7 +144,10 @@ fn popup() -> String {
 }
 
 pub fn path() -> PathBuf {
-    crate::platform::home().join(".config").join("lightsout").join("config.toml")
+    crate::platform::home()
+        .join(".config")
+        .join("lightsout")
+        .join("config.toml")
 }
 
 pub fn color(s: &str, fallback: u32) -> u32 {
@@ -158,9 +171,21 @@ pub fn load() -> Loaded {
     }
     let modified = std::fs::metadata(&p).and_then(|m| m.modified()).ok();
     match std::fs::read_to_string(&p).map(|s| toml::from_str::<Config>(&s)) {
-        Ok(Ok(config)) => Loaded { config, modified, error: None },
-        Ok(Err(e)) => Loaded { config: Config::default(), modified, error: Some(format!("settings file: {}", e.message())) },
-        Err(_) => Loaded { config: Config::default(), modified, error: None },
+        Ok(Ok(config)) => Loaded {
+            config,
+            modified,
+            error: None,
+        },
+        Ok(Err(e)) => Loaded {
+            config: Config::default(),
+            modified,
+            error: Some(format!("settings file: {}", e.message())),
+        },
+        Err(_) => Loaded {
+            config: Config::default(),
+            modified,
+            error: None,
+        },
     }
 }
 

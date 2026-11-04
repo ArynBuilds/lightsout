@@ -61,5 +61,7 @@ pub fn save(path: &PathBuf, s: &Saved) {
 }
 
 pub fn load(path: &PathBuf) -> Option<Saved> {
-    std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok())
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
 }

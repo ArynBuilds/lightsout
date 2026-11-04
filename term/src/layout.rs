@@ -19,7 +19,12 @@ impl Rect {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Node {
     Leaf(u64),
-    Split { side_by_side: bool, ratio: f32, a: Box<Node>, b: Box<Node> },
+    Split {
+        side_by_side: bool,
+        ratio: f32,
+        a: Box<Node>,
+        b: Box<Node>,
+    },
 }
 
 /// The line between two panes, for dragging.
@@ -55,18 +60,50 @@ impl Node {
         (panes, divs)
     }
 
-    fn walk(&self, r: Rect, path: &mut Vec<bool>, out: &mut Vec<(u64, Rect)>, divs: &mut Vec<Divider>) {
+    fn walk(
+        &self,
+        r: Rect,
+        path: &mut Vec<bool>,
+        out: &mut Vec<(u64, Rect)>,
+        divs: &mut Vec<Divider>,
+    ) {
         match self {
             Node::Leaf(id) => out.push((*id, r)),
-            Node::Split { side_by_side, ratio, a, b } => {
+            Node::Split {
+                side_by_side,
+                ratio,
+                a,
+                b,
+            } => {
                 let (ra, rb, at) = if *side_by_side {
                     let wa = (((r.w - GAP) as f32) * ratio).round() as i32;
-                    (Rect { w: wa, ..r }, Rect { x: r.x + wa + GAP, w: r.w - wa - GAP, ..r }, r.x + wa)
+                    (
+                        Rect { w: wa, ..r },
+                        Rect {
+                            x: r.x + wa + GAP,
+                            w: r.w - wa - GAP,
+                            ..r
+                        },
+                        r.x + wa,
+                    )
                 } else {
                     let ha = (((r.h - GAP) as f32) * ratio).round() as i32;
-                    (Rect { h: ha, ..r }, Rect { y: r.y + ha + GAP, h: r.h - ha - GAP, ..r }, r.y + ha)
+                    (
+                        Rect { h: ha, ..r },
+                        Rect {
+                            y: r.y + ha + GAP,
+                            h: r.h - ha - GAP,
+                            ..r
+                        },
+                        r.y + ha,
+                    )
                 };
-                divs.push(Divider { side_by_side: *side_by_side, area: r, at, path: path.clone() });
+                divs.push(Divider {
+                    side_by_side: *side_by_side,
+                    area: r,
+                    at,
+                    path: path.clone(),
+                });
                 path.push(false);
                 a.walk(ra, path, out, divs);
                 path.pop();
@@ -90,7 +127,9 @@ impl Node {
                 true
             }
             Node::Leaf(_) => false,
-            Node::Split { a, b, .. } => a.split(target, new, side_by_side) || b.split(target, new, side_by_side),
+            Node::Split { a, b, .. } => {
+                a.split(target, new, side_by_side) || b.split(target, new, side_by_side)
+            }
         }
     }
 
@@ -128,7 +167,12 @@ impl Node {
     pub fn remap(&self, f: &dyn Fn(u64) -> u64) -> Node {
         match self {
             Node::Leaf(id) => Node::Leaf(f(*id)),
-            Node::Split { side_by_side, ratio, a, b } => Node::Split {
+            Node::Split {
+                side_by_side,
+                ratio,
+                a,
+                b,
+            } => Node::Split {
                 side_by_side: *side_by_side,
                 ratio: *ratio,
                 a: Box::new(a.remap(f)),

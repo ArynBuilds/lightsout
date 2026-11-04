@@ -13,7 +13,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc;
 
-const SIZE: Size = Size { cols: 120, rows: 40 };
+const SIZE: Size = Size {
+    cols: 120,
+    rows: 40,
+};
 const CELL: (u32, u32) = (9, 18);
 
 /// One saved pane slot: the pane running for it now (None = it ended).
@@ -44,7 +47,11 @@ pub fn run(session: &str) {
     let saved = platform::peek_handoff().unwrap_or_default();
     let mut saved_rooms = saved.rooms;
     if saved_rooms.is_empty() && !saved.tabs.is_empty() {
-        saved_rooms.push(SavedRoom { name: "Room 1".into(), tabs: saved.tabs, active: saved.active });
+        saved_rooms.push(SavedRoom {
+            name: "Room 1".into(),
+            tabs: saved.tabs,
+            active: saved.active,
+        });
     }
     let mut rooms: Vec<Room> = Vec::new();
     for r in saved_rooms {
@@ -58,14 +65,34 @@ pub fn run(session: &str) {
                     Slot { pane, saved: p }
                 })
                 .collect();
-            tabs.push(Tab { layout: t.layout, slots, focus: t.focus });
+            tabs.push(Tab {
+                layout: t.layout,
+                slots,
+                focus: t.focus,
+            });
         }
-        rooms.push(Room { name: r.name, tabs, active: r.active });
+        rooms.push(Room {
+            name: r.name,
+            tabs,
+            active: r.active,
+        });
     }
     if rooms.is_empty() {
-        let p = SavedPane { cwd: platform::home().to_string_lossy().to_string(), command: None, screen: None };
+        let p = SavedPane {
+            cwd: platform::home().to_string_lossy().to_string(),
+            command: None,
+            screen: None,
+        };
         let pane = start(&waker, session, &mut next, &mut panes, &p);
-        rooms.push(Room { name: "Room 1".into(), tabs: vec![Tab { layout: Node::Leaf(0), slots: vec![Slot { pane, saved: p }], focus: 0 }], active: 0 });
+        rooms.push(Room {
+            name: "Room 1".into(),
+            tabs: vec![Tab {
+                layout: Node::Leaf(0),
+                slots: vec![Slot { pane, saved: p }],
+                focus: 0,
+            }],
+            active: 0,
+        });
     }
     if api::serve(session, waker.clone()).is_err() {
         eprintln!("lightsout: could not start the control port");
@@ -96,7 +123,11 @@ pub fn run(session: &str) {
                 }
                 TermEvent::ColorRequest(_, f) => {
                     if let Some(p) = panes.get(&id) {
-                        p.write_str(f(Rgb { r: 0xe8, g: 0xe8, b: 0xea }));
+                        p.write_str(f(Rgb {
+                            r: 0xe8,
+                            g: 0xe8,
+                            b: 0xea,
+                        }));
                     }
                 }
                 TermEvent::ChildExit(_) | TermEvent::Exit => {
@@ -106,7 +137,11 @@ pub fn run(session: &str) {
             },
             UserEvent::Api(req) => {
                 let a = req.args.clone();
-                let pane_of = |a: &Value| a["pane"].as_u64().or_else(|| a["pane"].as_str().and_then(|s| s.parse().ok()));
+                let pane_of = |a: &Value| {
+                    a["pane"]
+                        .as_u64()
+                        .or_else(|| a["pane"].as_str().and_then(|s| s.parse().ok()))
+                };
                 let reply = match req.cmd.as_str() {
                     // the app is opening while agents run here: it asks for the tabs instead
                     "show" => json!({ "error": "headless" }),
@@ -124,12 +159,26 @@ pub fn run(session: &str) {
                         json!({ "panes": v })
                     }
                     "new" => {
-                        let cmd = a["command"].as_str().map(str::to_string).filter(|c| !c.is_empty());
-                        let cwd = a["cwd"].as_str().map(str::to_string).unwrap_or_else(|| platform::home().to_string_lossy().to_string());
-                        let p = SavedPane { cwd, command: cmd.clone(), screen: None };
+                        let cmd = a["command"]
+                            .as_str()
+                            .map(str::to_string)
+                            .filter(|c| !c.is_empty());
+                        let cwd = a["cwd"]
+                            .as_str()
+                            .map(str::to_string)
+                            .unwrap_or_else(|| platform::home().to_string_lossy().to_string());
+                        let p = SavedPane {
+                            cwd,
+                            command: cmd.clone(),
+                            screen: None,
+                        };
                         // a new command runs right away (not just typed in)
                         let pane = start_now(&waker, session, &mut next, &mut panes, &p);
-                        rooms[0].tabs.push(Tab { layout: Node::Leaf(0), slots: vec![Slot { pane, saved: p }], focus: 0 });
+                        rooms[0].tabs.push(Tab {
+                            layout: Node::Leaf(0),
+                            slots: vec![Slot { pane, saved: p }],
+                            focus: 0,
+                        });
                         match pane {
                             Some(id) => json!({ "id": id }),
                             None => json!({ "error": "could not open a pane" }),
@@ -147,11 +196,15 @@ pub fn run(session: &str) {
                         None => json!({ "error": "no such pane" }),
                     },
                     "read" => match pane_of(&a).and_then(|id| panes.get(&id)) {
-                        Some(p) => json!({ "text": p.text(a["lines"].as_u64().unwrap_or(60) as usize), "state": "running" }),
+                        Some(p) => {
+                            json!({ "text": p.text(a["lines"].as_u64().unwrap_or(60) as usize), "state": "running" })
+                        }
                         None => json!({ "error": "no such pane" }),
                     },
                     "power" => match platform::battery() {
-                        Some(b) => json!({ "percent": b.percent, "watts": b.watts, "charging": b.charging }),
+                        Some(b) => {
+                            json!({ "percent": b.percent, "watts": b.watts, "charging": b.charging })
+                        }
                         None => json!({ "battery": null }),
                     },
                     "handback" => {
@@ -168,14 +221,20 @@ pub fn run(session: &str) {
                 };
                 let _ = req.reply.send(reply);
             }
-            UserEvent::BarText(..) => {}
+            UserEvent::BarText(..) | UserEvent::Tty(_) => {}
         }
     }
 }
 
 /// Starts a saved pane: known agents continue their conversation; anything
 /// else is typed back in (not run), like after a switch.
-fn start(waker: &Waker, session: &str, next: &mut u64, panes: &mut HashMap<u64, Pane>, p: &SavedPane) -> Option<u64> {
+fn start(
+    waker: &Waker,
+    session: &str,
+    next: &mut u64,
+    panes: &mut HashMap<u64, Pane>,
+    p: &SavedPane,
+) -> Option<u64> {
     let resume = p.command.as_deref().and_then(platform::resume_command);
     let id = spawn(waker, session, next, panes, p, resume.as_deref())?;
     if resume.is_none() {
@@ -186,19 +245,46 @@ fn start(waker: &Waker, session: &str, next: &mut u64, panes: &mut HashMap<u64, 
     Some(id)
 }
 
-fn start_now(waker: &Waker, session: &str, next: &mut u64, panes: &mut HashMap<u64, Pane>, p: &SavedPane) -> Option<u64> {
+fn start_now(
+    waker: &Waker,
+    session: &str,
+    next: &mut u64,
+    panes: &mut HashMap<u64, Pane>,
+    p: &SavedPane,
+) -> Option<u64> {
     spawn(waker, session, next, panes, p, p.command.as_deref())
 }
 
-fn spawn(waker: &Waker, session: &str, next: &mut u64, panes: &mut HashMap<u64, Pane>, p: &SavedPane, run: Option<&str>) -> Option<u64> {
+fn spawn(
+    waker: &Waker,
+    session: &str,
+    next: &mut u64,
+    panes: &mut HashMap<u64, Pane>,
+    p: &SavedPane,
+    run: Option<&str>,
+) -> Option<u64> {
     let id = *next;
     *next += 1;
     let (program, args) = match run {
         Some(c) => platform::agent(c),
         None => platform::shell(),
     };
-    let cwd = Some(PathBuf::from(&p.cwd)).filter(|d| d.is_dir()).unwrap_or_else(platform::home);
-    let pane = Pane::spawn(id, waker, session, cwd, program, args, p.command.clone(), SIZE, CELL, Vec::new()).ok()?;
+    let cwd = Some(PathBuf::from(&p.cwd))
+        .filter(|d| d.is_dir())
+        .unwrap_or_else(platform::home);
+    let pane = Pane::spawn(
+        id,
+        waker,
+        session,
+        cwd,
+        program,
+        args,
+        p.command.clone(),
+        SIZE,
+        CELL,
+        Vec::new(),
+    )
+    .ok()?;
     panes.insert(id, pane);
     Some(id)
 }
@@ -220,16 +306,29 @@ fn handback(rooms: &[Room], panes: &HashMap<u64, Pane>) -> Saved {
                         .slots
                         .iter()
                         .map(|s| match s.pane.and_then(|id| panes.get(&id)) {
-                            Some(p) => SavedPane { cwd: s.saved.cwd.clone(), command: s.saved.command.clone(), screen: Some(p.text(80)) },
+                            Some(p) => SavedPane {
+                                cwd: s.saved.cwd.clone(),
+                                command: s.saved.command.clone(),
+                                screen: Some(p.text(80)),
+                            },
                             // it ended: a shell in the same folder keeps the layout
-                            None => SavedPane { cwd: s.saved.cwd.clone(), command: None, screen: Some(p_text_or(&s.saved)) },
+                            None => SavedPane {
+                                cwd: s.saved.cwd.clone(),
+                                command: None,
+                                screen: Some(p_text_or(&s.saved)),
+                            },
                         })
                         .collect(),
                 })
                 .collect(),
         })
         .collect();
-    Saved { tabs: Vec::new(), active: 0, rooms, room: 0 }
+    Saved {
+        tabs: Vec::new(),
+        active: 0,
+        rooms,
+        room: 0,
+    }
 }
 
 fn p_text_or(s: &SavedPane) -> String {

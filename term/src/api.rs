@@ -17,9 +17,13 @@ pub fn state_dir() -> PathBuf {
         return d;
     }
     let base = if cfg!(windows) {
-        std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir)
+        std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
     } else {
-        std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir)
+        std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
     };
     let d = base.join("lightsout");
     let _ = std::fs::create_dir_all(&d);
@@ -43,7 +47,10 @@ pub fn serve(session: &str, proxy: crate::tab::Waker) -> std::io::Result<()> {
     let mut t = [0u8; 16];
     let _ = getrandom::fill(&mut t);
     let token: String = t.iter().map(|b| format!("{b:02x}")).collect();
-    std::fs::write(api_file(session), json!({ "port": port, "token": token, "pid": std::process::id() }).to_string())?;
+    std::fs::write(
+        api_file(session),
+        json!({ "port": port, "token": token, "pid": std::process::id() }).to_string(),
+    )?;
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let (proxy, token) = (proxy.clone(), token.clone());
@@ -64,9 +71,18 @@ fn handle(stream: TcpStream, proxy: crate::tab::Waker, token: String) {
     } else {
         let (tx, rx) = mpsc::channel();
         let cmd = req["cmd"].as_str().unwrap_or("").to_string();
-        let wait_secs = if cmd == "wait" { req["args"]["timeout"].as_u64().unwrap_or(600) + 5 } else { 15 };
-        proxy.send(UserEvent::Api(Request { cmd, args: req["args"].clone(), reply: tx }));
-        rx.recv_timeout(Duration::from_secs(wait_secs)).unwrap_or(json!({ "error": "no answer from Lights Out" }))
+        let wait_secs = if cmd == "wait" {
+            req["args"]["timeout"].as_u64().unwrap_or(600) + 5
+        } else {
+            15
+        };
+        let _ = proxy.send(UserEvent::Api(Request {
+            cmd,
+            args: req["args"].clone(),
+            reply: tx,
+        }));
+        rx.recv_timeout(Duration::from_secs(wait_secs))
+            .unwrap_or(json!({ "error": "no answer from Lights Out" }))
     };
     let mut s = &stream;
     let _ = writeln!(s, "{resp}");
@@ -79,10 +95,18 @@ pub fn call(session: &str, cmd: &str, args: Value) -> Result<Value, String> {
         .and_then(|s| serde_json::from_str(&s).ok())
         .ok_or("Lights Out isn't running (start it with `lightsout`)")?;
     let port = info["port"].as_u64().ok_or("bad state file")? as u16;
-    let mut s = TcpStream::connect(("127.0.0.1", port)).map_err(|_| "Lights Out isn't running (start it with `lightsout`)")?;
-    writeln!(s, "{}", json!({ "token": info["token"], "cmd": cmd, "args": args })).map_err(|e| e.to_string())?;
+    let mut s = TcpStream::connect(("127.0.0.1", port))
+        .map_err(|_| "Lights Out isn't running (start it with `lightsout`)")?;
+    writeln!(
+        s,
+        "{}",
+        json!({ "token": info["token"], "cmd": cmd, "args": args })
+    )
+    .map_err(|e| e.to_string())?;
     let mut line = String::new();
-    BufReader::new(&s).read_line(&mut line).map_err(|e| e.to_string())?;
+    BufReader::new(&s)
+        .read_line(&mut line)
+        .map_err(|e| e.to_string())?;
     let v: Value = serde_json::from_str(&line).map_err(|e| e.to_string())?;
     match v.get("error").and_then(|e| e.as_str()) {
         Some(e) => Err(e.to_string()),

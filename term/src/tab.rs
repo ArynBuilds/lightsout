@@ -16,6 +16,8 @@ use std::sync::Arc;
 use winit::event_loop::EventLoopProxy;
 
 pub enum UserEvent {
+    /// Keys, mouse and resizes of the terminal Lights Out runs in (`lightsout` in a shell).
+    Tty(crossterm::event::Event),
     Term(u64, Event),
     Api(crate::api::Request),
     BarText(usize, String),
@@ -29,14 +31,11 @@ pub enum Waker {
 }
 
 impl Waker {
-    pub fn send(&self, e: UserEvent) {
+    /// False once nobody listens any more (the app ended).
+    pub fn send(&self, e: UserEvent) -> bool {
         match self {
-            Waker::Window(p) => {
-                let _ = p.send_event(e);
-            }
-            Waker::Channel(t) => {
-                let _ = t.send(e);
-            }
+            Waker::Window(p) => p.send_event(e).is_ok(),
+            Waker::Channel(t) => t.send(e).is_ok(),
         }
     }
 }
@@ -92,7 +91,12 @@ pub struct Pane {
 }
 
 pub fn window_size(size: Size, cell_w: u32, cell_h: u32) -> WindowSize {
-    WindowSize { num_lines: size.rows as u16, num_cols: size.cols as u16, cell_width: cell_w as u16, cell_height: cell_h as u16 }
+    WindowSize {
+        num_lines: size.rows as u16,
+        num_cols: size.cols as u16,
+        cell_width: cell_w as u16,
+        cell_height: cell_h as u16,
+    }
 }
 
 impl Pane {
@@ -109,7 +113,10 @@ impl Pane {
         cell: (u32, u32),
         extra_env: Vec<(String, String)>,
     ) -> std::io::Result<Pane> {
-        let p = Proxy { id, waker: waker.clone() };
+        let p = Proxy {
+            id,
+            waker: waker.clone(),
+        };
         let term = Term::new(term::Config::default(), &size, p.clone());
         let term = Arc::new(FairMutex::new(term));
         let mut env = HashMap::new();
@@ -133,9 +140,28 @@ impl Pane {
         let event_loop = EventLoop::new(term.clone(), p, pty, true, false)?;
         let tx = event_loop.channel();
         event_loop.spawn();
-        let folder = cwd.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "shell".into());
-        let title = command.as_deref().and_then(|c| c.split_whitespace().next()).map(str::to_string).unwrap_or(folder);
-        Ok(Pane { id, title, term, tx, cwd, command, shell_pid, det: Detector::default(), size, running: None, body: 0 })
+        let folder = cwd
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "shell".into());
+        let title = command
+            .as_deref()
+            .and_then(|c| c.split_whitespace().next())
+            .map(str::to_string)
+            .unwrap_or(folder);
+        Ok(Pane {
+            id,
+            title,
+            term,
+            tx,
+            cwd,
+            command,
+            shell_pid,
+            det: Detector::default(),
+            size,
+            running: None,
+            body: 0,
+        })
     }
 
     pub fn input(&self, bytes: Vec<u8>) {
@@ -195,7 +221,10 @@ impl Pane {
     pub fn text(&self, n: usize) -> String {
         let (history, rows) = {
             let t = self.term.lock();
-            (t.grid().history_size() as i32, t.grid().screen_lines() as i32)
+            (
+                t.grid().history_size() as i32,
+                t.grid().screen_lines() as i32,
+            )
         };
         // count from the last line with text, not from the empty rows below the prompt
         let mut lines = self.lines((-(n as i32)).max(-history), rows);
@@ -224,7 +253,11 @@ impl Pane {
 
     pub fn tail(&self) -> String {
         let rows = self.term.lock().grid().screen_lines() as i32;
-        let lines: Vec<String> = self.lines(0, rows).into_iter().filter(|l| !l.trim().is_empty()).collect();
+        let lines: Vec<String> = self
+            .lines(0, rows)
+            .into_iter()
+            .filter(|l| !l.trim().is_empty())
+            .collect();
         lines[lines.len().saturating_sub(8)..].join("\n")
     }
 }
