@@ -269,6 +269,11 @@ struct App {
     bar_texts: Vec<String>,
     clipboard: Option<arboard::Clipboard>,
     switching: Option<mpsc::Receiver<Result<(), String>>>,
+    /// What runs in each tab's shell (shell pid -> command line), fetched off the window's
+    /// thread whenever it changes, so saving tabs never waits for it.
+    commands: HashMap<u32, Option<String>>,
+    commands_stale: bool,
+    commands_rx: Option<mpsc::Receiver<HashMap<u32, Option<String>>>>,
     wifi_nets: Vec<platform::Net>,
     wifi_scan: Option<mpsc::Receiver<Vec<platform::Net>>>,
     wifi_join: Option<mpsc::Receiver<Result<String, String>>>,
@@ -349,6 +354,9 @@ impl App {
             bar_texts: Vec::new(),
             clipboard: arboard::Clipboard::new().ok(),
             switching: None,
+            commands: HashMap::new(),
+            commands_stale: true,
+            commands_rx: None,
             wifi_nets: Vec::new(),
             wifi_scan: None,
             wifi_join: None,
@@ -664,6 +672,7 @@ impl App {
                 if now != p.running {
                     p.running = now;
                     self.dirty = true;
+                    self.commands_stale = true;
                 }
             }
         }
@@ -724,15 +733,14 @@ impl App {
     // ------------------------------------------------------------ sessions
 
     fn saved(&self, screen_lines: usize) -> Saved {
-        let pids: Vec<u32> = self.panes.values().filter_map(|p| p.shell_pid).collect();
-        let running = platform::running_in_tabs(&pids);
+        let running = &self.commands;
         let rooms = self
             .rooms
             .iter()
             .enumerate()
             .map(|(ri, r)| {
                 let (tabs, active) = if ri == self.room { (&self.tabs, self.active) } else { (&r.tabs, r.active) };
-                session::SavedRoom { name: r.name.clone(), tabs: self.saved_tabs(tabs, &running, screen_lines), active }
+                session::SavedRoom { name: r.name.clone(), tabs: self.saved_tabs(tabs, running, screen_lines), active }
             })
             .collect();
         Saved { tabs: Vec::new(), active: 0, rooms, room: self.room }
@@ -905,7 +913,7 @@ impl App {
             item("Smaller text", "Ctrl+-", Action::FontSmaller),
             item("New room", "Ctrl+Shift+N", Action::NewRoom),
             item("Rename this room", "", Action::RenameRoom),
-            item("Close this room (stops its agents)", "", Action::CloseRoom),
+            item("Delete this room (stops its agents)", "", Action::CloseRoom),
             item("Show / hide the sidebar", "Ctrl+Shift+B", Action::ToggleSidebar),
             item("Settings", "Ctrl+,", Action::Settings),
         ];
@@ -1962,7 +1970,7 @@ impl App {
                 let px = (w as i32 - pw) / 2;
                 let rows = shown.len().min(16) as i32;
                 let ph = (rows + 3) * ch + 12;
-                let py = bar + ch;
+                let py = ((h as i32 - ph) / 2).max(bar + 4);
                 cv.rect(px - 1, py - 1, (pw + 2) as u32, (ph + 2) as u32, BORDER);
                 cv.rect(px, py, pw as u32, ph as u32, 0x000000);
                 cv.text(f, px + cw, py + 6, title, true, t.fg);
@@ -2296,6 +2304,25 @@ impl ApplicationHandler<UserEvent> for App {
                 Err(mpsc::TryRecvError::Empty) => soon(now + Duration::from_millis(300)),
                 Err(_) => self.wifi_join = None,
             }
+        }
+        if let Some(rx) = &self.commands_rx {
+            match rx.try_recv() {
+                Ok(map) => {
+                    self.commands = map;
+                    self.commands_rx = None;
+                }
+                Err(mpsc::TryRecvError::Empty) => soon(now + Duration::from_millis(500)),
+                Err(_) => self.commands_rx = None,
+            }
+        } else if self.commands_stale && cfg!(windows) {
+            self.commands_stale = false;
+            let pids: Vec<u32> = self.panes.values().filter_map(|p| p.shell_pid).collect();
+            let (tx, rx) = mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(platform::running_in_tabs(&pids));
+            });
+            self.commands_rx = Some(rx);
+            soon(now + Duration::from_millis(500));
         }
         if let Some(rx) = &self.switching {
             match rx.try_recv() {
