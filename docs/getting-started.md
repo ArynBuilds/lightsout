@@ -59,13 +59,13 @@ Press **Lights Out** at the bottom left of the sidebar, or **Ctrl+Shift+L**, and
 
 - **Windows** saves your tabs and restarts into Lights Out: Windows is fully off, and the same terminal comes back with your tabs. Conversations continue where they were.
 - **Linux** stops the desktop, with no restart. Only Lights Out runs.
-- **Mac** quits your other apps (unsaved ones ask first) and makes everything else quiet.
+- **Mac** moves your agents into a small background service and logs you out: only macOS’s core and your agents keep running. Apps with unsaved work ask first.
 
 Your agents keep working on your real files. Close the lid or press **Ctrl+Shift+O** to switch the screen off.
 
 ## Come back
 
-Press **Lights On** at the bottom left (or **Ctrl+Shift+L**). You're back in Windows, on your desktop, or on your Mac as before, with your tabs.
+Press **Lights On** at the bottom left (or **Ctrl+Shift+L**): you're back in Windows or on your Linux desktop, with your tabs. On a Mac, just sign in: Lights Out opens and takes your tabs back.
 
 ## Next
 

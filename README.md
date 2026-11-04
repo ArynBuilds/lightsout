@@ -27,7 +27,7 @@ Then open it with `lightsout`. Remove it any time with `lightsout uninstall`.
 - **One terminal everywhere.** The same app on Windows, on Linux, and in Lights Out mode: tabs, splits, rooms, mouse, copy/paste, alerts when an agent needs you.
 - **Lights Out (Windows).** Windows shuts down fully. The small Linux unlocks your drive with the TPM (no recovery key to type), joins your Wi-Fi, and reopens your tabs. Agents work on your real files with your existing logins.
 - **Lights Out (Linux).** No restart: the desktop stops, only Lights Out runs, and Lights On brings the desktop back.
-- **Lights Out (Mac).** Other apps quit (unsaved ones ask first), Low Power Mode, no sleep with the lid closed, Spotlight and Time Machine off, everything else slowed to the lowest priority while your agents keep full speed. Lights On puts it all back and reopens your apps.
+- **Lights Out (Mac).** Your agents move into a small background service and you're logged out: only macOS's core and your agents keep running. Low Power Mode, no sleep with the lid closed. Sign in and your tabs come back.
 - **What's off:** all of Windows, the extra graphics card, Bluetooth, sound, the keyboard light, the screen (turn it off, or close the lid). Work runs on the 1–2 most frugal CPU cores with turbo off and a power cap; idle chips switch off on their own. Wi-Fi stays on.
 - **Lid closed never stops your agents**, in Lights Out or on the normal desktop.
 - **Agent control:** `lightsout list | new | send | read | wait | notify`, plus `lightsout skill` for agents that drive other agents.

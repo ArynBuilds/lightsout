@@ -31,6 +31,9 @@ Open **actions → Wi-Fi...** and pick your network. A few very new Wi-Fi chips 
 **Linux: the desktop doesn't come back**
 Lights On should bring it back. If the screen stays on a text console, sign in there and run `sudo systemctl isolate default.target`.
 
+**Mac: Lights Out didn't log me out**
+Local servers were running (anything listening on a port, such as a database or a dev server), and logging out would have ended them. Lights Out stayed signed in and slowed everything else down instead. Stop the servers you don't need and press Lights Out again.
+
 ## Agents
 
 **An agent started a new conversation instead of continuing**

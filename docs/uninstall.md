@@ -27,7 +27,7 @@ powershell -ExecutionPolicy Bypass -File C:\LightsOut\bin\uninstall.ps1 -KeepSys
 
 **Mac**
 
-- the `lightsout` commands, the helper and its sudo rule, **Lights Out** in Applications
+- the `lightsout` commands, the helper and its sudo rule, the background service for your agents, and **Lights Out** in Applications
 - every setting Lights Out changed is put back first
 
 Your agents, their logins and your files are never touched.

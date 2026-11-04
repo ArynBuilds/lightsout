@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0-rc.1
+
+- **Mac: Lights Out logs you out.** Your agents run in a small background service meanwhile, so only macOS's core and your agents keep running; signing in brings the tabs back. It stays signed in when local servers would end with a log-out. `LIGHTSOUT_MAC_LOGOUT=0` at install keeps you signed in always.
+- **Wi-Fi chooser** on Windows, Linux and Mac.
+- **More cores only when needed:** no fixed watt cap; work starts on the most frugal cores and more join while work waits.
+- **Safer switching:** no switch while a Windows update waits; tabs made in Lights Out come back to Windows; a read-only drive is announced.
+- **Fixed:** `lightsout new -- ...` kept quotes in commands.
+
 ## 0.2.1
 
 - **Lights Out mode for Windows, Linux and Mac.** Windows switches fully off and a small Linux runs only the terminal; Linux stops the desktop without a restart; Mac quits other apps and slows everything else down.

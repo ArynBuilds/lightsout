@@ -23,9 +23,19 @@ No restart. Lights Out stops the desktop (with its apps) and starts a full-scree
 
 ### Mac
 
-Lights Out quits your other apps politely (an app with unsaved work asks first), turns on Low Power Mode, keeps the Mac awake with the lid closed, and switches Spotlight indexing, Time Machine and Bluetooth off. Every other process runs at the lowest background priority, while Lights Out and your agents keep full speed. Local servers your agents may need, such as a database, are left at normal speed.
+1. Lights Out saves your tabs and quits your other apps politely: an app with unsaved work asks first.
+2. Your agents move into a small background service that keeps running without anyone signed in. Known agents continue their conversations there.
+3. You're logged out. Every app and helper of yours ends; only macOS's core, Wi-Fi and your agents keep running. Low Power Mode is on, the Mac stays awake with the lid closed, and Spotlight indexing, Time Machine and Bluetooth are off.
 
-**Lights On** puts every setting back and reopens the apps that were quit.
+**Coming back:** sign in. Lights Out opens by itself, takes your tabs back from the background service, puts every setting back and reopens the apps that were quit.
+
+> **Note:** If local servers are running that your agents may need, such as a database, logging out would end them. Lights Out then stays signed in instead: nothing is stopped, and everything except your agents and those servers runs at the lowest background priority.
+
+To always stay signed in, install with `LIGHTSOUT_MAC_LOGOUT=0`:
+
+```sh
+curl -fsSL https://lightsout.sh | LIGHTSOUT_MAC_LOGOUT=0 sh
+```
 
 ## The screen
 
