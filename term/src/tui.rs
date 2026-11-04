@@ -190,6 +190,8 @@ fn rgb(c: u32) -> Color {
 struct Screen {
     /// Ctrl+B was pressed: the next key is a Lights Out shortcut (like tmux).
     prefix: bool,
+    /// What runs in the room, as last told to a machine showing this room.
+    agents_sent: Option<String>,
     shown: Vec<Cell>,
     w: i32,
     cursor: Option<(u16, u16, CursorShape)>,
@@ -326,13 +328,21 @@ pub fn serve(session: &str) -> i32 {
             };
             let mut reader = BufReader::new(read);
             let mut line = String::new();
-            if reader.read_line(&mut line).is_err() || line.trim() != token {
+            if reader.read_line(&mut line).is_err() {
                 continue;
             }
+            // "<token>" or "<token> room=<name>"
+            let mut words = line.split_whitespace();
+            if words.next() != Some(token.as_str()) {
+                continue;
+            }
+            let room = words
+                .find_map(|w| w.strip_prefix("room="))
+                .map(str::to_string);
             let _ = stream.set_read_timeout(None);
             n += 1;
             let id = n;
-            if accept.send(UserEvent::Attach(stream, id)).is_err() {
+            if accept.send(UserEvent::Attach(stream, id, room)).is_err() {
                 break;
             }
             // its keys, mouse and resizes, one per line
@@ -367,6 +377,7 @@ pub fn serve(session: &str) -> i32 {
 
     let mut screen = Screen {
         prefix: false,
+        agents_sent: None,
         shown: Vec::new(),
         w: 0,
         cursor: None,
@@ -376,7 +387,7 @@ pub fn serve(session: &str) -> i32 {
                     screen: &mut Screen,
                     client: &mut Option<(std::net::TcpStream, u64)>,
                     ev: UserEvent| match ev {
-        UserEvent::Attach(s, id) => {
+        UserEvent::Attach(s, id, room) => {
             // the newest terminal wins; the one before is told and let go
             if let Some((mut old, _)) = client.take() {
                 let _ = old.write_all(ELSEWHERE);
@@ -384,7 +395,14 @@ pub fn serve(session: &str) -> i32 {
             }
             let _ = s.set_nodelay(true);
             *client = Some((s, id));
+            // seen from another machine as one of its rooms: just that room
+            app.embedded = room.is_some();
+            if let Some(r) = room {
+                app.open_room_named(&r);
+            }
+            app.resize_all();
             screen.shown.clear();
+            screen.agents_sent = None;
             screen.cursor = None;
             screen.prefix = false;
             app.window_focused = true;
@@ -417,9 +435,28 @@ pub fn serve(session: &str) -> i32 {
             if let Some((s, _)) = client.as_mut() {
                 app.refresh_battery();
                 let (g, cursor) = draw(&mut app, screen.prefix);
-                let sent = screen
-                    .frame(&g, cursor)
-                    .and_then(|bytes| s.write_all(&bytes));
+                // seen as a room on another machine: tell it what runs here (in the title)
+                let mut head = Vec::new();
+                if app.embedded {
+                    let (_, rooms) = app.summary();
+                    let rows: Vec<(String, &str, String)> = rooms
+                        .get(app.room)
+                        .map(|r| {
+                            r.1.iter()
+                                .map(|(_, n, st, f)| (n.clone(), st.name(), f.clone()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let json = serde_json::to_string(&rows).unwrap_or_default();
+                    if screen.agents_sent.as_deref() != Some(json.as_str()) {
+                        head = format!("\x1b]2;lightsout-room:{json}\x07").into_bytes();
+                        screen.agents_sent = Some(json);
+                    }
+                }
+                let sent = screen.frame(&g, cursor).and_then(|bytes| {
+                    s.write_all(&head)?;
+                    s.write_all(&bytes)
+                });
                 if sent.is_err() {
                     client = None;
                     app.window_focused = false;
@@ -453,7 +490,7 @@ pub fn serve(session: &str) -> i32 {
 }
 
 /// Looks at the background copy from this terminal, if one runs. Answers the exit code when done.
-pub fn attach(session: &str) -> Option<i32> {
+pub fn attach(session: &str, room: Option<&str>) -> Option<i32> {
     let file = screen_file(session);
     let info: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&file).ok()?).ok()?;
@@ -464,12 +501,16 @@ pub fn attach(session: &str) -> Option<i32> {
         let _ = std::fs::remove_file(&file); // it ended without tidying up
         return None;
     };
-    s.write_all(format!("{token}\n").as_bytes()).ok()?;
+    let hello = match room {
+        Some(r) => format!("{token} room={r}\n"),
+        None => format!("{token}\n"),
+    };
+    s.write_all(hello.as_bytes()).ok()?;
     Some(view(s))
 }
 
 /// Starts the background copy (it outlives this terminal), then looks at it.
-pub fn start_and_attach(session: &str) -> Option<i32> {
+pub fn start_and_attach(session: &str, room: Option<&str>) -> Option<i32> {
     use std::process::{Command, Stdio};
     let exe = std::env::current_exe().ok()?;
     let spawn = |extra: u32| {
@@ -513,7 +554,7 @@ pub fn start_and_attach(session: &str) -> Option<i32> {
     }
     let until = Instant::now() + Duration::from_secs(15);
     while Instant::now() < until {
-        if let Some(code) = attach(session) {
+        if let Some(code) = attach(session, room) {
             return Some(code);
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -561,7 +602,11 @@ fn view(stream: std::net::TcpStream) -> i32 {
         return 1;
     };
     let _ = w.set_nodelay(true);
-    let (c, r) = terminal::size().unwrap_or((100, 30));
+    // some terminals (and pipes) report 0 x 0; assume a usual size until they say
+    let (c, r) = match terminal::size() {
+        Ok((c, r)) if c > 0 && r > 0 => (c, r),
+        _ => (100, 30),
+    };
     let _ = send(&mut w, &Event::Resize(c, r));
     std::thread::spawn(move || {
         while let Ok(ev) = event::read() {
@@ -819,7 +864,7 @@ fn draw(app: &mut App, prefix: bool) -> (Grid, Option<(u16, u16, CursorShape)>) 
         .filter(|s| !s.is_empty())
         .map(|s| (s.clone(), None))
         .collect();
-    if sw == 0 {
+    if sw == 0 && !app.embedded {
         right.push((app.battery_text.clone(), None));
         right.push((
             if lo { "Lights On" } else { "Lights Out" }.into(),
@@ -984,6 +1029,14 @@ fn draw(app: &mut App, prefix: bool) -> (Grid, Option<(u16, u16, CursorShape)>) 
         for i in app.rooms_top..total.min(app.rooms_top + fit) {
             if let Some((name, _)) = rooms.get(i) {
                 let on = i == app.room;
+                if let Some((m, off)) = app
+                    .rooms
+                    .get(i)
+                    .and_then(|r| r.remote.as_ref().map(|x| (x.machine.clone(), r.offline)))
+                {
+                    let mx = sw - 2 - width(&m);
+                    g.text(mx, y, &m, if off { LINE } else { HEAD }, false, sw - 1);
+                }
                 g.text(
                     1,
                     y,

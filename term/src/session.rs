@@ -25,6 +25,20 @@ pub struct SavedRoom {
     pub tabs: Vec<SavedTab>,
     #[serde(default)]
     pub active: usize,
+    /// A room that lives on another machine (None = this one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<RemoteRoom>,
+}
+
+/// A room on another machine: shown here, its agents run there.
+#[derive(Serialize, Deserialize, Clone, Default, PartialEq, Debug)]
+pub struct RemoteRoom {
+    /// The machine's name from the settings ([[machine]] name).
+    pub machine: String,
+    /// How to reach it (`ssh` target).
+    pub ssh: String,
+    /// The room's name over there.
+    pub room: String,
 }
 
 #[derive(Serialize, Deserialize)]

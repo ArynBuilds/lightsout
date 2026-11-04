@@ -51,6 +51,7 @@ pub fn run(session: &str) {
             name: "Room 1".into(),
             tabs: saved.tabs,
             active: saved.active,
+            remote: None,
         });
     }
     let mut rooms: Vec<Room> = Vec::new();
@@ -299,6 +300,7 @@ fn handback(rooms: &[Room], panes: &HashMap<u64, Pane>) -> Saved {
         .map(|r| SavedRoom {
             name: r.name.clone(),
             active: r.active,
+            remote: None,
             tabs: r
                 .tabs
                 .iter()

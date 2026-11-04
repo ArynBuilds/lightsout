@@ -49,17 +49,17 @@ jobs:
           B=$PWD/term/target/release
           export LIGHTSOUT_SESSION=citerm
           # a terminal, as SSH gives one: `lightsout` starts its background copy and shows it
-          script -qfec "$B/lightsout" /dev/null > view.log 2>&1 &
+          script -qfec "stty cols 120 rows 40; $B/lightsout" /dev/null > view.log 2>&1 &
           VIEW=$!
           for i in $(seq 1 30); do $B/lightsout list >/dev/null 2>&1 && break; sleep 1; done
           $B/lightsout new -- sh -c 'sleep 3; echo survived | tee /tmp/lo-detach.txt; sleep 120'
           # the terminal goes away (closed window, dropped SSH)
-          kill -HUP $VIEW || true; pkill -HUP -f "script -qfec $B/lightsout" || true
+          kill -HUP $VIEW || true; pkill -HUP -f "script -qfec stty" || true
           sleep 6
           test "$(cat /tmp/lo-detach.txt)" = survived
           pgrep -f -- "--session citerm --server"
           # come back: the same screen
-          timeout 5 script -qfec "$B/lightsout" /dev/null > view2.log 2>&1 || true
+          timeout 5 script -qfec "stty cols 120 rows 40; $B/lightsout" /dev/null > view2.log 2>&1 || true
           grep -a -q survived view2.log
           grep -a -q rooms view2.log
           # over SSH (to this same machine): Lights Out starts there and stays after SSH closes
@@ -70,8 +70,11 @@ jobs:
           sudo systemctl start ssh || sudo service ssh start
           ssh-keyscan -H localhost >> ~/.ssh/known_hosts 2>/dev/null
           sudo ln -sf $B/lightsout /usr/local/bin/lightsout
-          timeout 10 script -qfec "$B/lightsout --remote localhost" /dev/null > remote.log 2>&1 || true
+          timeout 10 script -qfec "stty cols 120 rows 40; $B/lightsout --remote localhost" /dev/null > remote.log 2>&1 || true
           grep -a -q rooms remote.log
+          # a room on that machine (what a remote room in the sidebar opens): just that room, and it reports what runs
+          timeout 10 script -qfec "stty cols 120 rows 40; $B/lightsout --remote localhost --room room-9" /dev/null > room.log 2>&1 || true
+          grep -a -q "lightsout-room:" room.log
           sleep 2
           pgrep -f -- "--session default --server"
           pkill -f -- "--server" || true

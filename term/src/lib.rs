@@ -146,10 +146,17 @@ struct TabView {
 
 /// A room has its own set of tabs. The current room's tabs live in App.tabs;
 /// the others are kept here.
+#[derive(Default)]
 struct Room {
     name: String,
     tabs: Vec<TabView>,
     active: usize,
+    /// Lives on another machine: this room shows it, its agents run there.
+    remote: Option<session::RemoteRoom>,
+    /// What runs in it over there (name, state, folder), as that machine reports it.
+    remote_agents: Vec<(String, String, String)>,
+    /// That machine can't be reached right now.
+    offline: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -185,6 +192,10 @@ enum Action {
     FontSmaller,
     ToggleSidebar,
     NewRoom,
+    /// A room on this computer (when machines are set up, NewRoom asks where).
+    NewLocalRoom,
+    /// A room on that machine ([[machine]] number).
+    NewRemoteRoom(usize),
     RenameRoom,
     CloseRoom,
     GoRoom(usize),
@@ -297,6 +308,8 @@ struct App {
     redraw: bool,
     /// Running inside another terminal (`lightsout` typed in a shell): cells, not pixels.
     pub tui: bool,
+    /// Shown inside a room on another machine: just this room (no sidebar, no own buttons).
+    pub embedded: bool,
     /// The terminal view asked to detach (the background copy keeps running).
     detach: bool,
     session: String,
@@ -325,6 +338,8 @@ struct App {
     mouse: PhysicalPosition<f64>,
     drag: Option<Drag>,
     hits: Vec<(Rect, Hit)>,
+    /// A mouse button held in a pane whose program gets the mouse (pane, button).
+    mouse_held: Option<(u64, u8)>,
     /// How many rows the actions list showed last time (to keep the chosen one in view).
     palette_rows: usize,
     /// Lists that scroll with the mouse wheel: where they are on screen, and their first item.
@@ -400,6 +415,7 @@ impl App {
             quit: false,
             redraw: false,
             tui: false,
+            embedded: false,
             detach: false,
             session,
             window: None,
@@ -427,6 +443,7 @@ impl App {
             mouse: PhysicalPosition::new(0.0, 0.0),
             drag: None,
             hits: Vec::new(),
+            mouse_held: None,
             palette_rows: 16,
             scroll_areas: Vec::new(),
             rooms_top: 0,
@@ -456,6 +473,7 @@ impl App {
                 name: "Room 1".into(),
                 tabs: Vec::new(),
                 active: 0,
+                ..Default::default()
             }],
             room: 0,
         };
@@ -514,7 +532,7 @@ impl App {
     /// The agent list on the left (Ctrl+Shift+B), about 26 characters wide.
     fn sidebar_w(&self) -> i32 {
         if self.tui {
-            return if self.sidebar && self.size.0 > 70 {
+            return if self.sidebar && !self.embedded && self.size.0 > 70 {
                 24
             } else {
                 0
@@ -722,9 +740,112 @@ impl App {
             name: format!("Room {n}"),
             tabs: Vec::new(),
             active: 0,
+            ..Default::default()
         });
         self.switch_room(self.rooms.len() - 1);
         self.new_tab(cwd, None, Vec::new());
+    }
+
+    /// "+ room": with machines set up, asks where it lives; otherwise a room here.
+    fn add_room(&mut self) {
+        if self.cfg.machine.is_empty() {
+            return self.new_room();
+        }
+        let mut items = vec![Item {
+            label: "This computer".into(),
+            hint: String::new(),
+            action: Action::NewLocalRoom,
+        }];
+        for (i, m) in self.cfg.machine.iter().enumerate() {
+            items.push(Item {
+                label: m.name.clone(),
+                hint: m.ssh.clone(),
+                action: Action::NewRemoteRoom(i),
+            });
+        }
+        self.overlay = Overlay::Palette {
+            title: "New room on".into(),
+            items,
+            filter: String::new(),
+            sel: 0,
+            picked: false,
+            top: 0,
+        };
+        self.dirty = true;
+    }
+
+    /// A room that lives on that machine: its agents run there, this room shows it.
+    fn new_remote_room(&mut self, i: usize) {
+        let Some(m) = self.cfg.machine.get(i).cloned() else {
+            return;
+        };
+        let n = self.rooms.len() + 1;
+        let taken: Vec<String> = self
+            .rooms
+            .iter()
+            .filter_map(|r| r.remote.as_ref().map(|x| x.room.clone()))
+            .collect();
+        let mut k = n;
+        while taken.contains(&format!("room-{k}")) {
+            k += 1;
+        }
+        let remote = session::RemoteRoom {
+            machine: m.name.clone(),
+            ssh: m.ssh.clone(),
+            room: format!("room-{k}"),
+        };
+        self.rooms.push(Room {
+            name: format!("Room {n}"),
+            ..Default::default()
+        });
+        self.switch_room(self.rooms.len() - 1);
+        self.open_remote(&remote);
+        let ri = self.rooms.len() - 1;
+        self.rooms[ri].remote = Some(remote);
+    }
+
+    /// Connects the current tab list to a room on another machine (and keeps reconnecting).
+    fn open_remote(&mut self, remote: &session::RemoteRoom) {
+        let mut exe = std::env::current_exe().unwrap_or_default();
+        exe.set_file_name(if cfg!(windows) {
+            "lightsout.exe"
+        } else {
+            "lightsout"
+        });
+        let exe = shell_word(&exe.to_string_lossy());
+        let call = if cfg!(windows) {
+            format!("& {exe}")
+        } else {
+            exe
+        };
+        let room: String = remote
+            .room
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+            .collect();
+        let cmd = format!("{call} --remote {} --room {room}", shell_word(&remote.ssh));
+        let size = self.grid_size(self.content());
+        if let Some(id) = self.spawn(platform::home(), Some(cmd), Vec::new(), size) {
+            if let Some(p) = self.panes.get_mut(&id) {
+                p.title = remote.machine.clone();
+            }
+            self.tabs.push(TabView {
+                layout: layout::Node::Leaf(id),
+                focus: id,
+            });
+            self.active = self.tabs.len() - 1;
+        }
+    }
+
+    /// Goes to the room with that name (made if there is none): a machine showing it asked.
+    pub(crate) fn open_room_named(&mut self, name: &str) {
+        if let Some(i) = self.rooms.iter().position(|r| r.name == name) {
+            self.switch_room(i);
+        } else {
+            self.new_room();
+            let ri = self.room;
+            self.rooms[ri].name = name.to_string();
+        }
     }
 
     /// The current room is empty: drop it and go to a neighbour (or start fresh).
@@ -963,8 +1084,14 @@ impl App {
                 };
                 session::SavedRoom {
                     name: r.name.clone(),
-                    tabs: self.saved_tabs(tabs, running, screen_lines),
+                    // a room on another machine keeps its tabs there
+                    tabs: if r.remote.is_some() {
+                        Vec::new()
+                    } else {
+                        self.saved_tabs(tabs, running, screen_lines)
+                    },
                     active,
+                    remote: r.remote.clone(),
                 }
             })
             .collect();
@@ -1028,6 +1155,7 @@ impl App {
                 name: "Room 1".into(),
                 tabs: saved.tabs,
                 active: saved.active,
+                remote: None,
             });
         }
         if rooms.is_empty() {
@@ -1036,13 +1164,19 @@ impl App {
         self.rooms.clear();
         self.tabs.clear();
         for (ri, r) in rooms.iter().enumerate() {
-            self.restore_tabs(&r.tabs, from_windows, continue_agents, ri);
+            if let Some(remote) = &r.remote {
+                self.open_remote(remote);
+            } else {
+                self.restore_tabs(&r.tabs, from_windows, continue_agents, ri);
+            }
             let tabs = std::mem::take(&mut self.tabs);
             if !tabs.is_empty() {
                 self.rooms.push(Room {
                     name: r.name.clone(),
                     active: r.active.min(tabs.len() - 1),
                     tabs,
+                    remote: r.remote.clone(),
+                    ..Default::default()
                 });
             }
         }
@@ -1051,6 +1185,7 @@ impl App {
                 name: "Room 1".into(),
                 tabs: Vec::new(),
                 active: 0,
+                ..Default::default()
             });
         }
         self.room = saved.room.min(self.rooms.len() - 1);
@@ -1388,7 +1523,9 @@ impl App {
                     purpose: Purpose::Command,
                 }
             }
-            Action::NewRoom => self.new_room(),
+            Action::NewRoom => self.add_room(),
+            Action::NewLocalRoom => self.new_room(),
+            Action::NewRemoteRoom(i) => self.new_remote_room(i),
             Action::RenameRoom => {
                 let text = self.rooms[self.room].name.clone();
                 self.overlay = Overlay::Ask {
@@ -2053,7 +2190,7 @@ impl App {
             match hit {
                 Some(Hit::Pane(id)) => self.focus(id),
                 Some(Hit::Room(i)) => self.switch_room(i),
-                Some(Hit::NewRoom) => self.new_room(),
+                Some(Hit::NewRoom) => self.add_room(),
                 Some(Hit::Palette) => self.open_palette(),
                 Some(Hit::Switch) => {
                     self.overlay = Overlay::Confirm(if platform::in_lightsout() {
@@ -2128,6 +2265,17 @@ impl App {
         };
         if self.popup != Some(pane) {
             self.focus(pane);
+        }
+        // the program asked for the mouse (Shift keeps it for selecting and the menu)
+        let code = match button {
+            MouseButton::Left => 0,
+            MouseButton::Middle => 1,
+            MouseButton::Right => 2,
+            _ => 3,
+        };
+        if code < 3 && !self.mods.shift_key() && self.send_mouse(pane, r, x, y, code, true) {
+            self.mouse_held = Some((pane, code));
+            return;
         }
         match button {
             MouseButton::Left => {
@@ -2205,12 +2353,54 @@ impl App {
         true
     }
 
+    /// Where a pane is on screen now.
+    fn pane_rect(&self, pane: u64) -> Option<Rect> {
+        if self.popup == Some(pane) {
+            return Some(self.popup_rect());
+        }
+        self.active_rects()
+            .into_iter()
+            .find(|(id, _)| *id == pane)
+            .map(|(_, r)| r)
+    }
+
+    /// Tells the pane's program about the mouse, if it asked for it (xterm reporting).
+    fn send_mouse(&self, pane: u64, r: Rect, x: i32, y: i32, code: u8, press: bool) -> bool {
+        let Some(p) = self.panes.get(&pane) else {
+            return false;
+        };
+        let mode = *p.term.lock().mode();
+        if !mode.intersects(TermMode::MOUSE_MODE) {
+            return false;
+        }
+        let (cw, ch) = (self.fonts.cell_w as i32, self.fonts.cell_h as i32);
+        let col = ((x - r.x - self.padx()).max(0) / cw + 1).min(p.size.cols as i32);
+        let row = ((y - r.y - self.pady()).max(0) / ch + 1).min(p.size.rows as i32);
+        let bytes = if mode.contains(TermMode::SGR_MOUSE) {
+            format!("\x1b[<{code};{col};{row}{}", if press { 'M' } else { 'm' }).into_bytes()
+        } else {
+            if col > 222 || row > 222 {
+                return true;
+            }
+            let b = if press { code } else { 3 };
+            vec![0x1b, b'[', b'M', 32 + b, 32 + col as u8, 32 + row as u8]
+        };
+        p.input(bytes);
+        true
+    }
+
     /// The wheel: a list under the mouse scrolls, else the pane under it.
     fn on_wheel(&mut self, lines: i32) {
         if self.wheel(lines) {
             return;
         }
-        if let Some((id, _)) = self.pane_at(self.mouse.x as i32, self.mouse.y as i32) {
+        let (x, y) = (self.mouse.x as i32, self.mouse.y as i32);
+        if let Some((id, r)) = self.pane_at(x, y) {
+            // the program asked for the mouse: it gets the wheel too
+            let code = if lines > 0 { 64 } else { 65 };
+            if !self.mods.shift_key() && self.send_mouse(id, r, x, y, code, true) {
+                return;
+            }
             if let Some(p) = self.panes.get(&id) {
                 p.scroll(lines);
                 self.dirty = true;
@@ -2220,6 +2410,20 @@ impl App {
 
     fn mouse_move(&mut self) {
         let (x, y) = (self.mouse.x as i32, self.mouse.y as i32);
+        if let Some((pane, code)) = self.mouse_held {
+            let drags = self.panes.get(&pane).is_some_and(|p| {
+                p.term
+                    .lock()
+                    .mode()
+                    .intersects(TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION)
+            });
+            if drags {
+                if let Some(r) = self.pane_rect(pane) {
+                    self.send_mouse(pane, r, x, y, code + 32, true);
+                }
+            }
+            return;
+        }
         match &self.drag {
             Some(Drag::Divider {
                 tab,
@@ -2254,6 +2458,13 @@ impl App {
     }
 
     fn mouse_up(&mut self) {
+        if let Some((pane, code)) = self.mouse_held.take() {
+            let (x, y) = (self.mouse.x as i32, self.mouse.y as i32);
+            if let Some(r) = self.pane_rect(pane) {
+                self.send_mouse(pane, r, x, y, code, false);
+            }
+            return;
+        }
         match self.drag.take() {
             Some(Drag::Select { pane, .. }) => {
                 let text = self
@@ -2492,6 +2703,22 @@ impl App {
             .enumerate()
             .map(|(ri, r)| {
                 let tabs = if ri == self.room { &self.tabs } else { &r.tabs };
+                if r.remote.is_some() {
+                    // what runs over there; a click goes to this room's view of it
+                    let view = tabs.first().map(|t| t.focus).unwrap_or(0);
+                    let state = |s: &str| match s {
+                        "working" => State::Working,
+                        "needs-you" => State::NeedsYou,
+                        "done" => State::Done,
+                        _ => State::Idle,
+                    };
+                    let rows = r
+                        .remote_agents
+                        .iter()
+                        .map(|(n, s, f)| (view, n.clone(), state(s), f.clone()))
+                        .collect();
+                    return (r.name.clone(), rows);
+                }
                 (
                     r.name.clone(),
                     tabs.iter()
@@ -2770,6 +2997,15 @@ impl App {
                         current,
                         if current { t.fg } else { DIMTEXT },
                     );
+                    // a room on another machine: that machine's name, dimmed (more when unreachable)
+                    if let Some((m, off)) = self
+                        .rooms
+                        .get(i)
+                        .and_then(|r| r.remote.as_ref().map(|x| (x.machine.clone(), r.offline)))
+                    {
+                        let mx = sw - PADX - (m.chars().count() as i32 + 1) * cw;
+                        cv.text(f, mx, y, &m, false, if off { 0x3a3a42 } else { 0x55555c });
+                    }
                     self.hits.push((
                         Rect {
                             x: 0,
@@ -3318,6 +3554,18 @@ impl App {
                 }
                 self.dirty = true;
             }
+            TermEvent::Title(s) if s.starts_with("lightsout-room") => {
+                let ri = self.room_of(id);
+                if let Some(r) = ri.and_then(|ri| self.rooms.get_mut(ri)) {
+                    if let Some(json) = s.strip_prefix("lightsout-room:") {
+                        r.remote_agents = serde_json::from_str(json).unwrap_or_default();
+                        r.offline = false;
+                    } else if s == "lightsout-room-offline" {
+                        r.offline = true;
+                    }
+                }
+                self.dirty = true;
+            }
             TermEvent::Title(s) => {
                 let lower = s.to_lowercase();
                 if let Some(p) = self.panes.get_mut(&id) {
@@ -3744,28 +3992,53 @@ pub fn cli_entry() {
         platform::lid_restore();
         std::process::exit(code);
     }
+    // `--room NAME`: show just that room (a room on this machine, seen from another one)
+    let room_arg: Option<String> = rest
+        .iter()
+        .position(|a| a == "--room")
+        .and_then(|i| rest.get(i + 1))
+        .map(|r| {
+            r.chars()
+                .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+                .collect()
+        });
     if rest.first().map(String::as_str) == Some("--remote") {
         let Some(target) = rest.get(1) else {
             eprintln!("lightsout: which machine? lightsout --remote you@server");
             std::process::exit(2);
         };
-        let status = std::process::Command::new("ssh")
-            .args(["-t", target, "sh -lc 'exec lightsout'"])
-            .status();
-        match status {
-            Ok(s) if s.code() == Some(127) => {
-                eprintln!("lightsout: not installed on {target}. There: curl -fsSL https://lightsout.sh | sh");
-                std::process::exit(1);
-            }
-            Ok(s) => std::process::exit(s.code().unwrap_or(0)),
-            Err(e) => {
-                eprintln!("lightsout: could not start ssh: {e}");
-                std::process::exit(1);
+        let there = match &room_arg {
+            Some(r) => format!("sh -lc 'exec lightsout --room {r}'"),
+            None => "sh -lc 'exec lightsout'".to_string(),
+        };
+        loop {
+            let status = std::process::Command::new("ssh")
+                .args(["-t", target, &there])
+                .status();
+            match status {
+                Ok(s) if s.code() == Some(127) => {
+                    eprintln!("lightsout: not installed on {target}. There: curl -fsSL https://lightsout.sh | sh");
+                    std::process::exit(1);
+                }
+                // 255: ssh couldn't connect or the connection dropped
+                Ok(s) if s.code() != Some(255) => std::process::exit(s.code().unwrap_or(0)),
+                Err(e) if room_arg.is_none() => {
+                    eprintln!("lightsout: could not start ssh: {e}");
+                    std::process::exit(1);
+                }
+                _ if room_arg.is_none() => std::process::exit(255),
+                _ => {
+                    // a room on that machine: keep trying (the sidebar dims it meanwhile)
+                    print!("\x1b]2;lightsout-room-offline\x07");
+                    println!("Can't reach {target}. Trying again in 5 s (Ctrl+C stops).");
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                }
             }
         }
     }
     let window = rest.iter().any(|a| a == "--window" || a == "-w");
-    if rest.is_empty() || window {
+    let view_only = room_arg.is_some() && rest.len() == 2;
+    if rest.is_empty() || window || view_only {
         use std::io::IsTerminal;
         let in_terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
         if !window && in_terminal {
@@ -3775,7 +4048,7 @@ pub fn cli_entry() {
             }
             // typed in a terminal: show Lights Out right here, like tmux. The agents live in a
             // background copy, so closing this terminal (or Ctrl+B D) leaves them running.
-            if let Some(code) = tui::attach(&session) {
+            if let Some(code) = tui::attach(&session, room_arg.as_deref()) {
                 std::process::exit(code);
             }
             // no background copy yet; is the window open?
@@ -3783,7 +4056,7 @@ pub fn cli_entry() {
                 return;
             }
             platform::mac_return(&session);
-            if let Some(code) = tui::start_and_attach(&session) {
+            if let Some(code) = tui::start_and_attach(&session, room_arg.as_deref()) {
                 std::process::exit(code);
             }
             eprintln!("lightsout: could not start in the background; opening the window instead");
