@@ -76,13 +76,15 @@ You can add your own keys: see [Configuration](configuration.md#your-own-keys).
 
 ## Alerts
 
-When an agent finishes or needs your answer, Lights Out shows a popup and plays a short sound (Windows and Mac). **Ctrl+Shift+J** jumps straight to the agent that needs you.
+When an agent finishes or needs your answer, a popup appears in the Lights Out window (never a system notification), and the agent's mark in the sidebar changes. A short sound can be switched on in [the settings](configuration.md). **Ctrl+Shift+J** jumps straight to the agent that needs you.
+
+Only real work counts: an agent sitting at its prompt, redrawing its status line, never shows up as "done".
 
 Lights Out recognises common questions by itself. If one of your tools asks in its own words, add the phrase to `needs_you` in [the settings](configuration.md).
 
 ## Closing the window
 
-Closing the window doesn't stop your agents: they keep running, and `lightsout` brings the window back. **Quit** in actions stops everything. Your tabs come back the next time you open Lights Out.
+Closing the window doesn't stop your agents: they keep running, and `lightsout` brings the window back. **Quit** in actions stops everything. Your tabs come back the next time you open Lights Out, each in its folder, with its command typed back in for you to run (agents continue by themselves only when you switch to or from Lights Out).
 
 ## Wi-Fi
 

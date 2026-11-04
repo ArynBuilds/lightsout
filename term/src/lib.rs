@@ -695,10 +695,7 @@ impl App {
             _ => format!("{name} is done  (Ctrl+Shift+J)"),
         };
         if self.cfg.notify.popup {
-            self.toast(text.clone(), if s == State::NeedsYou { ALERT } else { DONE });
-            if self.hidden || !self.window_focused {
-                platform::os_notify(&text);
-            }
+            self.toast(text, if s == State::NeedsYou { ALERT } else { DONE });
         }
         if self.cfg.notify.sound && !platform::in_lightsout() {
             let file = if s == State::NeedsYou { &self.cfg.notify.sound_needs_you } else { &self.cfg.notify.sound_done };
@@ -778,7 +775,9 @@ impl App {
         session::save(&session::local_file(&self.session), &s);
     }
 
-    fn restore(&mut self, saved: Saved, from_windows: bool) {
+    /// `continue_agents`: a switch between systems continues known agents (resume.conf);
+    /// reopening on the same computer types each command back in instead, unrun.
+    fn restore(&mut self, saved: Saved, from_windows: bool, continue_agents: bool) {
         let mut rooms = saved.rooms;
         if rooms.is_empty() && !saved.tabs.is_empty() {
             rooms.push(session::SavedRoom { name: "Room 1".into(), tabs: saved.tabs, active: saved.active });
@@ -789,7 +788,7 @@ impl App {
         self.rooms.clear();
         self.tabs.clear();
         for (ri, r) in rooms.iter().enumerate() {
-            self.restore_tabs(&r.tabs, from_windows, ri);
+            self.restore_tabs(&r.tabs, from_windows, continue_agents, ri);
             let tabs = std::mem::take(&mut self.tabs);
             if !tabs.is_empty() {
                 self.rooms.push(Room { name: r.name.clone(), active: r.active.min(tabs.len() - 1), tabs });
@@ -804,7 +803,7 @@ impl App {
         self.resize_all();
     }
 
-    fn restore_tabs(&mut self, saved_tabs: &[SavedTab], from_windows: bool, room: usize) {
+    fn restore_tabs(&mut self, saved_tabs: &[SavedTab], from_windows: bool, continue_agents: bool, room: usize) {
         for (ti, t) in saved_tabs.iter().enumerate() {
             let mut ids = Vec::new();
             for (n, p) in t.panes.iter().enumerate() {
@@ -819,8 +818,9 @@ impl App {
                         env.push(("LIGHTSOUT_SCREEN".to_string(), f.to_string_lossy().to_string()));
                     }
                 }
-                // known way to continue (resume.conf) -> run it; otherwise type the command back in
-                let resume = p.command.as_deref().and_then(platform::resume_command);
+                // after a switch: a known way to continue (resume.conf) runs; otherwise,
+                // and always when just reopening, the command is typed back in
+                let resume = p.command.as_deref().filter(|_| continue_agents).and_then(platform::resume_command);
                 let typed = if resume.is_none() { p.command.clone() } else { None };
                 let size = self.grid_size(self.content());
                 let id = self.spawn(cwd, resume, env, size);
@@ -842,17 +842,17 @@ impl App {
     fn start(&mut self) {
         if platform::in_lightsout() {
             if let Some(s) = platform::take_handoff() {
-                self.restore(s, platform::image());
+                self.restore(s, platform::image(), true);
             }
         } else if let Some(s) = platform::take_handoff().filter(|_| cfg!(unix)) {
             // back on the Linux desktop / logged back in on the Mac: the tabs come along
-            self.restore(s, false);
+            self.restore(s, false, true);
         } else if let Some(s) = platform::take_handback() {
             // back in Windows: the tabs from Lights Out come along (conversations continue)
-            self.restore(s, true);
+            self.restore(s, true, true);
         } else if self.cfg.history.keep {
             if let Some(s) = session::load(&session::local_file(&self.session)) {
-                self.restore(s, false);
+                self.restore(s, false, false);
             }
         }
         if platform::drive_read_only() {
@@ -872,7 +872,7 @@ impl App {
             let (proxy, every) = (self.proxy.clone(), item.every.max(5));
             std::thread::spawn(move || loop {
                 let (sh, flag) = if cfg!(windows) { ("cmd", "/C") } else { ("sh", "-c") };
-                let out = std::process::Command::new(sh).args([flag, &cmd]).output();
+                let out = platform::quiet(sh).args([flag, &cmd]).output();
                 let text = out.map(|o| String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").chars().take(40).collect()).unwrap_or_default();
                 if proxy.send_event(UserEvent::BarText(n, text)).is_err() {
                     break;
@@ -1667,10 +1667,7 @@ impl App {
             },
             "notify" => {
                 let t = a["text"].as_str().unwrap_or("").to_string();
-                self.toast(t.clone(), self.theme.accent);
-                if self.hidden || !self.window_focused {
-                    platform::os_notify(&t);
-                }
+                self.toast(t, self.theme.accent);
                 json!({ "ok": true })
             }
             "screen" => {
@@ -2107,7 +2104,6 @@ impl ApplicationHandler<UserEvent> for App {
                     w.set_visible(false);
                 }
                 self.hidden = true;
-                platform::os_notify("Lights Out keeps your agents running. Type `lightsout` to bring the window back.");
             }
             WindowEvent::Focused(focused) => {
                 self.window_focused = focused;
@@ -2611,6 +2607,7 @@ pub fn main_entry() {
     if api::call(&session, "show", json!({})).is_ok() {
         return;
     }
+    platform::fresh_environment();
     alacritty_terminal::tty::setup_env();
     let event_loop = EventLoop::<UserEvent>::with_user_event().build().expect("event loop");
     let mut app = App::new(event_loop.create_proxy(), session);

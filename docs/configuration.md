@@ -13,8 +13,8 @@ foreground = "#d6d6d6"
 font_size = 0            # 0 = automatic
 
 [notify]
-popup = true             # a popup when an agent finishes or needs you
-sound = true             # a short sound with it
+popup = true             # a popup in the window when an agent finishes or needs you
+sound = false            # a short sound with it (Windows, Mac)
 sound_done = ""          # your own sound files
 sound_needs_you = ""
 

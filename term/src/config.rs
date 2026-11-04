@@ -16,7 +16,7 @@ font_size = 0            # 0 = automatic
 
 [notify]
 popup = true             # a popup when an agent finishes or needs you
-sound = true             # (Windows) a short sound with it
+sound = false            # a short sound with it (Windows, Mac)
 sound_done = ""          # optional .wav files
 sound_needs_you = ""
 
@@ -79,7 +79,7 @@ pub struct Notify {
 }
 impl Default for Notify {
     fn default() -> Self {
-        Notify { popup: true, sound: true, sound_done: String::new(), sound_needs_you: String::new() }
+        Notify { popup: true, sound: false, sound_done: String::new(), sound_needs_you: String::new() }
     }
 }
 

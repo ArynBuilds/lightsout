@@ -284,7 +284,7 @@ pub fn running_in_tabs(shells: &[u32]) -> std::collections::HashMap<u32, Option<
         CommandLine: Option<String>,
     }
     let mut out = HashMap::new();
-    let ps = Command::new("powershell.exe")
+    let ps = quiet("powershell.exe")
         .args([
             "-NoProfile",
             "-Command",
@@ -471,7 +471,7 @@ pub fn enter_lightsout(saved: &crate::session::Saved) -> Result<(), String> {
         r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired",
         r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending",
     ] {
-        if Command::new("reg").args(["query", key]).output().is_ok_and(|o| o.status.success()) {
+        if quiet("reg").args(["query", key]).output().is_ok_and(|o| o.status.success()) {
             return Err("Windows has an update waiting. Restart Windows once to finish it, then press Lights Out again.".into());
         }
     }
@@ -479,7 +479,7 @@ pub fn enter_lightsout(saved: &crate::session::Saved) -> Result<(), String> {
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     crate::session::save(&dir.join("tabs.json"), saved);
     std::fs::write(dir.join("nonce"), random_hex()).map_err(|e| e.to_string())?;
-    let ok = Command::new("schtasks").args(["/run", "/tn", r"\LightsOut\Enter"]).output();
+    let ok = quiet("schtasks").args(["/run", "/tn", r"\LightsOut\Enter"]).output();
     match ok {
         Ok(o) if o.status.success() => Ok(()),
         _ => Err("Lights Out isn't installed on this PC yet. Install it with: irm https://lightsout.sh | iex".into()),
@@ -924,7 +924,7 @@ pub fn lid_restore() {
 #[cfg(windows)]
 fn lid_values() -> Option<(u32, u32)> {
     // output is localized; the last two hex numbers are the AC and DC values
-    let out = Command::new("powercfg").args(["/qh", "SCHEME_CURRENT", "SUB_BUTTONS", "LIDACTION"]).output().ok()?;
+    let out = quiet("powercfg").args(["/qh", "SCHEME_CURRENT", "SUB_BUTTONS", "LIDACTION"]).output().ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
     let hex: Vec<u32> = text.split_whitespace().filter_map(|t| t.strip_prefix("0x")).filter_map(|h| u32::from_str_radix(h, 16).ok()).collect();
     match hex[..] {
@@ -1068,19 +1068,73 @@ pub fn sound(file: &str, needs_you: bool) {
     let _ = (file, needs_you);
 }
 
-/// A system notification when the window isn't in front (Windows).
-pub fn os_notify(text: &str) {
+/// A helper program, started without a window of its own: the app has no console,
+/// so on Windows a console program would otherwise pop up its own window.
+pub fn quiet(program: &str) -> Command {
+    #[allow(unused_mut)]
+    let mut c = Command::new(program);
     #[cfg(windows)]
     {
-        let _ = notify_rust::Notification::new().summary("Lights Out").body(text).show();
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
-    #[cfg(target_os = "macos")]
-    {
-        let t = text.replace('"', "'");
-        let _ = Command::new("osascript").args(["-e", &format!("display notification \"{t}\" with title \"Lights Out\"")]).spawn();
-    }
-    let _ = text;
+    c
 }
+
+/// Windows: the app's environment, fresh, as Windows gives it to a program started from
+/// the Start menu. A program that started Lights Out (an agent, a terminal) leaves its
+/// own markers in what it passes down; tabs must not inherit them.
+#[cfg(windows)]
+pub fn fresh_environment() {
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::Security::{TOKEN_DUPLICATE, TOKEN_IMPERSONATE, TOKEN_QUERY};
+    use windows_sys::Win32::System::Environment::{CreateEnvironmentBlock, DestroyEnvironmentBlock};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    let mut vars: Vec<(String, String)> = Vec::new();
+    unsafe {
+        let mut token: HANDLE = std::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_IMPERSONATE, &mut token) == 0 {
+            return;
+        }
+        let mut block: *mut core::ffi::c_void = std::ptr::null_mut();
+        let ok = CreateEnvironmentBlock(&mut block, token, 0) != 0;
+        CloseHandle(token);
+        if !ok || block.is_null() {
+            return;
+        }
+        // NAME=value entries, each ending with a 0, the list with another 0
+        let mut p = block as *const u16;
+        loop {
+            let mut len = 0;
+            while *p.add(len) != 0 {
+                len += 1;
+            }
+            if len == 0 {
+                break;
+            }
+            let entry = String::from_utf16_lossy(std::slice::from_raw_parts(p, len));
+            // entries like "=C:=C:\" are the shell's own and have no name
+            if let Some((k, v)) = entry.split_once('=').filter(|(k, _)| !k.is_empty()) {
+                vars.push((k.to_string(), v.to_string()));
+            }
+            p = p.add(len + 1);
+        }
+        DestroyEnvironmentBlock(block);
+    }
+    if vars.is_empty() {
+        return;
+    }
+    let old: Vec<std::ffi::OsString> = std::env::vars_os().map(|(k, _)| k).collect();
+    for k in old {
+        std::env::remove_var(k);
+    }
+    for (k, v) in vars {
+        std::env::set_var(k, v);
+    }
+}
+
+#[cfg(not(windows))]
+pub fn fresh_environment() {}
 
 /// Opens a text file in an editor. Windows: Notepad. Lights Out: returns the
 /// command to run in a new tab (there is no desktop to open a window on).
