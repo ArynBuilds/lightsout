@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.2-rc.3
+
+A test build (`irm https://lightsout.sh/rc | iex`).
+
+- **Windows: the terminal view no longer closes by itself.** It closed after 5 seconds without a key press, while your agents kept running in the background.
+
 ## 0.3.2-rc.2
 
 A test build (`irm https://lightsout.sh/rc | iex`).
