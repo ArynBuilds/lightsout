@@ -322,10 +322,11 @@ pub fn serve(session: &str) -> i32 {
     std::thread::spawn(move || {
         let mut n = 0u64;
         for stream in listener.incoming().flatten() {
-            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
             let Ok(read) = stream.try_clone() else {
                 continue;
             };
+            // the hello must come within 5 s (set and lifted on the copy that reads)
+            let _ = read.set_read_timeout(Some(Duration::from_secs(5)));
             let mut reader = BufReader::new(read);
             let mut line = String::new();
             if reader.read_line(&mut line).is_err() {
@@ -339,9 +340,6 @@ pub fn serve(session: &str) -> i32 {
             let room = words
                 .find_map(|w| w.strip_prefix("room="))
                 .map(str::to_string);
-            // the 5 s limit was only for the hello. On Windows a cloned socket keeps its own
-            // limit, so lift it on the copy that reads too, or a quiet viewer is dropped after 5 s.
-            let _ = stream.set_read_timeout(None);
             let _ = reader.get_ref().set_read_timeout(None);
             n += 1;
             let id = n;
