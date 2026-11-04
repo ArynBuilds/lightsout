@@ -19,7 +19,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $B = "$PWD/term/target/release/lightsout.exe"   # forward slashes: the public copy drops ""
+          $B = "$PWD/term/target/release/lightsout.exe"
           # tabs saved for a switch to Lights Out that never happened (the PC came back to Windows)
           New-Item -ItemType Directory -Force C:\LightsOut\handoff | Out-Null
           '{"rooms":[{"name":"FromSwitch","active":0,"tabs":[{"focus":0,"layout":{"Leaf":0},"panes":[{"cwd":"C:\Windows"}]}]}],"room":0}' | Set-Content C:\LightsOut\handoff\tabs.json
