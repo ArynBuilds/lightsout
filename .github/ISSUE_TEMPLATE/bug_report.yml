@@ -1,0 +1,39 @@
+name: Bug report
+description: Something doesn't work as it should
+labels: [bug]
+body:
+  - type: dropdown
+    id: system
+    attributes:
+      label: System
+      options:
+        - Windows
+        - Lights Out mode (Windows off)
+        - Linux
+        - Mac
+    validations:
+      required: true
+  - type: input
+    id: machine
+    attributes:
+      label: Laptop or PC model
+      placeholder: ASUS Zephyrus G16 GU605MY
+  - type: input
+    id: version
+    attributes:
+      label: Lights Out version
+      description: Run `lightsout --version`
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: For install problems on Windows, attach C:\LightsOut\logs\install.log

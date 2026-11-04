@@ -1,0 +1,47 @@
+# Troubleshooting
+
+## Installing
+
+**"this PC does not start with UEFI"**
+The PC starts in the old BIOS way. Lights Out on Windows needs UEFI, which most PCs from 2012 on use; the installer stops before changing anything.
+
+**"C: is encrypted (BitLocker) but this PC has no ready TPM security chip"**
+Turn the TPM on in the firmware settings (often called TPM, PTT on Intel, or fTPM on AMD), then run the installer again.
+
+**"not enough room on the EFI partition"**
+The boot partition is almost full. Lights Out needs about 45 MB there. A slimmer starter for small partitions is planned.
+
+**Windows says the app is unknown or blocks it**
+On PCs with Smart App Control switched on, Windows may block programs that aren't signed yet. Code signing is coming; until then, Lights Out needs Smart App Control off.
+
+## Switching
+
+**"Windows has an update waiting"**
+Restart Windows once to let it finish the update, then press Lights Out again.
+
+**The PC started Windows instead of Lights Out**
+Lights Out only starts when it was asked for, once. If Windows started instead, the firmware didn't take the one-time request, or the starter couldn't open the drive; your tabs are still in the Windows app. Press Lights Out again. If it keeps happening, the firmware may block other systems: some business and Surface laptops need **"Allow Microsoft 3rd-party UEFI CA"** switched on in the firmware settings.
+
+**"C: is read-only"**
+Windows was hibernated or not shut down fully (Fast Startup counts). Go back with Lights On, shut Windows down fully or restart it, then switch again.
+
+**No Wi-Fi in Lights Out**
+Open **actions → Wi-Fi...** and pick your network. A few very new Wi-Fi chips aren't supported by Linux yet.
+
+**Linux: the desktop doesn't come back**
+Lights On should bring it back. If the screen stays on a text console, sign in there and run `sudo systemctl isolate default.target`.
+
+## Agents
+
+**An agent started a new conversation instead of continuing**
+Only agents listed in `resume.conf` are continued automatically. Add your agent: see [Agents](agents.md#how-conversations-continue).
+
+**A program shows as working but waits for me**
+Add the phrase it asks with to `needs_you`: see [Configuration](configuration.md#when-an-agent-asks-in-its-own-words).
+
+**`lightsout list` says it can't reach the app**
+Open the app first (`lightsout`). With `--session NAME`, use the same `--session NAME` for the commands.
+
+## Getting help
+
+Open an issue at [github.com/ArynBuilds/lightsout/issues](https://github.com/ArynBuilds/lightsout/issues) with your system, what you did and what happened. On Windows, `C:\LightsOut\logs\install.log` helps with install problems.

@@ -1,0 +1,33 @@
+name: Hardware report
+description: Tell us how Lights Out runs on your machine
+labels: [hardware]
+body:
+  - type: input
+    id: machine
+    attributes:
+      label: Laptop or PC model
+    validations:
+      required: true
+  - type: dropdown
+    id: works
+    attributes:
+      label: Does Lights Out mode work?
+      options:
+        - Yes, fully
+        - Partly
+        - No
+    validations:
+      required: true
+  - type: input
+    id: wifi
+    attributes:
+      label: Wi-Fi chip, and does Wi-Fi work in Lights Out mode?
+  - type: input
+    id: watts
+    attributes:
+      label: Power draw
+      description: Run `lightsout power` after 10 minutes with the screen off, and the same in your normal system
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else

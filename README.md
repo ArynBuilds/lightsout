@@ -20,6 +20,8 @@ curl -fsSL https://lightsout.sh | sh
 
 Then open it with `lightsout`. Remove it any time with `lightsout uninstall`.
 
+**[Read the docs](docs/README.md)** · [lightsout.sh/docs](https://lightsout.sh/docs)
+
 ## What it does
 
 - **One terminal everywhere.** The same app on Windows, on Linux, and in Lights Out mode: tabs, splits, rooms, mouse, copy/paste, alerts when an agent needs you.
@@ -47,6 +49,10 @@ Then open it with `lightsout`. Remove it any time with `lightsout uninstall`.
 ## Build
 
 GitHub Actions builds everything (Windows and Linux terminal, the small Linux, the signed starter) and tests the whole switch in a virtual PC with UEFI, TPM and an NTFS drive. See `.github/workflows/build.yml`.
+
+## Contributing
+
+Bug reports, hardware reports and pull requests are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md). Security problems: [SECURITY.md](SECURITY.md).
 
 ## License
 
