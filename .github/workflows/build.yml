@@ -129,11 +129,13 @@ jobs:
           test ! -f "$S/throttled"
           # --- logged-out mode: agents in the background service (the log-out
           # itself can't run here: it would log out this test machine)
-          test -f /usr/local/lib/lightsout/sh.lightsout.agents.plist
+          test -f /Library/LaunchDaemons/sh.lightsout.agents.plist
           lightsout-app --session x --if-returning; ! pgrep -f "session x"   # normal sign-in: stays closed
           pkill lightsout-app || true; sleep 2
           sudo -n /usr/local/lib/lightsout/switch out 0 stay
-          sudo launchctl bootstrap system /usr/local/lib/lightsout/sh.lightsout.agents.plist
+          plutil -lint /Library/LaunchDaemons/sh.lightsout.agents.plist
+          sudo launchctl print system/sh.lightsout.agents | head -20
+          sudo launchctl kickstart -k system/sh.lightsout.agents
           for i in $(seq 1 30); do lightsout list >/dev/null 2>&1 && break; sleep 1; done
           lightsout list
           ps -o user=,command= -p "$(pgrep -f 'lightsout-app --headless')"

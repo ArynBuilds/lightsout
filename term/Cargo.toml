@@ -30,7 +30,7 @@ winit = "0.30.13"
 
 [target."cfg(windows)".dependencies]
 notify-rust = "4.18.2"
-windows-sys = { version = "0.61.2", features = ["Win32_System_Power", "Win32_Foundation", "Win32_System_Console", "Win32_Media_Audio", "Win32_UI_WindowsAndMessaging", "Win32_System_Diagnostics_ToolHelp"] }
+windows-sys = { version = "0.61.2", features = ["Win32_System_Power", "Win32_Foundation", "Win32_System_Console", "Win32_Media_Audio", "Win32_UI_WindowsAndMessaging", "Win32_System_Diagnostics_ToolHelp", "Win32_NetworkManagement_WiFi"] }
 
 [profile.release]
 opt-level = 3

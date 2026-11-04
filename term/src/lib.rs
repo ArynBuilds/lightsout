@@ -145,6 +145,8 @@ struct Room {
 enum Purpose {
     Command,
     RoomName(usize),
+    WifiPassword(usize),
+    WifiName,
 }
 
 #[derive(Clone)]
@@ -174,6 +176,9 @@ enum Action {
     CloseRoom,
     GoRoom(usize),
     ScreenOff,
+    Wifi,
+    WifiJoin(usize),
+    WifiOther,
     Custom(config::KeyCmd),
 }
 
@@ -264,6 +269,9 @@ struct App {
     bar_texts: Vec<String>,
     clipboard: Option<arboard::Clipboard>,
     switching: Option<mpsc::Receiver<Result<(), String>>>,
+    wifi_nets: Vec<platform::Net>,
+    wifi_scan: Option<mpsc::Receiver<Vec<platform::Net>>>,
+    wifi_join: Option<mpsc::Receiver<Result<String, String>>>,
     waiters: Vec<Waiter>,
     status_at: Instant,
     saved_at: Instant,
@@ -341,6 +349,9 @@ impl App {
             bar_texts: Vec::new(),
             clipboard: arboard::Clipboard::new().ok(),
             switching: None,
+            wifi_nets: Vec::new(),
+            wifi_scan: None,
+            wifi_join: None,
             waiters: Vec::new(),
             status_at: Instant::now(),
             saved_at: Instant::now(),
@@ -898,6 +909,9 @@ impl App {
             item("Show / hide the sidebar", "Ctrl+Shift+B", Action::ToggleSidebar),
             item("Settings", "Ctrl+,", Action::Settings),
         ];
+        if platform::wifi_available() {
+            v.push(item("Wi-Fi...", "", Action::Wifi));
+        }
         if lo {
             v.push(item("Screen off (any key turns it on)", "Ctrl+Shift+O", Action::ScreenOff));
             let back = if platform::image() { "Lights On (back to Windows)" } else { "Lights On (back to the desktop)" };
@@ -944,6 +958,17 @@ impl App {
         let mut v: Vec<Item> = names.into_iter().map(|n| Item { label: n.clone(), hint: "new tab".into(), action: Action::Agent(n) }).collect();
         v.push(Item { label: "Any other command...".into(), hint: "type it".into(), action: Action::RunCommand });
         v
+    }
+
+    fn join_wifi(&mut self, i: usize, password: Option<String>) {
+        let Some(ssid) = self.wifi_nets.get(i).map(|n| n.ssid.clone()) else { return };
+        let (tx, rx) = mpsc::channel();
+        let name = ssid.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(platform::wifi_join(&name, password.as_deref()).map(|_| name));
+        });
+        self.wifi_join = Some(rx);
+        self.toast(format!("Joining {ssid}..."), DIMTEXT);
     }
 
     fn open_palette(&mut self) {
@@ -996,6 +1021,29 @@ impl App {
                 } else {
                     self.overlay = Overlay::Confirm(Confirm::EnterLightsOut);
                 }
+            }
+            Action::Wifi => {
+                let (tx, rx) = mpsc::channel();
+                std::thread::spawn(move || {
+                    let _ = tx.send(platform::wifi_scan());
+                });
+                self.wifi_scan = Some(rx);
+                self.toast("Looking for Wi-Fi networks...".into(), DIMTEXT);
+            }
+            Action::WifiJoin(i) => {
+                if let Some(n) = self.wifi_nets.get(i) {
+                    if n.connected {
+                        self.toast(format!("Already on {}", n.ssid), DIMTEXT);
+                    } else if n.secure {
+                        let title = format!("Password for {}:", n.ssid);
+                        self.overlay = Overlay::Ask { title, text: String::new(), purpose: Purpose::WifiPassword(i) };
+                    } else {
+                        self.join_wifi(i, None);
+                    }
+                }
+            }
+            Action::WifiOther => {
+                self.overlay = Overlay::Ask { title: "Network name:".into(), text: String::new(), purpose: Purpose::WifiName };
             }
             Action::ScreenOff => {
                 platform::screen(false);
@@ -1250,6 +1298,13 @@ impl App {
                                 if let Some(r) = self.rooms.get_mut(i) {
                                     r.name = value;
                                 }
+                            }
+                            Purpose::WifiPassword(i) => self.join_wifi(i, Some(value)),
+                            Purpose::WifiName => {
+                                // a network that isn't listed (hidden, or a name macOS doesn't show)
+                                self.wifi_nets.push(platform::Net { ssid: value.clone(), secure: true, signal: 0, connected: false });
+                                let i = self.wifi_nets.len() - 1;
+                                self.overlay = Overlay::Ask { title: format!("Password for {value} (Esc if none):"), text: String::new(), purpose: Purpose::WifiPassword(i) };
                             }
                         }
                     }
@@ -1951,7 +2006,9 @@ impl App {
                 cv.rect(0, y - 4, w, (ch + 12) as u32, BAR_ACTIVE);
                 cv.text(f, PADX * 2, y, s, true, t.fg);
             }
-            Overlay::Ask { title, text, .. } => {
+            Overlay::Ask { title, text, purpose } => {
+                // passwords show as dots
+                let text = if matches!(purpose, Purpose::WifiPassword(_)) { "•".repeat(text.chars().count()) } else { text.clone() };
                 let y = h as i32 - 2 * ch - 12;
                 cv.rect(0, y - 4, w, (2 * ch + 16) as u32, BAR_ACTIVE);
                 cv.text(f, PADX * 2, y, title, true, t.fg);
@@ -2202,6 +2259,44 @@ impl ApplicationHandler<UserEvent> for App {
         let mut next: Option<Instant> = None;
         let mut soon = |t: Instant| next = Some(next.map_or(t, |n: Instant| n.min(t)));
 
+        if let Some(rx) = &self.wifi_scan {
+            match rx.try_recv() {
+                Ok(nets) => {
+                    self.wifi_scan = None;
+                    {
+                        let bars = ["▁   ", "▁▂  ", "▁▂▄ ", "▁▂▄▆", "▁▂▄▆"];
+                        let mut items: Vec<Item> = nets
+                            .iter()
+                            .enumerate()
+                            .map(|(i, n)| Item {
+                                label: format!("{}  {}{}", bars[n.signal.min(4) as usize], n.ssid, if n.connected { "   (connected)" } else { "" }),
+                                hint: if n.secure { "locked".into() } else { "open".into() },
+                                action: Action::WifiJoin(i),
+                            })
+                            .collect();
+                        items.push(Item { label: "Other network...".into(), hint: "type a name".into(), action: Action::WifiOther });
+                        self.wifi_nets = nets;
+                        self.overlay = Overlay::Palette { title: "Wi-Fi".into(), items, filter: String::new(), sel: 0 };
+                    }
+                    self.dirty = true;
+                }
+                Err(mpsc::TryRecvError::Empty) => soon(now + Duration::from_millis(300)),
+                Err(_) => self.wifi_scan = None,
+            }
+        }
+        if let Some(rx) = &self.wifi_join {
+            match rx.try_recv() {
+                Ok(r) => {
+                    self.wifi_join = None;
+                    match r {
+                        Ok(ssid) => self.toast(format!("Connected to {ssid}"), DONE),
+                        Err(e) => self.toast(format!("Wi-Fi: {e}"), ALERT),
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => soon(now + Duration::from_millis(300)),
+                Err(_) => self.wifi_join = None,
+            }
+        }
         if let Some(rx) = &self.switching {
             match rx.try_recv() {
                 Ok(Ok(())) => {

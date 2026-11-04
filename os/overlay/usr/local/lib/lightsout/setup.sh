@@ -4,7 +4,8 @@ set -e
 chmod 755 /usr/local/sbin/lightsout-home /usr/local/sbin/lightsout-split /usr/local/sbin/lightsout-grow /usr/local/sbin/lightsout-power /usr/local/bin/lightsout-install-agents /usr/local/lib/lightsout/*.sh /usr/local/lib/lightsout/*.py
 
 # The user. Logins and installs live in this home folder, inside system.img.
-useradd -m -s /bin/bash -G sudo,video,input,render lights
+groupadd -f netdev
+useradd -m -s /bin/bash -G sudo,video,input,render,netdev lights
 passwd -d lights            # no password: the Lights Out lock screen protects the session
 echo 'lights ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/lights
 chmod 440 /etc/sudoers.d/lights

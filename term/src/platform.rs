@@ -393,6 +393,25 @@ fn npm_command_for(script: &str) -> Option<String> {
 }
 
 #[cfg(test)]
+mod wifi_tests {
+    #[test]
+    fn reads_iwd_list() {
+        let text = "                               Available networks
+--------------------------------------------------------------------------------
+      Network name                      Security            Signal
+--------------------------------------------------------------------------------
+    > Home Wi-Fi                        psk                 ****
+      Cafe                              open                **  
+";
+        let nets = super::parse_iwd(text);
+        assert_eq!(nets.len(), 2);
+        assert_eq!(nets[0].ssid, "Home Wi-Fi");
+        assert!(nets[0].connected && nets[0].secure && nets[0].signal == 4);
+        assert!(!nets[1].secure && !nets[1].connected && nets[1].signal == 2);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::friendly_command;
     #[test]
@@ -551,6 +570,298 @@ pub fn take_handoff() -> Option<crate::session::Saved> {
     let saved = crate::session::load(&f);
     let _ = std::fs::remove_file(f);
     saved
+}
+
+// ---------------------------------------------------------------- Wi-Fi
+
+pub struct Net {
+    pub ssid: String,
+    pub secure: bool,
+    /// 0-4 bars
+    pub signal: u8,
+    pub connected: bool,
+}
+
+fn wifi_iface() -> Option<String> {
+    std::fs::read_dir("/sys/class/net").ok()?.flatten().find(|e| e.path().join("wireless").exists()).map(|e| e.file_name().to_string_lossy().to_string())
+}
+
+/// Wi-Fi chooser: Windows, Mac and Linux (in Lights Out and on the desktop).
+pub fn wifi_available() -> bool {
+    if cfg!(target_os = "linux") {
+        wifi_iface().is_some() && (image() || on_path("nmcli"))
+    } else {
+        cfg!(any(windows, target_os = "macos"))
+    }
+}
+
+/// Nearby networks, connected first, then by signal. Takes a few seconds.
+pub fn wifi_scan() -> Vec<Net> {
+    #[cfg(windows)]
+    let mut nets = win_scan();
+    #[cfg(target_os = "macos")]
+    let mut nets = mac_scan();
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let mut nets = if image() { iwd_scan() } else { nm_scan() };
+    nets.retain(|n| !n.ssid.is_empty());
+    nets.sort_by(|a, b| b.connected.cmp(&a.connected).then(b.signal.cmp(&a.signal)));
+    let mut seen = std::collections::HashSet::new();
+    nets.retain(|n| seen.insert(n.ssid.clone()));
+    nets
+}
+
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::new();
+    let mut it = s.chars().peekable();
+    while let Some(c) = it.next() {
+        if c == '\x1b' {
+            for d in it.by_ref() {
+                if d.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // Linux only (tested everywhere)
+fn iwd_scan() -> Vec<Net> {
+    let Some(dev) = wifi_iface() else { return Vec::new() };
+    let _ = Command::new("iwctl").args(["station", &dev, "scan"]).output();
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    let Ok(out) = Command::new("iwctl").args(["station", &dev, "get-networks"]).output() else { return Vec::new() };
+    parse_iwd(&strip_ansi(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// Rows look like "  > Home Wi-Fi        psk        ****" (">" = connected).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // Linux only (tested everywhere)
+fn parse_iwd(text: &str) -> Vec<Net> {
+    let mut nets = Vec::new();
+    let mut dashes = 0;
+    for line in text.lines() {
+        if line.trim_start().starts_with("---") {
+            dashes += 1;
+            continue;
+        }
+        if dashes < 2 || line.trim().is_empty() {
+            continue;
+        }
+        let connected = line.trim_start().starts_with('>');
+        let mut toks: Vec<&str> = line.trim_start().trim_start_matches('>').split_whitespace().collect();
+        let Some(stars) = toks.pop() else { continue };
+        let Some(security) = toks.pop() else { continue };
+        if toks.is_empty() {
+            continue;
+        }
+        nets.push(Net { ssid: toks.join(" "), secure: security != "open", signal: stars.chars().filter(|c| *c == '*').count().min(4) as u8, connected });
+    }
+    nets
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // Linux only (tested everywhere)
+fn nm_scan() -> Vec<Net> {
+    let Ok(out) = Command::new("nmcli").args(["-t", "-f", "IN-USE,SSID,SECURITY,SIGNAL", "dev", "wifi", "list", "--rescan", "yes"]).output() else { return Vec::new() };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| {
+            // fields are split by ':'; a ':' inside a name is written '\:'
+            let mut f = Vec::new();
+            let mut cur = String::new();
+            let mut esc = false;
+            for c in l.chars() {
+                match (esc, c) {
+                    (true, _) => {
+                        cur.push(c);
+                        esc = false;
+                    }
+                    (false, '\\') => esc = true,
+                    (false, ':') => f.push(std::mem::take(&mut cur)),
+                    _ => cur.push(c),
+                }
+            }
+            f.push(cur);
+            let signal: u8 = f.get(3)?.parse().unwrap_or(0);
+            Some(Net { ssid: f.get(1)?.clone(), secure: !f.get(2)?.is_empty(), signal: (signal / 25).min(4), connected: f[0] == "*" })
+        })
+        .collect()
+}
+
+// Windows: the system Wi-Fi interface (not netsh text, which depends on the language)
+#[cfg(windows)]
+fn win_scan() -> Vec<Net> {
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::NetworkManagement::WiFi::*;
+    let mut nets = Vec::new();
+    unsafe {
+        let (mut ver, mut h): (u32, HANDLE) = (0, std::ptr::null_mut());
+        if WlanOpenHandle(2, std::ptr::null(), &mut ver, &mut h) != 0 {
+            return nets;
+        }
+        let mut ifs: *mut WLAN_INTERFACE_INFO_LIST = std::ptr::null_mut();
+        if WlanEnumInterfaces(h, std::ptr::null(), &mut ifs) == 0 && !ifs.is_null() {
+            let n = (*ifs).dwNumberOfItems as usize;
+            let first = std::ptr::addr_of!((*ifs).InterfaceInfo) as *const WLAN_INTERFACE_INFO;
+            for i in 0..n {
+                let guid = (*first.add(i)).InterfaceGuid;
+                WlanScan(h, &guid, std::ptr::null(), std::ptr::null(), std::ptr::null());
+            }
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            for i in 0..n {
+                let guid = (*first.add(i)).InterfaceGuid;
+                let mut list: *mut WLAN_AVAILABLE_NETWORK_LIST = std::ptr::null_mut();
+                if WlanGetAvailableNetworkList(h, &guid, 0, std::ptr::null(), &mut list) != 0 || list.is_null() {
+                    continue;
+                }
+                let count = (*list).dwNumberOfItems as usize;
+                let nf = std::ptr::addr_of!((*list).Network) as *const WLAN_AVAILABLE_NETWORK;
+                for j in 0..count {
+                    let a = &*nf.add(j);
+                    let len = (a.dot11Ssid.uSSIDLength as usize).min(32);
+                    let ssid = String::from_utf8_lossy(&a.dot11Ssid.ucSSID[..len]).to_string();
+                    nets.push(Net {
+                        ssid,
+                        secure: a.bSecurityEnabled != 0,
+                        signal: (a.wlanSignalQuality / 25).min(4) as u8,
+                        connected: a.dwFlags & WLAN_AVAILABLE_NETWORK_CONNECTED != 0,
+                    });
+                }
+                WlanFreeMemory(list as *const _);
+            }
+            WlanFreeMemory(ifs as *const _);
+        }
+        WlanCloseHandle(h, std::ptr::null());
+    }
+    nets
+}
+
+#[cfg(windows)]
+fn win_join(ssid: &str, password: Option<&str>) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    const NO_WINDOW: u32 = 0x0800_0000;
+    let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&apos;");
+    // a saved Windows profile for it? then just connect
+    let known = Command::new("netsh").args(["wlan", "connect", &format!("name={ssid}")]).creation_flags(NO_WINDOW).output();
+    if password.is_none() && known.as_ref().is_ok_and(|o| o.status.success()) {
+        return Ok(());
+    }
+    let security = match password {
+        Some(p) => format!(
+            "<authEncryption><authentication>WPA2PSK</authentication><encryption>AES</encryption><useOneX>false</useOneX></authEncryption><sharedKey><keyType>passPhrase</keyType><protected>false</protected><keyMaterial>{}</keyMaterial></sharedKey>",
+            esc(p)
+        ),
+        None => "<authEncryption><authentication>open</authentication><encryption>none</encryption><useOneX>false</useOneX></authEncryption>".into(),
+    };
+    let xml = format!(
+        "<?xml version=\"1.0\"?><WLANProfile xmlns=\"http://www.microsoft.com/networking/WLAN/profile/v1\"><name>{n}</name><SSIDConfig><SSID><name>{n}</name></SSID></SSIDConfig><connectionType>ESS</connectionType><connectionMode>auto</connectionMode><MSM><security>{security}</security></MSM></WLANProfile>",
+        n = esc(ssid)
+    );
+    let f = std::env::temp_dir().join(format!("lightsout-wifi-{}.xml", random_hex()));
+    std::fs::write(&f, xml).map_err(|e| e.to_string())?;
+    let added = Command::new("netsh").args(["wlan", "add", "profile", &format!("filename={}", f.display()), "user=current"]).creation_flags(NO_WINDOW).output();
+    let _ = std::fs::remove_file(&f); // the password never stays on disk
+    if !added.is_ok_and(|o| o.status.success()) {
+        return Err("Windows didn't accept the network".into());
+    }
+    match Command::new("netsh").args(["wlan", "connect", &format!("name={ssid}")]).creation_flags(NO_WINDOW).output() {
+        Ok(o) if o.status.success() => Ok(()),
+        _ => Err("couldn't join (wrong password?)".into()),
+    }
+}
+
+// Mac: nearby names come from the system report (recent macOS may hide some)
+#[cfg(target_os = "macos")]
+fn mac_wifi_device() -> Option<String> {
+    let out = Command::new("networksetup").arg("-listallhardwareports").output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    let mut wifi = false;
+    for l in text.lines() {
+        if l.starts_with("Hardware Port:") {
+            wifi = l.contains("Wi-Fi") || l.contains("AirPort");
+        } else if wifi && l.starts_with("Device:") {
+            return Some(l.trim_start_matches("Device:").trim().to_string());
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn mac_scan() -> Vec<Net> {
+    let Ok(out) = Command::new("system_profiler").args(["SPAirPortDataType", "-json"]).output() else { return Vec::new() };
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else { return Vec::new() };
+    let mut nets = Vec::new();
+    for card in v["SPAirPortDataType"].as_array().into_iter().flatten() {
+        for i in card["spairport_airport_interfaces"].as_array().into_iter().flatten() {
+            let net = |n: &serde_json::Value, connected: bool| {
+                let ssid = n["_name"].as_str().unwrap_or("").to_string();
+                let secure = n["spairport_security_mode"].as_str().is_some_and(|m| !m.contains("none"));
+                let dbm: i32 = n["spairport_signal_noise"].as_str().and_then(|s| s.split_whitespace().next()).and_then(|s| s.parse().ok()).unwrap_or(-80);
+                let signal = match dbm {
+                    d if d >= -55 => 4,
+                    d if d >= -65 => 3,
+                    d if d >= -75 => 2,
+                    _ => 1,
+                };
+                Net { ssid, secure, signal, connected }
+            };
+            if i["spairport_current_network_information"].is_object() {
+                nets.push(net(&i["spairport_current_network_information"], true));
+            }
+            for n in i["spairport_airport_other_local_wireless_networks"].as_array().into_iter().flatten() {
+                nets.push(net(n, false));
+            }
+        }
+    }
+    nets.retain(|n| !n.ssid.contains("redacted"));
+    nets
+}
+
+/// Joins a network (remembered for next time).
+pub fn wifi_join(ssid: &str, password: Option<&str>) -> Result<(), String> {
+    #[cfg(windows)]
+    return win_join(ssid, password);
+    #[cfg(target_os = "macos")]
+    {
+        let dev = mac_wifi_device().ok_or("no Wi-Fi adapter")?;
+        let mut c = Command::new("networksetup");
+        c.args(["-setairportnetwork", &dev, ssid]);
+        if let Some(p) = password {
+            c.arg(p);
+        }
+        // networksetup reports problems as text, even on success codes
+        return match c.output() {
+            Ok(o) if o.status.success() && String::from_utf8_lossy(&o.stdout).trim().is_empty() => Ok(()),
+            Ok(o) => Err(String::from_utf8_lossy(&o.stdout).trim().lines().last().unwrap_or("couldn't join").to_string()),
+            Err(e) => Err(e.to_string()),
+        };
+    }
+    #[allow(unreachable_code)]
+    let out = if image() {
+        let dev = wifi_iface().ok_or("no Wi-Fi adapter")?;
+        let mut c = Command::new("iwctl");
+        if let Some(p) = password {
+            c.args(["--passphrase", p]);
+        }
+        c.args(["station", &dev, "connect", ssid]).output()
+    } else {
+        let mut c = Command::new("nmcli");
+        c.args(["dev", "wifi", "connect", ssid]);
+        if let Some(p) = password {
+            c.args(["password", p]);
+        }
+        c.output()
+    };
+    match out {
+        Ok(o) if o.status.success() => Ok(()),
+        Ok(o) => {
+            let msg = strip_ansi(&String::from_utf8_lossy(&o.stdout)) + &String::from_utf8_lossy(&o.stderr);
+            let msg = msg.trim();
+            Err(if msg.is_empty() { "couldn't join (wrong password?)".into() } else { msg.lines().last().unwrap_or(msg).to_string() })
+        }
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 // ---------------------------------------------------------------- lid and sleep
@@ -877,5 +1188,20 @@ mod switch_tests {
         assert_eq!(super::resume_command("claude").as_deref(), Some("claude --continue"));
         assert_eq!(super::resume_command("codex.cmd").as_deref(), Some("codex resume --last"));
         assert_eq!(super::resume_command("npm run dev"), None);
+    }
+}
+
+#[cfg(test)]
+mod wifi_live {
+    /// Real scan on this machine: `cargo test --release -- --ignored wifi_scan_here --nocapture`
+    #[test]
+    #[ignore]
+    fn wifi_scan_here() {
+        let nets = super::wifi_scan();
+        println!("networks found: {}", nets.len());
+        for n in &nets {
+            println!("  signal {} secure {} connected {}", n.signal, n.secure, n.connected);
+        }
+        assert!(!nets.is_empty());
     }
 }
