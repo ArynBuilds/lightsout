@@ -14,6 +14,7 @@ Lights Out changes how your computer starts, and on Windows it opens your encryp
 2. When you press Lights Out, a task running as Windows' system account hands that key to the starter for that one start, on the boot partition.
 3. The starter **seals** the key into the PC's TPM security chip and deletes the file at once. Sealed, the key can only be opened by the same chip, and only when the PC starts with the exact same firmware, Secure Boot settings and Lights Out boot chain.
 4. On every start, the starter unseals the key, opens C:, and forgets the key once the drive is open.
+5. Right after that, it changes one of the measured values in the TPM. Until the next start, the chip won't release the key again, not even to a program running as administrator.
 
 A task that runs at every Windows start removes any key or one-time pass left on the boot partition, for example if a switch was interrupted. Removing Lights Out removes its BitLocker key too.
 
@@ -28,6 +29,7 @@ A start that came from the Lights Out button in Windows carries a one-time pass 
 - **Your files:** the Lights Out system opens C: with your Windows user's rights, as your agents would on Windows. Agents run as your user, never as an administrator.
 - **Hibernated Windows:** if Windows wasn't fully shut down, C: is opened read-only so nothing can be damaged.
 - **Logins:** your agents use the logins they already have in your home folder. Lights Out doesn't copy, upload or read them.
+- **Clipboard:** programs in a tab can copy to your clipboard but can't read it, so a file you open or a server you log into can't take a copied password.
 - **Network:** the control commands listen only on `127.0.0.1`, behind a random token that only your user can read. Nothing listens on your network.
 
 ## The installers

@@ -34,7 +34,7 @@ copy_bin() {
 }
 for b in /usr/bin/kmod /usr/sbin/cryptsetup /usr/sbin/blkid /usr/bin/tpm2; do copy_bin "$b"; done
 for t in tpm2_load tpm2_unseal tpm2_create tpm2_createpolicy tpm2_startauthsession tpm2_policypcr \
-         tpm2_flushcontext tpm2_readpublic tpm2_createprimary tpm2_pcrread; do ln -sf tpm2 "$root/bin/$t"; done
+         tpm2_flushcontext tpm2_readpublic tpm2_createprimary tpm2_pcrread tpm2_pcrextend; do ln -sf tpm2 "$root/bin/$t"; done
 # the TPM library loads its device driver at run time (ldd can't see it)
 for l in /usr/lib/x86_64-linux-gnu/libtss2-tcti-device.so* /usr/lib/x86_64-linux-gnu/libtss2-tctildr.so*; do copy_lib "$l"; done
 for t in modprobe insmod lsmod depmod modinfo; do rm -f "$root/bin/$t"; ln -s kmod "$root/bin/$t"; done

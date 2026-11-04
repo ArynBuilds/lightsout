@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1
+
+- **Faster updates:** re-running the installer no longer downloads the 634 MB system again; it keeps the one you have, so an update is about 40 MB.
+- **Clipboard:** programs in a tab can still copy to the clipboard, but can no longer read it.
+- **Drive key:** right after opening the drive, Lights Out locks the TPM chip until the next start, so nothing running later can take the BitLocker key out.
+
 ## 0.3.0
 
 The first full release. Everything from 0.3.0-rc.1 and rc.2, plus:

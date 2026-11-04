@@ -3719,16 +3719,9 @@ impl App {
                     let _ = c.set_text(s);
                 }
             }
-            TermEvent::ClipboardLoad(_, f) => {
-                let text = self
-                    .clipboard
-                    .as_mut()
-                    .and_then(|c| c.get_text().ok())
-                    .unwrap_or_default();
-                if let Some(p) = self.panes.get(&id) {
-                    p.write_str(f(&text));
-                }
-            }
+            // A program in a pane may put text on the clipboard, but never read it back:
+            // a file being shown or a server you're logged into could quietly take a copied password.
+            TermEvent::ClipboardLoad(..) => {}
             TermEvent::ChildExit(_) | TermEvent::Exit => self.close_pane(id),
             _ => {}
         }

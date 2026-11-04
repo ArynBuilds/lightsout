@@ -84,6 +84,12 @@ else
   [ -n "$KEY" ] && say "drive key unsealed from the TPM"
 fi
 rm -f /run/lightsout/key
+# Lock the TPM until the next start: change one of the measured values, so nothing
+# that runs later in this start (even as root) can unseal the drive key again.
+if [ -e /dev/tpmrm0 ] && [ -f "$L/seal/key.pub" ]; then
+  tpm2_pcrextend 9:sha256=0000000000000000000000000000000000000000000000000000000000000000 >/dev/null 2>&1
+  if unseal >/dev/null 2>&1; then say "warning: the TPM still opens the key"; else say "TPM locked until the next start"; fi
+fi
 
 # ---- the Windows drive that holds C:\LightsOut\system.img
 CDEV=""

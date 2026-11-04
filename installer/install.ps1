@@ -47,12 +47,16 @@ $tpm = Get-Tpm -ErrorAction SilentlyContinue
 $tpmOk = $tpm -and $tpm.TpmReady
 $sb = $false; try { $sb = Confirm-SecureBootUEFI } catch {}
 Write-Host "Secure Boot: $sb, TPM: $(if ($tpmOk) {'ready'} else {'none'})"
+# An update keeps the existing system file (your installs and logins), so it skips that big download.
+$haveSystem = Test-Path "$LO\system.img"
 if (-not $Source) {
   Step 'Downloading Lights Out'
   $Source = Join-Path $env:TEMP 'lightsout-setup'
   Remove-Item $Source -Recurse -Force -ErrorAction SilentlyContinue
   New-Item -ItemType Directory -Force "$Source\system", "$Source\term", "$Source\starter" | Out-Null
-  foreach ($f in 'lightsout-windows-x64.zip', 'lightsout-starter.zip', 'system.img.gz.sha256', 'system.img.gz') {
+  $files = 'lightsout-windows-x64.zip', 'lightsout-starter.zip'
+  if (-not $haveSystem) { $files += 'system.img.gz.sha256', 'system.img.gz' }
+  foreach ($f in $files) {
     Write-Host "  $f"
     $to = if ($f -like 'system*') { "$Source\system\$f" } else { "$Source\$f" }
     curl.exe -fL --progress-bar -o $to "$Base/$f"
@@ -61,7 +65,9 @@ if (-not $Source) {
   Expand-Archive "$Source\lightsout-windows-x64.zip" "$Source\term" -Force
   Expand-Archive "$Source\lightsout-starter.zip" "$Source\starter" -Force
 }
-foreach ($f in 'starter\EFI\lightsout\shimx64.efi','starter\EFI\lightsout\starter.img','system\system.img.gz','term\lightsout.exe','term\lightsout-app.exe') {
+$need = 'starter\EFI\lightsout\shimx64.efi','starter\EFI\lightsout\starter.img','term\lightsout.exe','term\lightsout-app.exe'
+if (-not $haveSystem) { $need += 'system\system.img.gz' }
+foreach ($f in $need) {
   if (-not (Test-Path (Join-Path $Source $f))) { Fail "missing $f in $Source" }
 }
 $gz = Join-Path $Source 'system\system.img.gz'
@@ -76,7 +82,7 @@ if ($encrypted -and -not $tpmOk) { Fail 'C: is encrypted (BitLocker) but this PC
 # ---------------------------------------------------------------- 2. system file
 Step 'Unpacking the Lights Out system (a few GB on C:)'
 $sumFile = "$gz.sha256"
-if (Test-Path $sumFile) {
+if (-not $haveSystem -and (Test-Path $sumFile)) {
   $want = ((Get-Content $sumFile) -split '\s+')[0].ToLower()
   $have = (Get-FileHash $gz -Algorithm SHA256).Hash.ToLower()
   if ($want -ne $have) { Fail 'the system download is damaged (checksum mismatch)' }
