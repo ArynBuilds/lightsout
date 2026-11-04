@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0-rc.2
+
+- **No more freezes:** saving your tabs no longer waits for Windows to list the running commands.
+- **Quiet:** no system notifications on any system; alerts stay in the window, the sound is off unless you switch it on. An agent idling at its prompt never shows up as "done".
+- **Clean tabs:** on Windows, tabs start from a fresh environment, so markers of whatever started Lights Out (another agent, a terminal) don't reach the agents inside.
+- **No popping windows:** helper programs run without a window of their own.
+- **Every character shows:** symbols, spinners and emoji missing from the built-in font come from the system's fonts, for any program.
+- **Reopening** the app types each tab's command back in instead of starting agents; switching to and from Lights Out still continues them.
+- **Rooms:** "Delete this room" in actions; the actions list sits in the middle of the screen.
+
 ## 0.3.0-rc.1
 
 - **Mac: Lights Out logs you out.** Your agents run in a small background service meanwhile, so only macOS's core and your agents keep running; signing in brings the tabs back. It stays signed in when local servers would end with a log-out. `LIGHTSOUT_MAC_LOGOUT=0` at install keeps you signed in always.
