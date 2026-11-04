@@ -56,6 +56,6 @@ Bug reports, hardware reports and pull requests are welcome: see [CONTRIBUTING.m
 
 ## License
 
-MIT. The Lights Out system image contains Debian packages under their own licenses. Agent CLIs are not included; you install the ones you use.
+MIT. The Lights Out system image contains Debian packages and Fedora's Linux kernel, under their own licenses. Agent CLIs are not included; you install the ones you use.
 
 Lights Out is independent and not affiliated with Anthropic, OpenAI, Google or any agent vendor.

@@ -177,10 +177,15 @@ try {
   # old test files from earlier experiments
   Remove-Item "$esp\EFI\lightsout\initrd.img", "$esp\EFI\lightsout\probe.conf", "$esp\EFI\lightsout\mode.txt", "$esp\EFI\lightsout\claude-credentials.json", "$esp\EFI\lightsout\gh-token" -Force -ErrorAction SilentlyContinue
   Copy-Item "$src\*" "$esp\EFI\lightsout\" -Force
-  if (-not (Test-Path "$esp\EFI\debian") -or (Test-Path "$esp\EFI\lightsout\created-debian-dir")) {
-    New-Item -ItemType Directory -Force "$esp\EFI\debian" | Out-Null
-    Copy-Item "$src\grub.cfg" "$esp\EFI\debian\grub.cfg" -Force
-    Set-Content "$esp\EFI\lightsout\created-debian-dir" 'yes'
+  # the starter's boot loader is Fedora's, which reads \EFI\fedora\grub.cfg (left alone if Fedora is installed)
+  if (-not (Test-Path "$esp\EFI\fedora") -or (Test-Path "$esp\EFI\lightsout\created-fedora-dir")) {
+    New-Item -ItemType Directory -Force "$esp\EFI\fedora" | Out-Null
+    Copy-Item "$src\grub.cfg" "$esp\EFI\fedora\grub.cfg" -Force
+    Set-Content "$esp\EFI\lightsout\created-fedora-dir" 'yes'
+  }
+  # earlier versions used Debian's boot loader and its \EFI\debian folder
+  if (Test-Path "$esp\EFI\lightsout\created-debian-dir") {
+    Remove-Item "$esp\EFI\debian", "$esp\EFI\lightsout\created-debian-dir" -Recurse -Force -ErrorAction SilentlyContinue
   }
   # a new key was made above: the old sealed copy is useless now
   if ($encrypted) { Remove-Item "$esp\EFI\lightsout\seal", "$esp\EFI\lightsout\handoff.key", "$esp\EFI\lightsout\handoff.nonce" -Recurse -Force -ErrorAction SilentlyContinue }

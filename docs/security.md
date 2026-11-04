@@ -5,7 +5,7 @@ Lights Out changes how your computer starts, and on Windows it opens your encryp
 ## Starting Lights Out on Windows
 
 - **Windows stays your default system.** Lights Out adds one entry to the computer's boot list, after Windows. When you press Lights Out, it asks the firmware to start that entry **once**, for the next start only. Any later start, including after a power cut, is Windows again.
-- **Secure Boot stays on.** The starter is Debian's Microsoft-signed `shim`, then Debian's signed boot loader and signed Linux kernel. Nothing is unsigned and nothing needs Secure Boot switched off.
+- **Secure Boot stays on.** The starter is Fedora's Microsoft-signed `shim`, then Fedora's signed boot loader and signed Linux kernel (Fedora's, because it keeps the NTFS driver that opens long-used Windows drives). Nothing is unsigned and nothing needs Secure Boot switched off.
 - **Nothing is repartitioned.** The starter (about 45 MB) sits in the EFI partition next to Windows' boot files. The system itself is one file, `C:\LightsOut\system.img`, on your encrypted drive.
 
 ## Opening a BitLocker drive without a recovery key

@@ -282,7 +282,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             mmdebstrap e2fsprogs zstd pigz cpio build-essential pkg-config curl kmod busybox-static util-linux \
-            shim-signed grub-efi-amd64-signed cryptsetup-bin tpm2-tools libtss2-tcti-device0t64 \
+            rpm cryptsetup-bin tpm2-tools libtss2-tcti-device0t64 \
             qemu-system-x86 ovmf swtpm swtpm-tools ntfs-3g dosfstools mtools gdisk procps ca-certificates
       - name: Build the terminal (Linux)
         run: |

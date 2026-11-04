@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Boots the real starter + system image in a virtual PC (UEFI, virtual TPM)
+# Boots the real starter + system image in a virtual PC (UEFI with Secure Boot, virtual TPM)
 # with a fake Windows "C:" (NTFS) and checks the whole chain, twice:
 #   boot 1: one-time key handoff gets sealed into the TPM, system boots, writes to C:
 #   boot 2: key is unsealed from the TPM, system boots again
@@ -13,12 +13,12 @@ STARTER="$A/starter/out"; SYSIMG="$A/os/out/system.img"
 
 # ---- ESP (FAT): starter + firmware fallback path + test switches
 truncate -s 200M "$w/esp.img"; mkfs.vfat -F 32 -n EFI "$w/esp.img" >/dev/null
-mmd -i "$w/esp.img" ::/EFI ::/EFI/BOOT ::/EFI/lightsout ::/EFI/debian
+mmd -i "$w/esp.img" ::/EFI ::/EFI/BOOT ::/EFI/lightsout ::/EFI/fedora
 mcopy -i "$w/esp.img" "$STARTER"/EFI/lightsout/* ::/EFI/lightsout/
 mcopy -i "$w/esp.img" "$STARTER/EFI/lightsout/shimx64.efi" ::/EFI/BOOT/BOOTX64.EFI
 mcopy -i "$w/esp.img" "$STARTER/EFI/lightsout/grubx64.efi" ::/EFI/BOOT/grubx64.efi
 sed 's#reboot=efi#reboot=efi console=ttyS0,115200#' "$STARTER/EFI/lightsout/grub.cfg" > "$w/grub.cfg"
-mcopy -o -i "$w/esp.img" "$w/grub.cfg" ::/EFI/debian/grub.cfg
+mcopy -o -i "$w/esp.img" "$w/grub.cfg" ::/EFI/fedora/grub.cfg
 mcopy -o -i "$w/esp.img" "$w/grub.cfg" ::/EFI/lightsout/grub.cfg
 printf 'TEST-1234-5678-ABCD\n' > "$w/handoff.key"; mcopy -i "$w/esp.img" "$w/handoff.key" ::/EFI/lightsout/handoff.key
 : > "$w/selftest"; mcopy -i "$w/esp.img" "$w/selftest" ::/EFI/lightsout/selftest
@@ -55,16 +55,14 @@ dd if="$w/c.img" of="$w/disk.img" bs=512 seek="$c_start" conv=notrunc,sparse sta
 rm -f "$w/esp.img" "$w/c.img"
 df -h "$w" | tail -n 1
 
-# ---- virtual TPM 2.0 + UEFI firmware
+# ---- virtual TPM 2.0 + UEFI firmware with Secure Boot on and Microsoft's keys, like a PC
 swtpm socket --tpm2 --tpmstate dir="$w/tpm" --ctrl type=unixio,path="$w/tpm.sock" --daemon
-first() { for f in "$@"; do [ -f "$f" ] && { echo "$f"; return; }; done; }
-OVMF_CODE=$(first /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_CODE.fd)
-OVMF_VARS_SRC=$(first /usr/share/OVMF/OVMF_VARS_4M.fd /usr/share/OVMF/OVMF_VARS.fd)
-echo "firmware: $OVMF_CODE"
-cp "$OVMF_VARS_SRC" "$w/vars.fd"
+OVMF_CODE=/usr/share/OVMF/OVMF_CODE_4M.secboot.fd
+cp /usr/share/OVMF/OVMF_VARS_4M.ms.fd "$w/vars.fd"
 
 boot() {   # $1 = log file
-  timeout 1500 qemu-system-x86_64 -machine q35 -m 3072 -smp 2 -display none -vga virtio -no-reboot \
+  timeout 1500 qemu-system-x86_64 -machine q35,smm=on -global driver=cfi.pflash01,property=secure,value=on \
+    -m 3072 -smp 2 -display none -vga virtio -no-reboot \
     -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" -drive if=pflash,format=raw,file="$w/vars.fd" \
     -drive file="$w/disk.img",format=raw,if=virtio \
     -chardev socket,id=chrtpm,path="$w/tpm.sock" -tpmdev emulator,id=tpm0,chardev=chrtpm -device tpm-tis,tpmdev=tpm0 \
@@ -88,6 +86,7 @@ echo "=== boot 3 (C: shorter than its file system)"; boot "$w/serial3.log"; grep
 # ---- checks
 ok=1
 check() { if grep -aq "$2" "$1"; then echo "PASS: $3"; else echo "FAIL: $3"; ok=0; fi; }
+check "$w/serial1.log" "Secure boot enabled" "Secure Boot on: the signed chain started"
 check "$w/serial1.log" "drive key sealed into the TPM" "boot 1 sealed the key"
 check "$w/serial1.log" "LIGHTSOUT-SELFTEST: c-drive-write=ok" "boot 1 wrote to C:"
 check "$w/serial1.log" "LIGHTSOUT-SELFTEST: done" "boot 1 reached the self-test"

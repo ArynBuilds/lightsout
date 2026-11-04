@@ -6,13 +6,14 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 sys="$here/../os/rootfs"            # system root filesystem from the os build
 out="$here/out"; root="$here/root"
-rm -rf "$out" "$root"; mkdir -p "$out/EFI/lightsout" "$out/EFI/debian" "$root"
+rm -rf "$out" "$root"; mkdir -p "$out/EFI/lightsout" "$out/EFI/fedora" "$root"
 KVER=$(ls "$sys/lib/modules" | sort -V | tail -n1)
 
-# ---- signed boot chain: Microsoft-signed shim -> Debian-signed grub -> Debian-signed kernel
-cp /usr/lib/shim/shimx64.efi.signed "$out/EFI/lightsout/shimx64.efi"
-cp "$(ls /usr/lib/shim/mmx64.efi.signed /usr/lib/shim/mmx64.efi 2>/dev/null | head -n1)" "$out/EFI/lightsout/mmx64.efi"
-cp /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed "$out/EFI/lightsout/grubx64.efi"
+# ---- signed boot chain: Microsoft-signed shim -> Fedora-signed grub -> Fedora-signed kernel
+# (the packages were downloaded and their signatures checked by ../os/build.sh)
+fed="$here/../os/out/fedora"
+for r in "$fed"/shim-x64-*.rpm "$fed"/grub2-efi-x64-*.rpm; do (cd "$fed" && rpm2cpio "$r" | cpio -idm --quiet "*/EFI/fedora/*"); done
+for f in shimx64.efi mmx64.efi grubx64.efi; do cp "$(find "$fed/usr/lib/efi" -path "*/EFI/fedora/$f" | head -n 1)" "$out/EFI/lightsout/$f"; done
 cp "$sys/boot/vmlinuz-$KVER" "$out/EFI/lightsout/vmlinuz"
 echo "$KVER" > "$out/EFI/lightsout/kernel-version"   # the installer keeps the system file only with the same kernel
 cat > "$out/EFI/lightsout/grub.cfg" <<'EOF'
@@ -22,7 +23,7 @@ linux /EFI/lightsout/vmlinuz quiet loglevel=3 nmi_watchdog=0 pcie_aspm.policy=po
 initrd /EFI/lightsout/starter.img
 boot
 EOF
-cp "$out/EFI/lightsout/grub.cfg" "$out/EFI/debian/grub.cfg"   # Debian's grub reads \EFI\debian\grub.cfg
+cp "$out/EFI/lightsout/grub.cfg" "$out/EFI/fedora/grub.cfg"   # Fedora's grub reads \EFI\fedora\grub.cfg
 
 # ---- userland
 mkdir -p "$root"/{bin,sbin,etc,lib,lib64,proc,sys,dev,run,tmp,esp,mnt/c,newroot,usr/lib}
@@ -54,7 +55,9 @@ mods=$(for d in $dirs; do [ -d "$M/$d" ] && find "$M/$d" -name '*.ko*'; done \
 for m in $mods; do
   modprobe -d "$sys" -S "$KVER" -D "$m" 2>/dev/null | awk '/^insmod/ {print $2}'
 done | sort -u | while read -r f; do mkdir -p "$root$(dirname "${f#$sys}")"; cp "$f" "$root${f#$sys}"; done
-cp "$sys/lib/modules/$KVER"/modules.{order,builtin,builtin.modinfo} "$root/lib/modules/$KVER/"
+for f in modules.order modules.builtin modules.builtin.modinfo; do
+  [ -f "$sys/lib/modules/$KVER/$f" ] && cp "$sys/lib/modules/$KVER/$f" "$root/lib/modules/$KVER/"
+done
 depmod -b "$root" "$KVER"
 echo "starter modules: $(find "$root/lib/modules" -name '*.ko*' | wc -l)"
 
