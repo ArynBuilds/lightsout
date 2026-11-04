@@ -106,6 +106,16 @@ fn resolve(c: Color, colors: &alacritty_terminal::term::color::Colors, t: Theme)
 /// A running program in the sidebar: pane id, name, state, folder.
 type AgentRow = (u64, String, State, String);
 
+/// ↑ and ↓ next to a list's heading: more above, more below.
+fn scroll_marks(cv: &mut Canvas, f: &mut Fonts, x: i32, y: i32, up: bool, down: bool) {
+    if up {
+        cv.ch(f, x, y, '↑', false, 0x8a8a93);
+    }
+    if down {
+        cv.ch(f, x + f.cell_w as i32, y, '↓', false, 0x8a8a93);
+    }
+}
+
 /// Black and white only: the shape says the state.
 /// ● waiting for you · ◌ working · ○ done · dim dot idle
 fn state_mark(s: State) -> (char, u32) {
@@ -196,6 +206,14 @@ enum Overlay {
     Ask { title: String, text: String, purpose: Purpose },
 }
 
+/// A list that scrolls with the mouse wheel.
+#[derive(Clone, Copy, PartialEq)]
+enum Scroll {
+    Rooms,
+    Running,
+    Tabs,
+}
+
 #[derive(Clone, Copy)]
 enum Confirm {
     BackToWindows,
@@ -227,6 +245,8 @@ enum Drag {
 
 #[derive(Clone, Copy)]
 enum Hit {
+    TabsLeft,
+    TabsRight,
     Tab(usize),
     NewTab,
     Palette,
@@ -264,6 +284,14 @@ struct App {
     mouse: PhysicalPosition<f64>,
     drag: Option<Drag>,
     hits: Vec<(Rect, Hit)>,
+    /// Lists that scroll with the mouse wheel: where they are on screen, and their first item.
+    scroll_areas: Vec<(Rect, Scroll)>,
+    rooms_top: usize,
+    running_top: usize,
+    tabs_first: usize,
+    /// The room and tab last shown, to bring a newly chosen one into view once.
+    seen_room: usize,
+    seen_tab: usize,
     battery_text: String,
     battery_at: Instant,
     bar_texts: Vec<String>,
@@ -349,6 +377,12 @@ impl App {
             mouse: PhysicalPosition::new(0.0, 0.0),
             drag: None,
             hits: Vec::new(),
+            scroll_areas: Vec::new(),
+            rooms_top: 0,
+            running_top: 0,
+            tabs_first: 0,
+            seen_room: usize::MAX,
+            seen_tab: usize::MAX,
             battery_text: String::new(),
             battery_at: Instant::now() - Duration::from_secs(60),
             bar_texts: Vec::new(),
@@ -1471,6 +1505,14 @@ impl App {
         if y < self.bar_h() {
             let hit = self.hits.iter().find(|(r, _)| r.contains(x, y)).map(|h| h.1);
             match hit {
+                Some(Hit::TabsLeft) => {
+                    self.tabs_first = self.tabs_first.saturating_sub(1);
+                    self.dirty = true;
+                }
+                Some(Hit::TabsRight) => {
+                    self.tabs_first += 1;
+                    self.dirty = true;
+                }
                 Some(Hit::Tab(i)) if i < self.tabs.len() => {
                     let f = self.tabs[i].focus;
                     self.focus(f);
@@ -1530,6 +1572,32 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// The mouse wheel over a list (actions, rooms, running, tabs) scrolls that list.
+    /// `lines` > 0 is up. Returns false when the wheel is over none of them.
+    fn wheel(&mut self, lines: i32) -> bool {
+        if lines == 0 {
+            return false;
+        }
+        if let Overlay::Palette { items, filter, sel, .. } = &mut self.overlay {
+            let f_l = filter.to_lowercase();
+            let shown = items.iter().filter(|i| f_l.is_empty() || i.label.to_lowercase().contains(&f_l)).count();
+            *sel = (*sel as i32 - lines).clamp(0, shown.saturating_sub(1) as i32) as usize;
+            self.dirty = true;
+            return true;
+        }
+        let (mx, my) = (self.mouse.x as i32, self.mouse.y as i32);
+        let Some(area) = self.scroll_areas.iter().find(|(r, _)| r.contains(mx, my)).map(|a| a.1) else { return false };
+        let step = -lines.signum();
+        let moved = |v: usize| (v as i32 + step).max(0) as usize;
+        match area {
+            Scroll::Rooms => self.rooms_top = moved(self.rooms_top),
+            Scroll::Running => self.running_top = moved(self.running_top),
+            Scroll::Tabs => self.tabs_first = moved(self.tabs_first),
+        }
+        self.dirty = true;
+        true
     }
 
     fn mouse_move(&mut self) {
@@ -1780,21 +1848,8 @@ impl App {
         cv.rect(sw, 0, w - sw as u32, bar as u32, BAR);
         cv.rect(sw, bar - 1, w - sw as u32, 1, BORDER);
         self.hits.clear();
+        self.scroll_areas.clear();
         let ty = 5;
-        let mut x = sw + PADX;
-        for (i, (title, state)) in tab_states.iter().enumerate() {
-            let title: String = title.chars().take(24).collect();
-            let label = format!("  {} {}  ", i + 1, title);
-            let wpx = (label.chars().count() as i32 + 1) * cw;
-            let (mark, mark_color) = state_mark(*state);
-            cv.ch(f, x + cw / 2, ty, mark, false, mark_color);
-            cv.text(f, x + cw, ty, &label, i == self.active, if i == self.active { t.fg } else { DIMTEXT });
-            self.hits.push((Rect { x, y: 0, w: wpx, h: bar }, Hit::Tab(i)));
-            x += wpx + 2;
-        }
-        cv.text(f, x, ty, " + ", false, DIMTEXT);
-        self.hits.push((Rect { x, y: 0, w: 3 * cw, h: bar }, Hit::NewTab));
-
         let lo = platform::in_lightsout();
         let mut right: Vec<(String, Option<Hit>)> = self.bar_texts.iter().filter(|s| !s.is_empty()).map(|s| (s.clone(), None)).collect();
         if sw == 0 {
@@ -1803,6 +1858,61 @@ impl App {
             right.push((if lo { "Lights On" } else { "Lights Out" }.into(), Some(Hit::Switch)));
             right.push(("actions".into(), Some(Hit::Palette)));
         }
+        let right_w: i32 = right.iter().filter(|(s, _)| !s.is_empty()).map(|(s, _)| (s.chars().count() as i32 + 1) * cw).sum();
+        // tabs: as many as fit; the rest scroll (wheel, or ‹ ›)
+        let labels: Vec<(String, i32)> = tab_states
+            .iter()
+            .enumerate()
+            .map(|(i, (title, _))| {
+                let title: String = title.chars().take(24).collect();
+                let label = format!("  {} {}  ", i + 1, title);
+                let wpx = (label.chars().count() as i32 + 1) * cw;
+                (label, wpx)
+            })
+            .collect();
+        let x0 = sw + PADX;
+        let limit = w as i32 - PADX - right_w - 6 * cw;
+        if self.active != self.seen_tab {
+            self.seen_tab = self.active;
+            if self.active < self.tabs_first {
+                self.tabs_first = self.active;
+            }
+            while self.tabs_first < self.active {
+                let used: i32 = labels[self.tabs_first..=self.active].iter().map(|l| l.1 + 2).sum::<i32>() + 2 * cw;
+                if x0 + used <= limit {
+                    break;
+                }
+                self.tabs_first += 1;
+            }
+        }
+        self.tabs_first = self.tabs_first.min(labels.len().saturating_sub(1));
+        let mut x = x0;
+        if self.tabs_first > 0 {
+            cv.text(f, x, ty, "‹", false, t.fg);
+            self.hits.push((Rect { x, y: 0, w: 2 * cw, h: bar }, Hit::TabsLeft));
+            x += 2 * cw;
+        }
+        let mut more_right = false;
+        for (i, (label, wpx)) in labels.iter().enumerate().skip(self.tabs_first) {
+            if x + wpx > limit {
+                more_right = true;
+                break;
+            }
+            let (mark, mark_color) = state_mark(tab_states[i].1);
+            cv.ch(f, x + cw / 2, ty, mark, false, mark_color);
+            cv.text(f, x + cw, ty, label, i == self.active, if i == self.active { t.fg } else { DIMTEXT });
+            self.hits.push((Rect { x, y: 0, w: *wpx, h: bar }, Hit::Tab(i)));
+            x += wpx + 2;
+        }
+        if more_right {
+            cv.text(f, x, ty, "›", false, t.fg);
+            self.hits.push((Rect { x, y: 0, w: 2 * cw, h: bar }, Hit::TabsRight));
+            x += 2 * cw;
+        }
+        cv.text(f, x, ty, " + ", false, DIMTEXT);
+        self.hits.push((Rect { x, y: 0, w: 3 * cw, h: bar }, Hit::NewTab));
+        x += 3 * cw;
+        self.scroll_areas.push((Rect { x: sw, y: 0, w: w as i32 - sw, h: bar }, Scroll::Tabs));
         let mut rx = w as i32 - PADX;
         for (s, hit) in right.into_iter().rev() {
             if s.is_empty() {
@@ -1820,7 +1930,7 @@ impl App {
             rx -= cw;
         }
 
-        // ---- sidebar: top half = room names; bottom half = what runs in this room, one line each
+        // ---- sidebar: top half = rooms; bottom half = what runs in this room, one line each
         if sw > 0 {
             let side = Rect { x: 0, y: 0, w: sw, h: h as i32 };
             cv.rect(side.x + side.w - 1, side.y, 1, side.h as u32, BORDER);
@@ -1828,30 +1938,46 @@ impl App {
             let bottom = side.h - 3 * ch - 12;
             let mid = bottom / 2;
             let row = ch + 6;
-            // rooms: names only
-            let mut y = 10;
-            for (ri, (name, _)) in rooms.iter().enumerate() {
-                if y + row > mid {
-                    break;
+            // rooms: a small heading, a bit of space, then the names (they scroll)
+            cv.text(f, PADX, 10, "rooms", false, 0x55555c);
+            let y0 = 10 + ch + 10;
+            let fit = ((mid - y0) / row).max(1) as usize;
+            let total = rooms.len() + 1; // + room
+            if self.room != self.seen_room {
+                self.seen_room = self.room;
+                if self.room < self.rooms_top {
+                    self.rooms_top = self.room;
+                } else if self.room >= self.rooms_top + fit {
+                    self.rooms_top = self.room + 1 - fit;
                 }
-                let current = ri == self.room;
-                let label: String = name.chars().take(max_chars).collect();
-                cv.text(f, PADX, y, &label, current, if current { t.fg } else { DIMTEXT });
-                self.hits.push((Rect { x: 0, y: y - 3, w: sw, h: row }, Hit::Room(ri)));
+            }
+            self.rooms_top = self.rooms_top.min(total.saturating_sub(fit));
+            let mut y = y0;
+            for i in self.rooms_top..total.min(self.rooms_top + fit) {
+                if let Some((name, _)) = rooms.get(i) {
+                    let current = i == self.room;
+                    let label: String = name.chars().take(max_chars).collect();
+                    cv.text(f, PADX, y, &label, current, if current { t.fg } else { DIMTEXT });
+                    self.hits.push((Rect { x: 0, y: y - 3, w: sw, h: row }, Hit::Room(i)));
+                } else {
+                    cv.text(f, PADX, y, "+ room", false, 0x55555c);
+                    self.hits.push((Rect { x: 0, y: y - 3, w: sw, h: row }, Hit::NewRoom));
+                }
                 y += row;
             }
-            if y + row <= mid {
-                cv.text(f, PADX, y, "+ room", false, 0x55555c);
-                self.hits.push((Rect { x: 0, y: y - 3, w: sw, h: row }, Hit::NewRoom));
-            }
+            scroll_marks(&mut cv, f, sw - PADX - 2 * cw, 10, self.rooms_top > 0, self.rooms_top + fit < total);
+            self.scroll_areas.push((Rect { x: 0, y: 0, w: sw, h: mid }, Scroll::Rooms));
             cv.rect(PADX, mid, (sw - 2 * PADX) as u32, 1, BORDER);
-            // agents in the current room: mark + name, folder dimmed after it when it fits
-            let mut y = mid + 12;
+            // what runs in this room (agents and anything else): heading, space, one line each
+            cv.text(f, PADX, mid + 12, "running", false, 0x55555c);
+            let y0 = mid + 12 + ch + 10;
+            let mut y = y0;
             if let Some((_, agents)) = rooms.get(self.room) {
-                for (id, title, state, folder) in agents {
-                    if y + row > bottom {
-                        break;
-                    }
+                let fit = ((bottom - y0) / row).max(1) as usize;
+                self.running_top = self.running_top.min(agents.len().saturating_sub(fit));
+                scroll_marks(&mut cv, f, sw - PADX - 2 * cw, mid + 12, self.running_top > 0, self.running_top + fit < agents.len());
+                self.scroll_areas.push((Rect { x: 0, y: mid, w: sw, h: bottom - mid }, Scroll::Running));
+                for (id, title, state, folder) in agents.iter().skip(self.running_top).take(fit) {
                     let (mark, mark_color) = state_mark(*state);
                     cv.ch(f, PADX, y, mark, false, mark_color);
                     let name: String = title.chars().take(max_chars - 2).collect();
@@ -2140,6 +2266,9 @@ impl ApplicationHandler<UserEvent> for App {
                     MouseScrollDelta::LineDelta(_, y) => (y * 3.0) as i32,
                     MouseScrollDelta::PixelDelta(p) => (p.y / self.fonts.cell_h as f64) as i32,
                 };
+                if self.wheel(lines) {
+                    return;
+                }
                 if let Some((id, _)) = self.pane_at(self.mouse.x as i32, self.mouse.y as i32) {
                     if let Some(p) = self.panes.get(&id) {
                         p.scroll(lines);
