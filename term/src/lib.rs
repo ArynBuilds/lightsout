@@ -206,6 +206,10 @@ enum Overlay {
         items: Vec<Item>,
         filter: String,
         sel: usize,
+        /// ↑/↓ was used: `sel` is highlighted (and Enter runs it).
+        picked: bool,
+        /// The first row shown (the wheel scrolls it).
+        top: usize,
     },
     Menu {
         x: i32,
@@ -268,6 +272,10 @@ enum Drag {
 
 #[derive(Clone, Copy)]
 enum Hit {
+    /// A row of the actions list (its place among the shown rows).
+    PaletteItem(usize),
+    /// The actions box itself (a click there doesn't close it).
+    PaletteBox,
     TabsLeft,
     TabsRight,
     Tab(usize),
@@ -313,6 +321,8 @@ struct App {
     mouse: PhysicalPosition<f64>,
     drag: Option<Drag>,
     hits: Vec<(Rect, Hit)>,
+    /// How many rows the actions list showed last time (to keep the chosen one in view).
+    palette_rows: usize,
     /// Lists that scroll with the mouse wheel: where they are on screen, and their first item.
     scroll_areas: Vec<(Rect, Scroll)>,
     rooms_top: usize,
@@ -412,6 +422,7 @@ impl App {
             mouse: PhysicalPosition::new(0.0, 0.0),
             drag: None,
             hits: Vec::new(),
+            palette_rows: 16,
             scroll_areas: Vec::new(),
             rooms_top: 0,
             running_top: 0,
@@ -1343,6 +1354,8 @@ impl App {
             items,
             filter: String::new(),
             sel: 0,
+            picked: false,
+            top: 0,
         };
         self.dirty = true;
     }
@@ -1593,6 +1606,8 @@ impl App {
                         items: self.agent_items(),
                         filter: String::new(),
                         sel: 0,
+                        picked: false,
+                        top: 0,
                     };
                     self.dirty = true;
                     return true;
@@ -1767,23 +1782,50 @@ impl App {
             Key::Named(NamedKey::ArrowDown) => self.move_sel(1, visible.len()),
             Key::Named(NamedKey::ArrowUp) => self.move_sel(-1, visible.len()),
             Key::Named(NamedKey::Enter) => {
-                let action = visible.get(self.sel()).cloned();
+                // the chosen one; nothing chosen: the top match of what was typed
+                let i = match &self.overlay {
+                    Overlay::Palette {
+                        picked: false,
+                        filter,
+                        ..
+                    } if filter.is_empty() => return true,
+                    Overlay::Palette { picked: false, .. } => 0,
+                    _ => self.sel(),
+                };
+                let action = visible.get(i).cloned();
                 self.overlay = Overlay::None;
                 if let Some(a) = action {
                     self.run(a);
                 }
             }
             Key::Named(NamedKey::Backspace) => {
-                if let Overlay::Palette { filter, sel, .. } = &mut self.overlay {
+                if let Overlay::Palette {
+                    filter,
+                    sel,
+                    picked,
+                    top,
+                    ..
+                } = &mut self.overlay
+                {
                     filter.pop();
-                    *sel = 0;
+                    (*sel, *picked, *top) = (0, false, 0);
                 }
             }
             _ => {
-                if let (Some(s), Overlay::Palette { filter, sel, .. }) = (text, &mut self.overlay) {
+                if let (
+                    Some(s),
+                    Overlay::Palette {
+                        filter,
+                        sel,
+                        picked,
+                        top,
+                        ..
+                    },
+                ) = (text, &mut self.overlay)
+                {
                     if !s.chars().any(char::is_control) {
                         filter.push_str(s);
-                        *sel = 0;
+                        (*sel, *picked, *top) = (0, false, 0);
                     }
                 }
             }
@@ -1814,7 +1856,29 @@ impl App {
     }
 
     fn move_sel(&mut self, d: i32, n: usize) {
-        if let Overlay::Palette { sel, .. } | Overlay::Menu { sel, .. } = &mut self.overlay {
+        let rows = self.palette_rows.max(1);
+        if let Overlay::Palette {
+            sel, picked, top, ..
+        } = &mut self.overlay
+        {
+            if n == 0 {
+                return;
+            }
+            if !*picked {
+                // the first ↑/↓ chooses the first row in view
+                *picked = true;
+                *sel = (*top).min(n - 1);
+            } else {
+                *sel = ((*sel as i32 + d).rem_euclid(n as i32)) as usize;
+            }
+            if *sel < *top {
+                *top = *sel;
+            } else if *sel >= *top + rows {
+                *top = *sel + 1 - rows;
+            }
+            return;
+        }
+        if let Overlay::Menu { sel, .. } = &mut self.overlay {
             if n > 0 {
                 *sel = ((*sel as i32 + d).rem_euclid(n as i32)) as usize;
             }
@@ -1937,6 +2001,25 @@ impl App {
             self.overlay = Overlay::None;
             if let Some(a) = action {
                 self.run(a);
+            }
+            return;
+        }
+        if matches!(self.overlay, Overlay::Palette { .. }) {
+            let hit = self
+                .hits
+                .iter()
+                .find(|(r, _)| r.contains(x, y))
+                .map(|h| h.1);
+            match hit {
+                Some(Hit::PaletteItem(n)) => {
+                    let action = self.visible_items().get(n).cloned();
+                    self.overlay = Overlay::None;
+                    if let Some(a) = action {
+                        self.run(a);
+                    }
+                }
+                Some(Hit::PaletteBox) => {}
+                _ => self.overlay = Overlay::None,
             }
             return;
         }
@@ -2069,8 +2152,9 @@ impl App {
         if lines == 0 {
             return false;
         }
+        let rows = self.palette_rows.max(1);
         if let Overlay::Palette {
-            items, filter, sel, ..
+            items, filter, top, ..
         } = &mut self.overlay
         {
             let f_l = filter.to_lowercase();
@@ -2078,7 +2162,8 @@ impl App {
                 .iter()
                 .filter(|i| f_l.is_empty() || i.label.to_lowercase().contains(&f_l))
                 .count();
-            *sel = (*sel as i32 - lines).clamp(0, shown.saturating_sub(1) as i32) as usize;
+            let last = shown.saturating_sub(rows) as i32;
+            *top = (*top as i32 - lines).clamp(0, last) as usize;
             self.dirty = true;
             return true;
         }
@@ -2879,6 +2964,8 @@ impl App {
                 title,
                 items,
                 filter,
+                picked,
+                top,
                 ..
             } => {
                 let f_l = filter.to_lowercase();
@@ -2895,23 +2982,49 @@ impl App {
                 cv.rect(px, py, pw as u32, ph as u32, 0x000000);
                 cv.text(f, px + cw, py + 6, title, true, t.fg);
                 cv.text(f, px + cw, py + 6 + ch, &format!("› {filter}"), false, t.fg);
-                let start = sel.saturating_sub(15);
-                for (n, it) in shown.iter().enumerate().skip(start).take(16) {
+                self.palette_rows = rows.max(1) as usize;
+                let start = (*top).min(shown.len().saturating_sub(rows as usize));
+                for (n, it) in shown.iter().enumerate().skip(start).take(rows as usize) {
                     let y = py + 6 + (2 + (n - start) as i32) * ch;
-                    if n == sel {
-                        cv.rect(px + 2, y, (pw - 4) as u32, ch as u32, BAR_ACTIVE);
-                    }
+                    let on = *picked && n == sel;
+                    self.hits.push((
+                        Rect {
+                            x: px,
+                            y,
+                            w: pw,
+                            h: ch,
+                        },
+                        Hit::PaletteItem(n),
+                    ));
+                    cv.text(f, px + cw, y, if on { "›" } else { " " }, true, t.fg);
                     cv.text(
                         f,
-                        px + cw,
+                        px + 3 * cw,
                         y,
                         &it.label,
-                        n == sel,
-                        if n == sel { t.fg } else { DIMTEXT },
+                        on,
+                        if on { t.fg } else { DIMTEXT },
                     );
                     let hx = px + pw - (it.hint.chars().count() as i32 + 1) * cw;
                     cv.text(f, hx, y, &it.hint, false, DIMTEXT);
                 }
+                scroll_marks(
+                    &mut cv,
+                    f,
+                    px + pw - 3 * cw,
+                    py + 6,
+                    start > 0,
+                    start + (rows as usize) < shown.len(),
+                );
+                self.hits.push((
+                    Rect {
+                        x: px,
+                        y: py,
+                        w: pw,
+                        h: ph,
+                    },
+                    Hit::PaletteBox,
+                ));
             }
             Overlay::Menu {
                 x: mx,
@@ -3298,6 +3411,8 @@ impl App {
                             items,
                             filter: String::new(),
                             sel: 0,
+                            picked: false,
+                            top: 0,
                         };
                     }
                     self.dirty = true;

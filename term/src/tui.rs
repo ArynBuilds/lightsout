@@ -934,6 +934,8 @@ fn draw(app: &mut App, prefix: bool) -> (Grid, Option<(u16, u16, CursorShape)>) 
             title,
             items,
             filter,
+            picked,
+            top,
             ..
         } => {
             cursor = None;
@@ -960,10 +962,20 @@ fn draw(app: &mut App, prefix: bool) -> (Grid, Option<(u16, u16, CursorShape)>) 
                 false,
                 r.x + r.w - 1,
             );
-            let start = sel.saturating_sub(rows as usize - 1);
+            app.palette_rows = rows as usize;
+            let start = (*top).min(shown.len().saturating_sub(rows as usize));
             for (n, it) in shown.iter().enumerate().skip(start).take(rows as usize) {
                 let y = r.y + 3 + (n - start) as i32;
-                let on = n == sel;
+                let on = *picked && n == sel;
+                app.hits.push((
+                    Rect {
+                        x: r.x,
+                        y,
+                        w: r.w,
+                        h: 1,
+                    },
+                    Hit::PaletteItem(n),
+                ));
                 let hint = terminal_hint(&it.hint);
                 let hx = r.x + r.w - 1 - width(&hint);
                 g.text(r.x + 1, y, if on { "›" } else { " " }, t.fg, true, r.x + 2);
@@ -985,6 +997,16 @@ fn draw(app: &mut App, prefix: bool) -> (Grid, Option<(u16, u16, CursorShape)>) 
                 start > 0,
                 start + (rows as usize) < shown.len(),
             );
+            // a click inside the box (not on a row) keeps it open
+            app.hits.push((
+                Rect {
+                    x: r.x - 1,
+                    y: r.y - 1,
+                    w: r.w + 2,
+                    h: r.h + 2,
+                },
+                Hit::PaletteBox,
+            ));
         }
         Overlay::Menu {
             x: mx,
