@@ -140,7 +140,8 @@ jobs:
           lightsout list
           ps -o user=,command= -p "$(pgrep -f 'lightsout-app --headless')"
           id=$(lightsout new -- sh -c 'echo hello-service; sleep 300')
-          sleep 5
+          for i in $(seq 1 30); do lightsout read "$id" | grep -q hello-service && break; sleep 1; done
+          lightsout read "$id" --lines 20
           lightsout read "$id" | grep hello-service
           # signing back in: the app takes the tabs back, the Mac's settings return
           lightsout-app > app2.log 2>&1 &
