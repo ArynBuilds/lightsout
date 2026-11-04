@@ -196,7 +196,8 @@ struct Screen {
 }
 
 impl Screen {
-    fn present(&mut self, g: &Grid, cursor: Option<(u16, u16, CursorShape)>) -> io::Result<()> {
+    /// The bytes that turn what the viewer shows now into `g`.
+    fn frame(&mut self, g: &Grid, cursor: Option<(u16, u16, CursorShape)>) -> io::Result<Vec<u8>> {
         let mut out: Vec<u8> = Vec::with_capacity(32 * 1024);
         queue!(out, terminal::BeginSynchronizedUpdate, cursor::Hide)?;
         let full = self.w != g.w || self.shown.len() != g.cells.len();
@@ -250,13 +251,10 @@ impl Screen {
             queue!(out, cursor::MoveTo(x, y), cursor::Show)?;
         }
         queue!(out, terminal::EndSynchronizedUpdate)?;
-        let mut stdout = io::stdout().lock();
-        stdout.write_all(&out)?;
-        stdout.flush()?;
         self.shown.clone_from(&g.cells);
         self.w = g.w;
         self.cursor = cursor;
-        Ok(())
+        Ok(out)
     }
 }
 
@@ -277,22 +275,259 @@ fn restore_terminal() {
     let _ = terminal::disable_raw_mode();
 }
 
-/// Runs Lights Out in this terminal until it quits. Answers the exit code.
-pub fn run(session: &str) -> i32 {
+/// Sent to the viewer before it is let go: it detached (or another terminal took over).
+const DETACHED: &[u8] = b"\x1b]7770;detached\x07";
+const ELSEWHERE: &[u8] = b"\x1b]7770;elsewhere\x07";
+
+fn screen_file(session: &str) -> std::path::PathBuf {
+    platform::data_dir()
+        .join("run")
+        .join(format!("screen-{session}.json"))
+}
+
+/// The background copy: owns the rooms, tabs and agents; draws for the terminal looking at it
+/// (if any). Closing that terminal changes nothing here. Runs until Quit. Answers the exit code.
+pub fn serve(session: &str) -> i32 {
+    use std::io::{BufRead, BufReader};
+    use std::net::{Shutdown, TcpListener};
+    // NO_COLOR is about a program's printed output; a full-screen app (like tmux) still draws
+    // its frame and the panes' own colors. The panes still see NO_COLOR and honour it themselves.
+    crossterm::style::Colored::set_ansi_color_disabled(false);
     let (tx, rx) = mpsc::channel::<UserEvent>();
     let mut app = App::new(Waker::Channel(tx.clone()), session.to_string());
     app.tui = true;
     app.fonts.use_cells();
-    let (c, r) = terminal::size().unwrap_or((100, 30));
-    app.size = (c.max(20) as u32, r.max(8) as u32);
+    app.size = (100, 30);
+    app.window_focused = false;
 
-    if terminal::enable_raw_mode().is_err() {
-        eprintln!("lightsout: this terminal can't be used; opening the window instead (lightsout --window)");
+    // where a terminal connects to look (this machine only, with a token)
+    let Ok(listener) = TcpListener::bind("127.0.0.1:0") else {
+        return 1;
+    };
+    let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
+    let mut t = [0u8; 16];
+    let _ = getrandom::fill(&mut t);
+    let token: String = t.iter().map(|b| format!("{b:02x}")).collect();
+    let file = screen_file(session);
+    if let Some(d) = file.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    let info = serde_json::json!({ "port": port, "token": token, "pid": std::process::id() });
+    if std::fs::write(&file, info.to_string()).is_err() {
         return 1;
     }
-    // NO_COLOR is about a program's printed output; a full-screen app (like tmux) still draws
-    // its frame and the panes' own colors. The panes still see NO_COLOR and honour it themselves.
-    crossterm::style::Colored::set_ansi_color_disabled(false);
+    let accept = tx.clone();
+    std::thread::spawn(move || {
+        let mut n = 0u64;
+        for stream in listener.incoming().flatten() {
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+            let Ok(read) = stream.try_clone() else {
+                continue;
+            };
+            let mut reader = BufReader::new(read);
+            let mut line = String::new();
+            if reader.read_line(&mut line).is_err() || line.trim() != token {
+                continue;
+            }
+            let _ = stream.set_read_timeout(None);
+            n += 1;
+            let id = n;
+            if accept.send(UserEvent::Attach(stream, id)).is_err() {
+                break;
+            }
+            // its keys, mouse and resizes, one per line
+            let events = accept.clone();
+            std::thread::spawn(move || {
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    match reader.read_line(&mut line) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {
+                            if let Ok(ev) = serde_json::from_str::<Event>(line.trim_end()) {
+                                if events.send(UserEvent::Tty(ev)).is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+                let _ = events.send(UserEvent::ClientGone(id));
+            });
+        }
+    });
+
+    if api::serve(&app.session, app.proxy.clone()).is_err() {
+        app.toast(
+            "Control commands are unavailable (could not open the local port)".into(),
+            ALERT,
+        );
+    }
+    app.start();
+
+    let mut screen = Screen {
+        prefix: false,
+        shown: Vec::new(),
+        w: 0,
+        cursor: None,
+    };
+    let mut client: Option<(std::net::TcpStream, u64)> = None;
+    let on_event = |app: &mut App,
+                    screen: &mut Screen,
+                    client: &mut Option<(std::net::TcpStream, u64)>,
+                    ev: UserEvent| match ev {
+        UserEvent::Attach(s, id) => {
+            // the newest terminal wins; the one before is told and let go
+            if let Some((mut old, _)) = client.take() {
+                let _ = old.write_all(ELSEWHERE);
+                let _ = old.shutdown(Shutdown::Both);
+            }
+            let _ = s.set_nodelay(true);
+            *client = Some((s, id));
+            screen.shown.clear();
+            screen.cursor = None;
+            screen.prefix = false;
+            app.window_focused = true;
+            app.dirty = true;
+        }
+        UserEvent::ClientGone(id) => {
+            if client.as_ref().map(|c| c.1) == Some(id) {
+                *client = None;
+                screen.prefix = false;
+                app.window_focused = false;
+            }
+        }
+        ev => handle(app, screen, ev),
+    };
+    loop {
+        let next = app.tick();
+        if app.quit {
+            break;
+        }
+        if std::mem::take(&mut app.detach) {
+            if let Some((mut s, _)) = client.take() {
+                let _ = s.write_all(DETACHED);
+                let _ = s.shutdown(Shutdown::Both);
+            }
+            screen.prefix = false;
+            app.window_focused = false;
+        }
+        if std::mem::take(&mut app.redraw) {
+            // nobody looking: nothing to draw (the next viewer gets a full frame)
+            if let Some((s, _)) = client.as_mut() {
+                app.refresh_battery();
+                let (g, cursor) = draw(&mut app, screen.prefix);
+                let sent = screen
+                    .frame(&g, cursor)
+                    .and_then(|bytes| s.write_all(&bytes));
+                if sent.is_err() {
+                    client = None;
+                    app.window_focused = false;
+                }
+                app.last_draw = Instant::now();
+            }
+            app.dirty = false;
+        }
+        let wait = next
+            .map(|t| t.saturating_duration_since(Instant::now()))
+            .unwrap_or(Duration::from_secs(3600));
+        match rx.recv_timeout(wait) {
+            Ok(ev) => on_event(&mut app, &mut screen, &mut client, ev),
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+        // take everything that is already waiting before drawing again
+        while !app.quit {
+            match rx.try_recv() {
+                Ok(ev) => on_event(&mut app, &mut screen, &mut client, ev),
+                Err(_) => break,
+            }
+        }
+    }
+    app.save_session();
+    let _ = std::fs::remove_file(&file);
+    if let Some((s, _)) = client {
+        let _ = s.shutdown(Shutdown::Both); // the viewer ends quietly
+    }
+    0
+}
+
+/// Looks at the background copy from this terminal, if one runs. Answers the exit code when done.
+pub fn attach(session: &str) -> Option<i32> {
+    let file = screen_file(session);
+    let info: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&file).ok()?).ok()?;
+    let port = info["port"].as_u64()? as u16;
+    let token = info["token"].as_str()?.to_string();
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let Ok(mut s) = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)) else {
+        let _ = std::fs::remove_file(&file); // it ended without tidying up
+        return None;
+    };
+    s.write_all(format!("{token}\n").as_bytes()).ok()?;
+    Some(view(s))
+}
+
+/// Starts the background copy (it outlives this terminal), then looks at it.
+pub fn start_and_attach(session: &str) -> Option<i32> {
+    use std::process::{Command, Stdio};
+    let exe = std::env::current_exe().ok()?;
+    let spawn = |extra: u32| {
+        let mut c = Command::new(&exe);
+        c.args(["--session", session, "--server"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // no console of its own, its own group: closing the terminal doesn't end it
+            const DETACHED_PROCESS: u32 = 0x0000_0008;
+            const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+            c.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | extra);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            let _ = extra;
+            // its own session: a closed terminal or SSH connection doesn't hang it up
+            unsafe {
+                c.pre_exec(|| {
+                    libc::setsid();
+                    Ok(())
+                });
+            }
+        }
+        c.spawn()
+    };
+    // some terminals put their programs in a job that ends with them; step out of it if allowed
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+    if spawn(if cfg!(windows) {
+        CREATE_BREAKAWAY_FROM_JOB
+    } else {
+        0
+    })
+    .is_err()
+    {
+        spawn(0).ok()?;
+    }
+    let until = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < until {
+        if let Some(code) = attach(session) {
+            return Some(code);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    None
+}
+
+/// This terminal shows the background copy: keys, mouse and size go there, its screen comes back.
+fn view(stream: std::net::TcpStream) -> i32 {
+    use std::io::Read;
+    if terminal::enable_raw_mode().is_err() {
+        eprintln!("lightsout: this terminal can't be used (lightsout --window opens the window)");
+        return 1;
+    }
     let mut out = io::stdout();
     let _ = execute!(
         out,
@@ -316,67 +551,48 @@ pub fn run(session: &str) -> i32 {
         restore_terminal();
         hook(info);
     }));
-
-    // keys, mouse and resizes come in on their own thread, next to the panes' events
-    let input = tx;
+    let send = |w: &mut std::net::TcpStream, ev: &Event| -> io::Result<()> {
+        let mut line = serde_json::to_string(ev).map_err(io::Error::other)?;
+        line.push('\n');
+        w.write_all(line.as_bytes())
+    };
+    let Ok(mut w) = stream.try_clone() else {
+        restore_terminal();
+        return 1;
+    };
+    let _ = w.set_nodelay(true);
+    let (c, r) = terminal::size().unwrap_or((100, 30));
+    let _ = send(&mut w, &Event::Resize(c, r));
     std::thread::spawn(move || {
         while let Ok(ev) = event::read() {
-            if input.send(UserEvent::Tty(ev)).is_err() {
+            if send(&mut w, &ev).is_err() {
                 break;
             }
         }
     });
-
-    if api::serve(&app.session, app.proxy.clone()).is_err() {
-        app.toast(
-            "Control commands are unavailable (could not open the local port)".into(),
-            ALERT,
-        );
-    }
-    app.start();
-    app.dirty = true;
-
-    let mut screen = Screen {
-        prefix: false,
-        shown: Vec::new(),
-        w: 0,
-        cursor: None,
-    };
+    let mut s = stream;
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut tail: Vec<u8> = Vec::new();
     loop {
-        let next = app.tick();
-        if app.quit {
-            break;
-        }
-        if std::mem::take(&mut app.redraw) {
-            app.refresh_battery();
-            let (g, cursor) = draw(&mut app, screen.prefix);
-            if screen.present(&g, cursor).is_err() {
-                break; // the terminal went away
+        match s.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                let _ = out.write_all(&buf[..n]);
+                let _ = out.flush();
+                tail.extend_from_slice(&buf[..n]);
+                if tail.len() > 64 {
+                    tail.drain(..tail.len() - 64);
+                }
             }
-            app.dirty = false;
-            app.last_draw = Instant::now();
-        }
-        let wait = next
-            .map(|t| t.saturating_duration_since(Instant::now()))
-            .unwrap_or(Duration::from_secs(3600));
-        match rx.recv_timeout(wait) {
-            Ok(ev) => handle(&mut app, &mut screen, ev),
-            Err(RecvTimeoutError::Timeout) => continue,
-            Err(RecvTimeoutError::Disconnected) => break,
-        }
-        // take everything that is already waiting before drawing again
-        while !app.quit {
-            match rx.try_recv() {
-                Ok(ev) => handle(&mut app, &mut screen, ev),
-                Err(_) => break,
-            }
-        }
-        if app.quit {
-            break;
         }
     }
-    app.save_session();
     restore_terminal();
+    let ends = |m: &[u8]| tail.windows(m.len()).any(|w| w == m);
+    if ends(DETACHED) {
+        println!("Detached: your agents keep running. Type lightsout to come back.");
+    } else if ends(ELSEWHERE) {
+        println!("Lights Out was opened in another terminal; your agents keep running there.");
+    }
     0
 }
 

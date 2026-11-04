@@ -178,6 +178,8 @@ enum Action {
     Lights,
     BackToWindows,
     Quit,
+    /// Close this terminal's view; the agents keep running in the background.
+    Detach,
     Settings,
     FontBigger,
     FontSmaller,
@@ -295,6 +297,8 @@ struct App {
     redraw: bool,
     /// Running inside another terminal (`lightsout` typed in a shell): cells, not pixels.
     pub tui: bool,
+    /// The terminal view asked to detach (the background copy keeps running).
+    detach: bool,
     session: String,
     window: Option<Rc<Window>>,
     surface: Option<softbuffer::Surface<Rc<Window>, Rc<Window>>>,
@@ -396,6 +400,7 @@ impl App {
             quit: false,
             redraw: false,
             tui: false,
+            detach: false,
             session,
             window: None,
             surface: None,
@@ -1259,6 +1264,13 @@ impl App {
                 "Lights Out (desktop off, only this terminal)"
             };
             v.push(item(what, "Ctrl+Shift+L", Action::Lights));
+            if self.tui {
+                v.push(item(
+                    "Detach (close this view, agents keep running)",
+                    "Ctrl+B D",
+                    Action::Detach,
+                ));
+            }
             v.push(item(
                 "Quit (stops all agents)",
                 "Ctrl+Shift+Q",
@@ -1405,7 +1417,12 @@ impl App {
             Action::Copy => self.copy(),
             Action::Paste => self.paste(),
             Action::Remote(target) => {
-                self.new_tab(cwd, Some(format!("ssh {target}")), Vec::new());
+                // that machine's own Lights Out (its rooms and agents live there)
+                self.new_tab(cwd, Some(remote_command(&target)), Vec::new());
+            }
+            Action::Detach => {
+                self.detach = true;
+                self.dirty = true;
             }
             Action::Lights => {
                 if platform::in_lightsout() {
@@ -1613,6 +1630,7 @@ impl App {
                     return true;
                 }
                 (Some('t'), _) => Action::NewTab,
+                (Some('d'), _) if self.tui => Action::Detach,
                 (Some('b'), _) => Action::ToggleSidebar,
                 (Some('n'), _) => Action::NewRoom,
                 (Some('w'), _) => Action::ClosePane,
@@ -3287,7 +3305,8 @@ impl App {
                 return;
             }
             UserEvent::Term(id, ev) => (id, ev),
-            UserEvent::Tty(_) => return, // the terminal front-end handles these itself
+            // the terminal front-end handles these itself
+            UserEvent::Tty(_) | UserEvent::Attach(..) | UserEvent::ClientGone(_) => return,
         };
         if !self.panes.contains_key(&id) {
             return;
@@ -3538,12 +3557,19 @@ Lights Out: the terminal for AI agents.
   lightsout                       run Lights Out right here, in this terminal
                                   (Ctrl+B then a key: P actions, T tab, W close, N room; F1 = actions)
   lightsout --window              open it in its own window instead
+  lightsout --remote USER@HOST    Lights Out on a server, over SSH (agents live there)
   lightsout --session NAME        a separate, named set of tabs
   lightsout uninstall             remove Lights Out from this computer
 
 Control the running app (also for agents; details: `lightsout skill`):
   lightsout list | new | send | read | wait | explain | focus | notify | screen | power | switch
 ";
+
+/// Opens Lights Out on another machine over SSH (it starts there if it isn't running yet).
+/// A login shell, so `lightsout` is found where the installer put it.
+fn remote_command(target: &str) -> String {
+    format!("ssh -t {target} \"sh -lc 'exec lightsout'\"")
+}
 
 /// One word of a command, quoted for the shell that runs it (PowerShell on Windows, sh elsewhere).
 fn shell_word(w: &str) -> String {
@@ -3710,24 +3736,60 @@ fn client(session: &str, args: &[String]) -> i32 {
 /// `lightsout` (command line): runs a command, or opens the app.
 pub fn cli_entry() {
     let (session, rest) = parse_args();
+    // the background copy that owns the agents for terminal views (started by `lightsout`)
+    if rest.first().map(String::as_str) == Some("--server") {
+        alacritty_terminal::tty::setup_env();
+        platform::lid_keep_running();
+        let code = tui::serve(&session);
+        platform::lid_restore();
+        std::process::exit(code);
+    }
+    if rest.first().map(String::as_str) == Some("--remote") {
+        let Some(target) = rest.get(1) else {
+            eprintln!("lightsout: which machine? lightsout --remote you@server");
+            std::process::exit(2);
+        };
+        let status = std::process::Command::new("ssh")
+            .args(["-t", target, "sh -lc 'exec lightsout'"])
+            .status();
+        match status {
+            Ok(s) if s.code() == Some(127) => {
+                eprintln!("lightsout: not installed on {target}. There: curl -fsSL https://lightsout.sh | sh");
+                std::process::exit(1);
+            }
+            Ok(s) => std::process::exit(s.code().unwrap_or(0)),
+            Err(e) => {
+                eprintln!("lightsout: could not start ssh: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
     let window = rest.iter().any(|a| a == "--window" || a == "-w");
     if rest.is_empty() || window {
-        // already open (here or in its window)? bring that one up instead of a second copy
-        if let Ok(v) = api::call(&session, "show", json!({})) {
-            if v["terminal"].as_bool() == Some(true) {
-                eprintln!("lightsout: already open in another terminal (one copy at a time)");
-            }
-            return;
-        }
         use std::io::IsTerminal;
-        if !window && std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
-            // typed in a terminal: Lights Out runs right here, like tmux
+        let in_terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+        if !window && in_terminal {
+            if std::env::var_os("LIGHTSOUT_PANE").is_some() {
+                eprintln!("lightsout: this is already inside Lights Out");
+                std::process::exit(1);
+            }
+            // typed in a terminal: show Lights Out right here, like tmux. The agents live in a
+            // background copy, so closing this terminal (or Ctrl+B D) leaves them running.
+            if let Some(code) = tui::attach(&session) {
+                std::process::exit(code);
+            }
+            // no background copy yet; is the window open?
+            if api::call(&session, "show", json!({})).is_ok() {
+                return;
+            }
             platform::mac_return(&session);
-            alacritty_terminal::tty::setup_env();
-            platform::lid_keep_running();
-            let code = tui::run(&session);
-            platform::lid_restore();
-            std::process::exit(code);
+            if let Some(code) = tui::start_and_attach(&session) {
+                std::process::exit(code);
+            }
+            eprintln!("lightsout: could not start in the background; opening the window instead");
+        } else if api::call(&session, "show", json!({})).is_ok() {
+            // already open: bring it up instead of a second copy
+            return;
         }
         // open the window without tying up this terminal
         let mut app = std::env::current_exe().unwrap_or_default();

@@ -221,7 +221,10 @@ pub fn run(session: &str) {
                 };
                 let _ = req.reply.send(reply);
             }
-            UserEvent::BarText(..) | UserEvent::Tty(_) => {}
+            UserEvent::BarText(..)
+            | UserEvent::Tty(_)
+            | UserEvent::Attach(..)
+            | UserEvent::ClientGone(_) => {}
         }
     }
 }

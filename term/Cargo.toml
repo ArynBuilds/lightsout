@@ -19,7 +19,7 @@ path = "src/bin/lightsout.rs"
 [dependencies]
 alacritty_terminal = "0.26.0"
 arboard = "3.7.0"
-crossterm = { version = "0.29", features = ["bracketed-paste"] }
+crossterm = { version = "0.29", features = ["bracketed-paste", "serde"] }
 unicode-width = "0.2"
 fontdue = "0.9.5"
 getrandom = "0.4.3"
@@ -29,6 +29,9 @@ sha2 = "0.11.1"
 softbuffer = "0.4.8"
 toml = "1.1.8"
 winit = "0.30.13"
+
+[target."cfg(unix)".dependencies]
+libc = "0.2"
 
 [target."cfg(windows)".dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_System_Power", "Win32_Foundation", "Win32_System_Console", "Win32_Media_Audio", "Win32_UI_WindowsAndMessaging", "Win32_System_Diagnostics_ToolHelp", "Win32_NetworkManagement_WiFi", "Win32_System_Environment", "Win32_System_Threading", "Win32_Security"] }

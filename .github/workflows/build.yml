@@ -43,6 +43,40 @@ jobs:
           cp linux/systemd/* $d/systemd/
           chmod +x $d/bin/* $d/lib/* $d/sbin/*
           tar -C out -czf out/lightsout-linux-x64.tar.gz lightsout-linux-x64
+      - name: Test the terminal view (closing it leaves the agents running; again over SSH)
+        run: |
+          set -ex
+          B=$PWD/term/target/release
+          export LIGHTSOUT_SESSION=citerm
+          # a terminal, as SSH gives one: `lightsout` starts its background copy and shows it
+          script -qfec "$B/lightsout" /dev/null > view.log 2>&1 &
+          VIEW=$!
+          for i in $(seq 1 30); do $B/lightsout list >/dev/null 2>&1 && break; sleep 1; done
+          $B/lightsout new -- sh -c 'sleep 3; echo survived | tee /tmp/lo-detach.txt; sleep 120'
+          # the terminal goes away (closed window, dropped SSH)
+          kill -HUP $VIEW || true; pkill -HUP -f "script -qfec $B/lightsout" || true
+          sleep 6
+          test "$(cat /tmp/lo-detach.txt)" = survived
+          pgrep -f -- "--session citerm --server"
+          # come back: the same screen
+          timeout 5 script -qfec "$B/lightsout" /dev/null > view2.log 2>&1 || true
+          grep -a -q survived view2.log
+          grep -a -q rooms view2.log
+          # over SSH (to this same machine): Lights Out starts there and stays after SSH closes
+          sudo apt-get install -y -qq openssh-server >/dev/null
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519
+          cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
+          sudo systemctl start ssh || sudo service ssh start
+          ssh-keyscan -H localhost >> ~/.ssh/known_hosts 2>/dev/null
+          sudo ln -sf $B/lightsout /usr/local/bin/lightsout
+          timeout 10 script -qfec "$B/lightsout --remote localhost" /dev/null > remote.log 2>&1 || true
+          grep -a -q rooms remote.log
+          sleep 2
+          pgrep -f -- "--session default --server"
+          pkill -f -- "--server" || true
+          sudo rm -f /usr/local/bin/lightsout
+          echo "TERMINAL VIEW TEST PASSED"
       - name: Test on this Linux machine (install, Lights Out screen, power restore, uninstall)
         run: |
           set -ex
