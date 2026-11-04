@@ -232,6 +232,8 @@ shutdown /r /t 0 /c 'Switching to Lights Out'
 "@
 [IO.File]::WriteAllText("$LO\bin\enter.ps1", $enter)
 schtasks /create /tn '\LightsOut\Enter' /tr "powershell.exe -NoProfile -ExecutionPolicy Bypass -File $LO\bin\enter.ps1" /sc once /st 00:00 /sd 01/01/2000 /ru SYSTEM /rl HIGHEST /f | Out-Null
+# Windows' default only starts a task when plugged in; Lights Out must also work on battery
+Set-ScheduledTask -TaskPath '\LightsOut\'-TaskName Enter -Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 10)) | Out-Null
 # allow the signed-in user to start (only) this task
 $svc = New-Object -ComObject Schedule.Service; $svc.Connect()
 $svc.GetFolder('\LightsOut').GetTask('Enter').SetSecurityDescriptor('D:(A;;FA;;;BA)(A;;FA;;;SY)(A;;GRGX;;;AU)', 0)
@@ -245,6 +247,8 @@ finally { mountvol "`$(`$letter):" /D }
 "@
 [IO.File]::WriteAllText("$LO\bin\cleanup.ps1", $cleanup)
 schtasks /create /tn '\LightsOut\Cleanup' /tr "powershell.exe -NoProfile -ExecutionPolicy Bypass -File $LO\bin\cleanup.ps1" /sc onstart /ru SYSTEM /rl HIGHEST /f | Out-Null
+# Windows' default only starts a task when plugged in; Lights Out must also work on battery
+Set-ScheduledTask -TaskPath '\LightsOut\'-TaskName Cleanup -Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 10)) | Out-Null
 $lnk = (New-Object -ComObject WScript.Shell).CreateShortcut("$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Lights Out.lnk")
 $lnk.TargetPath = "$LO\bin\lightsout-app.exe"; $lnk.WorkingDirectory = $env:USERPROFILE; $lnk.Save()
 
