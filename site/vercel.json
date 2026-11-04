@@ -1,8 +1,0 @@
-{
-  "rewrites": [
-    { "source": "/", "has": [{ "type": "header", "key": "user-agent", "value": "(?i).*powershell.*" }], "destination": "https://raw.githubusercontent.com/ArynBuilds/lightsout/main/installer/install.ps1" },
-    { "source": "/", "has": [{ "type": "header", "key": "user-agent", "value": "(?i)^(curl|wget).*" }], "destination": "https://raw.githubusercontent.com/ArynBuilds/lightsout/main/installer/install.sh" },
-    { "source": "/install.ps1", "destination": "https://raw.githubusercontent.com/ArynBuilds/lightsout/main/installer/install.ps1" },
-    { "source": "/install.sh", "destination": "https://raw.githubusercontent.com/ArynBuilds/lightsout/main/installer/install.sh" }
-  ]
-}
