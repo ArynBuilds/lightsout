@@ -1,0 +1,17 @@
+#!/usr/bin/dash
+# Lights Out's /bin/sh: dash, except that `sh -c` starting a Windows program (a C:\ path,
+# an .exe, PowerShell, cmd) succeeds quietly: Windows is off, so there is nothing for it
+# to do. CLIs run their hooks and status lines this way, from settings shared with Windows.
+if [ "$1" = -c ]; then
+  cmd=${2#"${2%%[! ]*}"}
+  case $cmd in
+    \"*) first=${cmd#\"}; first=${first%%\"*} ;;
+    \'*) first=${cmd#\'}; first=${first%%\'*} ;;
+    *) first=${cmd%%[ ;&|]*} ;;
+  esac
+  case $first in
+    [A-Za-z]:[\\/]*|*.exe|*.EXE) exit 0 ;;
+    powershell|powershell.exe|pwsh.exe|cmd|cmd.exe) command -v "$first" >/dev/null || exit 0 ;;
+  esac
+fi
+exec /usr/bin/dash "$@"

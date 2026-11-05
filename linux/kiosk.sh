@@ -18,6 +18,8 @@ input type:touchpad {
 for_window [app_id=".*"] fullscreen enable
 bindswitch --reload --locked lid:on exec sh -c 'swaymsg "output * power off"; lightsout screen off'
 bindswitch --reload --locked lid:off exec sh -c 'swaymsg "output * power on"; lightsout screen on'
+# a frozen screen: Ctrl+Alt+Backspace ends Lights Out and brings the desktop back
+bindsym --locked Ctrl+Alt+BackSpace exec swaymsg exit
 exec sh -c 'lightsout-app; swaymsg exit'
 CONF
 # lid closed = screen off, never sleep (while Lights Out runs)

@@ -5,7 +5,8 @@
 ME="${SUDO_USER:-$(id -un)}"
 home=$(dscl . -read "/Users/$ME" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
 launchctl bootout system/sh.lightsout.agents 2>/dev/null
-rm -f /Library/LaunchDaemons/sh.lightsout.agents.plist
+launchctl bootout system/sh.lightsout.guard 2>/dev/null
+rm -f /Library/LaunchDaemons/sh.lightsout.agents.plist /Library/LaunchDaemons/sh.lightsout.guard.plist
 [ -n "$home" ] && rm -f "$home/Library/LaunchAgents/sh.lightsout.return.plist"
 rm -f /etc/sudoers.d/lightsout /usr/local/bin/lightsout /usr/local/bin/lightsout-app
 rm -rf /usr/local/lib/lightsout "/Library/Application Support/LightsOut" "/Applications/Lights Out.app"

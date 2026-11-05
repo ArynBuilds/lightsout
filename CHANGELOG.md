@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.2-rc.8
+
+A test build (`irm https://lightsout.sh/rc | iex`).
+
+- **Everything goes back to normal, however Lights Out stops.**
+  - Mac: a small background service puts your settings back (sleep, Low Power Mode, Spotlight, Time Machine, Bluetooth, slowed-down apps) when Lights Out stopped without Lights On: a crash, a force quit, a restart or an empty battery. It checks at start-up and every 30 seconds.
+  - Linux PC: Bluetooth and the keyboard light are put back before a shutdown saves their state.
+  - Lights Out mode on a Windows PC: a frozen system restarts by itself after a minute, into Windows.
+  - A frozen screen: `Ctrl+Alt+Backspace` restarts the Lights Out screen (and on a Linux PC, brings the desktop back).
+- **Battery time left** next to the battery % (and in `lightsout power`).
+- **Hooks from Windows settings don't fail in Lights Out mode.** Your home folder is the Windows one, so CLI hooks and status lines that start a Windows program (a `C:\` path, an `.exe`, PowerShell) ran into "not found" on every event. They now quietly do nothing, since Windows is off.
+- **The screen runs at its lowest refresh rate** (60 Hz instead of 240 Hz on fast laptop panels).
+
 ## 0.3.2-rc.7
 
 A test build (`irm https://lightsout.sh/rc | iex`).

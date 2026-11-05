@@ -59,7 +59,9 @@ jobs:
       - name: Check scripts
         run: |
           for f in installer/install.sh linux/*.sh linux/switch os/overlay/usr/local/sbin/lightsout-power; do sh -n "$f"; done
-          shellcheck -S error installer/install.sh linux/*.sh linux/switch mac/switch mac/logout-later mac/uninstall.sh
+          shellcheck -S error installer/install.sh linux/*.sh linux/switch mac/switch mac/logout-later mac/guard mac/uninstall.sh
+          sh test/lowest-refresh.sh
+          sh test/mac-guard.sh
       - name: Build and package
         run: |
           (cd term && cargo test --release && cargo build --release)
@@ -182,7 +184,7 @@ jobs:
           for b in lightsout lightsout-app; do
             lipo -create -output $d/bin/$b term/target/aarch64-apple-darwin/release/$b term/target/x86_64-apple-darwin/release/$b
           done
-          cp mac/switch mac/logout-later mac/uninstall.sh $d/lib/
+          cp mac/switch mac/logout-later mac/guard mac/uninstall.sh $d/lib/
           chmod +x $d/bin/* $d/lib/*
           tar -C out -czf out/lightsout-macos.tar.gz lightsout-macos
       - name: Test on this Mac (install, app, Lights Out on/off, uninstall)
@@ -244,6 +246,25 @@ jobs:
           test ! -f "$S/active"
           pkill lightsout-app || true
           echo "MAC LOG-OUT MODE PASSED"
+      - name: Crash safety (the app is killed in Lights Out; the safety net puts the Mac back)
+        if: ${{ !contains(github.ref, '-rc') }}  # test builds (vX-rc.N) skip the tests: you test them yourself
+        run: |
+          set -ex
+          sh test/mac-guard.sh
+          S="/Library/Application Support/LightsOut"
+          plutil -lint /Library/LaunchDaemons/sh.lightsout.guard.plist
+          sudo launchctl print system/sh.lightsout.guard | head -20
+          sleep_before=$(pmset -g | awk '$1 == "SleepDisabled" {print $2}')
+          lightsout-app > crash.log 2>&1 &
+          for i in $(seq 1 40); do lightsout list >/dev/null 2>&1 && break; sleep 1; done
+          sudo -n /usr/local/lib/lightsout/switch out "$(pgrep -n lightsout-app)" stay
+          sudo -n /usr/local/lib/lightsout/switch awake
+          test -f "$S/active"
+          pkill -9 lightsout-app                   # a crash: no Lights On, nothing cleaned up
+          for i in $(seq 1 50); do [ -f "$S/active" ] || [ -f "$S/awake" ] || break; sleep 1; done
+          test ! -f "$S/active"; test ! -f "$S/awake"; test ! -f "$S/throttled"
+          test "$(pmset -g | awk '$1 == "SleepDisabled" {print $2}')" = "$sleep_before"
+          echo "MAC CRASH SAFETY PASSED"
       - name: Mac log-out mode details
         if: failure()
         run: |

@@ -1,5 +1,7 @@
 [Unit]
 Description=Lights Out: low-power settings (put back when the desktop returns)
+# put back before systemd saves Bluetooth's state at a shutdown
+After=systemd-rfkill.service
 
 [Service]
 Type=oneshot

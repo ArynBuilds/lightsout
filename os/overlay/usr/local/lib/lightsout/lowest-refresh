@@ -1,0 +1,7 @@
+#!/bin/sh
+# Every screen at its lowest refresh rate, same size. Laptop panels often start at
+# 120-240 Hz; agent text needs no more than the slowest, and each frame costs power.
+swaymsg -t get_outputs -r | jq -r '.[] | select(.active) | .current_mode as $c
+  | ([.modes[] | select(.width == $c.width and .height == $c.height)] | min_by(.refresh)) as $m
+  | "output \"\(.name)\" mode \($m.width)x\($m.height)@\($m.refresh / 1000)Hz"' |
+while read -r cmd; do swaymsg "$cmd" >/dev/null; done

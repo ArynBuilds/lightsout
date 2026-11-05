@@ -352,6 +352,8 @@ struct App {
     seen_tab: usize,
     battery_text: String,
     battery_at: Instant,
+    /// The time left, averaged over readings (one busy moment doesn't swing it).
+    hours_avg: Option<f32>,
     bar_texts: Vec<String>,
     clipboard: Option<arboard::Clipboard>,
     switching: Option<mpsc::Receiver<Result<(), String>>>,
@@ -454,6 +456,7 @@ impl App {
             seen_tab: usize::MAX,
             battery_text: String::new(),
             battery_at: Instant::now() - Duration::from_secs(60),
+            hours_avg: None,
             bar_texts: Vec::new(),
             clipboard: arboard::Clipboard::new().ok(),
             switching: None,
@@ -2700,7 +2703,7 @@ impl App {
             }
             "power" => match platform::battery() {
                 Some(b) => {
-                    json!({ "percent": b.percent, "watts": b.watts, "charging": b.charging })
+                    json!({ "percent": b.percent, "watts": b.watts, "charging": b.charging, "hours_left": b.hours_left })
                 }
                 None => json!({ "battery": null }),
             },
@@ -2727,12 +2730,17 @@ impl App {
         self.battery_at = Instant::now();
         self.battery_text = match platform::battery() {
             Some(b) => {
+                self.hours_avg = b
+                    .hours_left
+                    .map(|h| self.hours_avg.map_or(h, |a| a * 0.7 + h * 0.3));
+                let left = self.hours_avg.map(|h| format!(" {}", time_left(h)));
                 let w = b
                     .watts
                     .filter(|w| *w > 0.05 && !b.charging)
                     .map(|w| format!(" {w:.1} W"))
                     .unwrap_or_default();
-                format!("{}{}%{}", if b.charging { "+" } else { "" }, b.percent, w)
+                let plus = if b.charging { "+" } else { "" };
+                format!("{plus}{}%{}{w}", b.percent, left.unwrap_or_default())
             }
             None => String::new(),
         };
@@ -4042,7 +4050,11 @@ fn client(session: &str, args: &[String]) -> i32 {
                 ),
                 "power" => match v["percent"].as_u64() {
                     Some(p) => println!(
-                        "battery {p}%{}{}",
+                        "battery {p}%{}{}{}",
+                        v["hours_left"]
+                            .as_f64()
+                            .map(|h| format!(", {} left", time_left(h as f32)))
+                            .unwrap_or_default(),
                         v["watts"]
                             .as_f64()
                             .map(|w| format!(", drawing {w:.1} W"))
@@ -4373,6 +4385,16 @@ pub fn main_entry() {
     platform::lid_restore();
 }
 
+/// 0.75 h -> "45m", 1.67 h -> "1h40".
+fn time_left(hours: f32) -> String {
+    let m = (hours * 60.0).round() as u32;
+    if m < 60 {
+        format!("{m}m")
+    } else {
+        format!("{}h{:02}", m / 60, m % 60)
+    }
+}
+
 /// Lines to scroll (> 0 is up). A touchpad moves a few pixels at a time: the parts of a
 /// line add up in `rest` instead of each rounding down to nothing.
 fn wheel_lines(rest: &mut f64, delta: MouseScrollDelta, cell_h: f64) -> i32 {
@@ -4383,6 +4405,16 @@ fn wheel_lines(rest: &mut f64, delta: MouseScrollDelta, cell_h: f64) -> i32 {
     let lines = rest.trunc();
     *rest -= lines;
     lines as i32
+}
+
+#[cfg(test)]
+mod time_left_tests {
+    #[test]
+    fn time_left_reads_short() {
+        assert_eq!(super::time_left(0.75), "45m");
+        assert_eq!(super::time_left(1.0 + 40.0 / 60.0), "1h40");
+        assert_eq!(super::time_left(6.1), "6h06");
+    }
 }
 
 #[cfg(test)]

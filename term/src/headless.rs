@@ -206,7 +206,7 @@ pub fn run(session: &str) {
                     },
                     "power" => match platform::battery() {
                         Some(b) => {
-                            json!({ "percent": b.percent, "watts": b.watts, "charging": b.charging })
+                            json!({ "percent": b.percent, "watts": b.watts, "charging": b.charging, "hours_left": b.hours_left })
                         }
                         None => json!({ "battery": null }),
                     },

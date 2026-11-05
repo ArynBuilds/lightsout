@@ -1,0 +1,13 @@
+#!/bin/sh
+# Lights Out on a Mac, the safety net (a root service: at start-up and every 30 s).
+# Lights Out's settings (sleep, Low Power Mode, Spotlight, Time Machine, Bluetooth,
+# slowed-down apps) are kept on disk until Lights On. When none of Lights Out runs
+# any more (the app crashed or was force-quit, the Mac restarted or the battery ran
+# out), everything is put back here instead.
+S="${LIGHTSOUT_STATE:-/Library/Application Support/LightsOut}"
+LIB="${LIGHTSOUT_LIB:-/usr/local/lib/lightsout}"   # (both overridable for the test)
+[ -f "$S/active" ] || [ -f "$S/awake" ] || exit 0
+pgrep -qx lightsout-app && exit 0             # the app, or the background copy with your agents
+pgrep -qf "$LIB/logout-later" && exit 0      # in the middle of a switch
+"$LIB/switch" in
+"$LIB/switch" sleep

@@ -217,6 +217,23 @@ pub struct Battery {
     pub percent: u8,
     pub watts: Option<f32>,
     pub charging: bool,
+    /// Hours left at the current draw (none while charging, or when unknown).
+    pub hours_left: Option<f32>,
+}
+
+/// Hours an energy store (Wh) lasts at a draw (W); none for a draw too small to trust.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn hours_at(wh: Option<f32>, watts: Option<f32>) -> Option<f32> {
+    let (wh, w) = (wh?, watts?);
+    (w > 0.3).then(|| wh / w).filter(|h| *h < 100.0)
+}
+
+/// The time left in a line of `pmset -g batt` ("...; discharging; 5:12 remaining ...").
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn pmset_time_left(line: &str) -> Option<f32> {
+    let t = line.split("; ").nth(2)?.split_whitespace().next()?;
+    let (h, m) = t.split_once(':')?;
+    Some(h.parse::<f32>().ok()? + m.parse::<f32>().ok()? / 60.0)
 }
 
 #[cfg(target_os = "linux")]
@@ -241,6 +258,15 @@ pub fn battery() -> Option<Battery> {
                 let v: f32 = read("voltage_now")?.parse().ok()?;
                 Some(c * v / 1e12)
             });
+        // energy left (Wh): the energy counter, else the charge counter
+        let wh = read("energy_now")
+            .and_then(|v| v.parse::<f32>().ok())
+            .map(|e| e / 1e6)
+            .or_else(|| {
+                let c: f32 = read("charge_now")?.parse().ok()?;
+                let v: f32 = read("voltage_now")?.parse().ok()?;
+                Some(c * v / 1e12)
+            });
         let charging = read("status")
             .map(|s| s == "Charging" || s == "Full")
             .unwrap_or(false);
@@ -248,6 +274,7 @@ pub fn battery() -> Option<Battery> {
             percent,
             watts,
             charging,
+            hours_left: if charging { None } else { hours_at(wh, watts) },
         });
     }
     None
@@ -264,6 +291,9 @@ pub fn battery() -> Option<Battery> {
         percent: s.BatteryLifePercent,
         watts: None,
         charging: s.ACLineStatus == 1,
+        // Windows' own estimate (u32::MAX: not known yet, or plugged in)
+        hours_left: (s.ACLineStatus != 1 && s.BatteryLifeTime != u32::MAX)
+            .then(|| s.BatteryLifeTime as f32 / 3600.0),
     })
 }
 
@@ -287,6 +317,7 @@ pub fn battery() -> Option<Battery> {
         percent: pct,
         watts: None,
         charging,
+        hours_left: if charging { None } else { pmset_time_left(line) },
     })
 }
 
@@ -1772,5 +1803,23 @@ mod wifi_live {
             );
         }
         assert!(!nets.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod battery_tests {
+    #[test]
+    fn hours_left_from_the_energy_and_the_draw() {
+        assert_eq!(super::hours_at(Some(20.0), Some(10.0)), Some(2.0));
+        assert_eq!(super::hours_at(Some(20.0), Some(0.1)), None); // a draw too small to trust
+        assert_eq!(super::hours_at(None, Some(10.0)), None);
+    }
+
+    #[test]
+    fn hours_left_from_pmset() {
+        let l = "-InternalBattery-0 (id=1)\t85%; discharging; 5:30 remaining present: true";
+        assert_eq!(super::pmset_time_left(l), Some(5.5));
+        let l = "-InternalBattery-0 (id=1)\t85%; discharging; (no estimate) present: true";
+        assert_eq!(super::pmset_time_left(l), None);
     }
 }

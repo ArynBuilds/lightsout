@@ -22,6 +22,15 @@ for u in $(systemctl --failed --no-legend --plain | awk '{print $1}'); do
 done
 journalctl -b -u lightsout-session -n 25 --no-pager -o cat 2>/dev/null | sed 's/^/LIGHTSOUT-SELFTEST: [session] /' > /dev/ttyS0
 s "cd-windows-path=$(bash -c '. /usr/local/lib/lightsout/lightsout-env.sh; cd c:/users && pwd')"
+s "windows-commands=$(sh -c '"C:/x/hook.exe" Stop'; echo $?) $(sh -c 'powershell -File C:\\x.ps1'; echo $?) $(sh -c 'echo ok.exe') $(sh -c 'exit 3'; echo $?)"
 s "mounts: $(findmnt -no OPTIONS /mnt/c | grep -o nocase || echo case-sensitive)"
+s "watchdog=$(systemctl show -p RuntimeWatchdogUSec --value)"
+# a frozen screen: the emergency key (Ctrl+Alt+Backspace) ends sway; a new terminal must come up
+old=$(pgrep -xn lightsout-app)
+sway=(runuser -u lights -- env XDG_RUNTIME_DIR=/run/user/1000 SWAYSOCK="$(ls /run/user/1000/sway-ipc.*.sock 2>/dev/null | head -n1)" swaymsg)
+if "${sway[@]}" -t get_config 2>/dev/null | grep -q 'bindsym --locked Ctrl+Alt+BackSpace exec swaymsg exit' && "${sway[@]}" exit >/dev/null 2>&1; then
+  for i in $(seq 20); do new=$(pgrep -xn lightsout-app); [ -n "$new" ] && [ "$new" != "$old" ] && break; sleep 1; done
+fi
+if [ -n "${new:-}" ] && [ "$new" != "$old" ]; then s "screen-restart=ok"; else s "screen-restart=FAILED"; fi
 s "done, powering off"
 systemctl poweroff

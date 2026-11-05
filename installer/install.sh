@@ -29,7 +29,7 @@ install_mac() {
   say "Installing (asks for your Mac password once)"
   $SUDO mkdir -p /usr/local/bin /usr/local/lib/lightsout
   $SUDO install -m 755 "$src/bin/lightsout" "$src/bin/lightsout-app" /usr/local/bin/
-  $SUDO install -m 755 "$src/lib/switch" "$src/lib/logout-later" "$src/lib/uninstall.sh" /usr/local/lib/lightsout/
+  $SUDO install -m 755 "$src/lib/switch" "$src/lib/logout-later" "$src/lib/guard" "$src/lib/uninstall.sh" /usr/local/lib/lightsout/
   home=$(dscl . -read "/Users/$ME" NFSHomeDirectory | awk '{print $2}')
   # Log-out mode: in Lights Out your agents run in a background service and you
   # are logged out, so only macOS's core and your agents run.
@@ -67,6 +67,22 @@ P
 </dict></plist>
 P
   fi
+  # the safety net: at start-up and every 30 s, puts your settings back when Lights Out
+  # stopped without Lights On (a crash, a force quit, a restart, an empty battery)
+  $SUDO tee /Library/LaunchDaemons/sh.lightsout.guard.plist >/dev/null <<P
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>sh.lightsout.guard</string>
+<key>ProgramArguments</key><array><string>/usr/local/lib/lightsout/guard</string></array>
+<key>RunAtLoad</key><true/>
+<key>StartInterval</key><integer>30</integer>
+</dict></plist>
+P
+  $SUDO chmod 644 /Library/LaunchDaemons/sh.lightsout.guard.plist
+  $SUDO chown root:wheel /Library/LaunchDaemons/sh.lightsout.guard.plist
+  $SUDO launchctl bootout system/sh.lightsout.guard 2>/dev/null || true
+  $SUDO launchctl bootstrap system /Library/LaunchDaemons/sh.lightsout.guard.plist || echo "Note: the safety net will be loaded at the next restart."
   echo "$ME ALL=(root) NOPASSWD: /usr/local/lib/lightsout/switch" > "$tmp/sudoers"
   $SUDO visudo -cf "$tmp/sudoers" >/dev/null && $SUDO install -m 440 "$tmp/sudoers" /etc/sudoers.d/lightsout
   # a small app so Lights Out is in Launchpad, Spotlight and the Dock
