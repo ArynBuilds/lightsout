@@ -46,6 +46,16 @@ ln -sf /usr/local/lib/lightsout/sh /usr/bin/sh
 # is forced after 30 s (the chip's watchdog). On a Windows PC: into Windows, which checks the drive
 mkdir -p /etc/systemd/system.conf.d
 printf '[Manager]\nRuntimeWatchdogSec=1min\nRebootWatchdogSec=30s\n' > /etc/systemd/system.conf.d/lightsout.conf
+# Start and stop show the PC's own logo with a spinner, no text (messages go to the log).
+# The last frame stays until the terminal draws; at a restart the splash takes the screen
+# once the terminal is gone.
+printf '[Daemon]\nTheme=bgrt\n' > /etc/plymouth/plymouthd.conf
+mkdir -p /etc/systemd/system/plymouth-quit.service.d
+printf '[Service]\nExecStart=\nExecStart=-/usr/bin/plymouth quit --retain-splash\n' > /etc/systemd/system/plymouth-quit.service.d/lightsout.conf
+for u in reboot poweroff halt; do
+  mkdir -p "/etc/systemd/system/plymouth-$u.service.d"
+  printf '[Unit]\nAfter=lightsout-session.service\n' > "/etc/systemd/system/plymouth-$u.service.d/lightsout.conf"
+done
 # Smaller journal, kept in RAM (fewer disk writes = less power)
 mkdir -p /etc/systemd/journald.conf.d
 printf '[Journal]\nStorage=volatile\nRuntimeMaxUse=32M\n' > /etc/systemd/journald.conf.d/lightsout.conf

@@ -12,11 +12,22 @@ mount -t devtmpfs dev /dev
 mount -t tmpfs -o mode=755 run /run
 mkdir -p /run/lightsout /esp /mnt/c /newroot
 LOG=/run/lightsout/starter.log
-say() { echo "lightsout: $*" | tee -a "$LOG" > /dev/console; }
-fail() {
-  say "$*"
-  dmesg | tail -n 25 | sed 's/^/lightsout: dmesg: /' > /dev/console
-  say "Restarting into Windows in 20 seconds. Nothing was changed."
+# Messages go to the log (and the kernel's), never the screen: the screen keeps the PC's
+# logo, then the system adds the spinner.
+say() { echo "lightsout: $*" >> "$LOG"; echo "<6>lightsout: $*" > /dev/kmsg; }
+# Something stopped the start: one line under the spinner (plain text if the splash can't start)
+show() {
+  say "on screen: $*"
+  mkdir -p /run/plymouth /dev/pts; mount -t devpts devpts /dev/pts 2>/dev/null
+  if plymouthd --mode=boot --pid-file=/run/plymouth/pid 2>/dev/null && plymouth show-splash 2>/dev/null; then
+    plymouth display-message --text="$*" && say "shown under the spinner"
+  else
+    echo "Lights Out: $*" > /dev/console
+  fi
+}
+fail() {   # $1 = the line for you; the details are already in the log
+  dmesg | tail -n 25 | sed 's/^/lightsout: dmesg: /' >> "$LOG"
+  show "$1 Restarting into Windows. Nothing was changed."
   [ -d /esp/EFI/lightsout ] && { mkdir -p /esp/EFI/lightsout/results; cp "$LOG" "/esp/EFI/lightsout/results/starter-$(date +%s).log"; sync; umount /esp; }
   sleep 20; reboot -f
 }
@@ -43,7 +54,7 @@ for dev in $PARTS; do
     umount /esp
   fi
 done
-grep -q ' /esp ' /proc/mounts || fail "EFI partition not found"
+grep -q ' /esp ' /proc/mounts || { say "EFI partition not found"; fail "Lights Out couldn't find its files on this PC."; }
 L=/esp/EFI/lightsout
 
 # ---- TPM: seal / unseal the drive key, bound to this exact boot (PCRs)
@@ -117,7 +128,7 @@ for dev in $PARTS; do
   [ "$try" != "$dev" ] && cryptsetup close winc
 done
 KEY=""
-[ -n "$CDEV" ] || fail "Could not open the Windows drive (no key, or Lights Out isn't installed on it)."
+[ -n "$CDEV" ] || { say "could not open the Windows drive (no key, or Lights Out isn't installed on it)"; fail "Lights Out couldn't open your drive."; }
 umount /mnt/c
 
 # ---- read-write only if Windows really shut down (not hibernated / Fast Startup)
@@ -137,13 +148,13 @@ mount -t ntfs3 -o "$NTOPTS,nocase" "$CDEV" /mnt/c 2>/dev/null || mount -t ntfs3 
 if [ "$RW" = rw ] && ! awk '$2=="/mnt/c" && $4 ~ /^rw(,|$)/ {ok=1} END {exit !ok}' /proc/mounts; then
   RW=ro; say "C: opened read-only by the driver: $(dmesg | grep ntfs3 | tail -n 2 | tr '\n' ' ')"
 fi
-[ "$RW" = rw ] || fail "The system file needs a writable drive. Restart Windows normally (not hibernate), then try again."
+[ "$RW" = rw ] || { say "The system file needs a writable drive"; fail "Windows didn't fully shut down, so your drive can't be written."; }
 
 # ---- start the Lights Out system from its file
 if ! mount -o loop,noatime /mnt/c/LightsOut/system.img /newroot 2>/run/lightsout/mount.err; then
   say "mount error: $(cat /run/lightsout/mount.err)"
   say "system file: $(ls -la /mnt/c/LightsOut/system.img 2>&1)"
-  fail "system file could not be opened"
+  fail "Lights Out's system file couldn't be opened."
 fi
 # the system file keeps its own drivers; an older one may not have them for this starter's kernel
 [ -d "/newroot/lib/modules/$(uname -r)" ] || say "warning: the system file has no drivers for kernel $(uname -r) (it has: $(ls /newroot/lib/modules 2>&1 | tr '\n' ' '))"

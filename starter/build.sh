@@ -19,7 +19,7 @@ echo "$KVER" > "$out/EFI/lightsout/kernel-version"   # the installer keeps the s
 cat > "$out/EFI/lightsout/grub.cfg" <<'EOF'
 set timeout=0
 search --no-floppy --file --set=root /EFI/lightsout/starter.img
-linux /EFI/lightsout/vmlinuz quiet loglevel=3 nmi_watchdog=0 pcie_aspm.policy=powersupersave modprobe.blacklist=nouveau,nvidia,nvidia_drm,nvidia_modeset selinux=0
+linux /EFI/lightsout/vmlinuz quiet splash loglevel=3 systemd.show_status=false vt.global_cursor_default=0 plymouth.use-simpledrm nmi_watchdog=0 pcie_aspm.policy=powersupersave modprobe.blacklist=nouveau,nvidia,nvidia_drm,nvidia_modeset selinux=0
 initrd /EFI/lightsout/starter.img
 boot
 EOF
@@ -41,6 +41,23 @@ for t in tpm2_load tpm2_unseal tpm2_create tpm2_createpolicy tpm2_startauthsessi
 for l in /usr/lib/x86_64-linux-gnu/libtss2-tcti-device.so* /usr/lib/x86_64-linux-gnu/libtss2-tctildr.so*; do copy_lib "$l"; done
 for t in modprobe insmod lsmod depmod modinfo; do rm -f "$root/bin/$t"; ln -s kmod "$root/bin/$t"; done
 ln -sf ../bin/kmod "$root/sbin/modprobe"
+# the splash, for the one line shown when something stops the start (see init): the
+# system's own copy, with the libraries and plug-ins it needs as the system resolves them
+from_sys() {
+  for f; do
+    mkdir -p "$root$(dirname "$f")"; cp -L "$sys$f" "$root$f"
+    chroot "$sys" ldd "$f" | grep -oE '/[^ ]+' | while read -r l; do
+      [ -e "$root$l" ] || { mkdir -p "$root$(dirname "$l")"; cp -L "$sys$l" "$root$l"; }
+    done
+  done
+}
+P=/usr/lib/x86_64-linux-gnu/plymouth
+from_sys /usr/sbin/plymouthd /usr/bin/plymouth $P/two-step.so $P/label-freetype.so $P/renderers/drm.so $P/renderers/frame-buffer.so
+mkdir -p "$root/usr/share/plymouth/themes" "$root/etc/plymouth" "$root/usr/share/fonts"
+cp -r "$sys/usr/share/plymouth/themes/bgrt" "$sys/usr/share/plymouth/themes/spinner" "$root/usr/share/plymouth/themes/"
+cp "$sys/usr/share/plymouth/plymouthd.defaults" "$root/usr/share/plymouth/"
+cp "$sys/etc/plymouth/plymouthd.conf" "$root/etc/plymouth/"
+cp "$sys/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf" "$root/usr/share/fonts/Plymouth.ttf"   # the label's font
 install -m755 "$here/init" "$root/init"
 install -m755 "$here/lo-shutdown" "$root/bin/lo-shutdown"
 

@@ -21,6 +21,8 @@ pkgs=(
   cryptsetup-bin tpm2-tools ntfs-3g
   # screen: cage shows exactly one full-screen app (our terminal)
   sway swaybg foot wlopm brightnessctl libxkbcommon0 libwayland-client0 libgl1-mesa-dri libegl1 fonts-jetbrains-mono fonts-noto-color-emoji fonts-dejavu-core fonts-symbola
+  # start and stop: the PC's own logo with a spinner (the starter takes its copy from here)
+  plymouth plymouth-themes plymouth-label
   # firmware (the kernel itself comes from Fedora, below)
   linux-cpupower
   firmware-linux-free firmware-misc-nonfree firmware-iwlwifi firmware-intel-graphics

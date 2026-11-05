@@ -17,7 +17,7 @@ mmd -i "$w/esp.img" ::/EFI ::/EFI/BOOT ::/EFI/lightsout ::/EFI/fedora
 mcopy -i "$w/esp.img" "$STARTER"/EFI/lightsout/* ::/EFI/lightsout/
 mcopy -i "$w/esp.img" "$STARTER/EFI/lightsout/shimx64.efi" ::/EFI/BOOT/BOOTX64.EFI
 mcopy -i "$w/esp.img" "$STARTER/EFI/lightsout/grubx64.efi" ::/EFI/BOOT/grubx64.efi
-sed 's#^\(linux .*\)$#\1 console=ttyS0,115200#' "$STARTER/EFI/lightsout/grub.cfg" > "$w/grub.cfg"   # the screen goes to the test log
+sed 's#^\(linux .*\)$#\1 console=ttyS0,115200 ignore_loglevel printk.devkmsg=on#' "$STARTER/EFI/lightsout/grub.cfg" > "$w/grub.cfg"   # the screen and every message go to the test log
 mcopy -o -i "$w/esp.img" "$w/grub.cfg" ::/EFI/fedora/grub.cfg
 mcopy -o -i "$w/esp.img" "$w/grub.cfg" ::/EFI/lightsout/grub.cfg
 printf 'TEST-1234-5678-ABCD\n' > "$w/handoff.key"; mcopy -i "$w/esp.img" "$w/handoff.key" ::/EFI/lightsout/handoff.key
@@ -104,10 +104,13 @@ check "$w/serial2.log" "LIGHTSOUT-SELFTEST: failed-units=[[:space:]]*$" "every s
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: cd-windows-path=/mnt/c/users" "cd takes Windows paths"
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: windows-commands=0 0 ok.exe 3" "Windows programs in shared settings are skipped quietly"
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: watchdog=1min at-restart=30s" "a frozen system, or a restart that hangs, is forced by the watchdog"
+check "$w/serial2.log" "LIGHTSOUT-SELFTEST: splash=success/bgrt" "start-up shows the PC logo with a spinner"
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: screen-restart=ok" "the emergency key brings a frozen screen back"
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: api: PANE  ROOM .*TAB  STATE" "control commands work inside Lights Out"
 check "$w/serial3.log" "C: opened read-only by the driver" "boot 3 noticed C: opened read-only"
 check "$w/serial3.log" "The system file needs a writable drive" "boot 3 stopped instead of running read-only"
+check "$w/serial3.log" "on screen: Windows didn.t fully shut down" "boot 3 told you why, in one line"
+check "$w/serial3.log" "shown under the spinner" "the starter's splash shows that line"
 cdev=$(losetup -f --show -o $(( c_start * 512 )) --sizelimit $(( c_s * 512 )) "$w/disk.img")
 if ntfs-3g.probe --readwrite "$cdev"; then echo "PASS: C: closed cleanly"; else echo "FAIL: C: left dirty (code $?)"; ok=0; fi
 losetup -d "$cdev"

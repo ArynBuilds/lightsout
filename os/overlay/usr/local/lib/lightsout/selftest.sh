@@ -24,6 +24,7 @@ journalctl -b -u lightsout-session -n 25 --no-pager -o cat 2>/dev/null | sed 's/
 s "cd-windows-path=$(bash -c '. /usr/local/lib/lightsout/lightsout-env.sh; cd c:/users && pwd')"
 s "windows-commands=$(sh -c '"C:/x/hook.exe" Stop'; echo $?) $(sh -c 'powershell -File C:\\x.ps1'; echo $?) $(sh -c 'echo ok.exe') $(sh -c 'exit 3'; echo $?)"
 s "mounts: $(findmnt -no OPTIONS /mnt/c | grep -o nocase || echo case-sensitive)"
+s "splash=$(systemctl show -p Result --value plymouth-start.service)/$(sed -n 's/^Theme=//p' /etc/plymouth/plymouthd.conf)"
 s "watchdog=$(systemctl show -p RuntimeWatchdogUSec --value) at-restart=$(systemctl show -p RebootWatchdogUSec --value)"
 # a crashed or frozen terminal (the emergency key Ctrl+Alt+Backspace kills it): a new one must come up
 old=$(pgrep -xn lightsout-app)

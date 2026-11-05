@@ -4,6 +4,7 @@
 
 A test build (`irm https://lightsout.sh/rc | iex`).
 
+- **No more text while switching.** Going into Lights Out and back shows your PC's own logo with a spinner, like a normal start. If something stops the start, one line under the spinner says why; the details go to the log.
 - **Lights On restarts into Windows without hanging.** Some laptops hung at the last step of the restart (the firmware's own restart call, which Lights Out used). It now restarts the usual way, and if a restart or shut-down still hangs, the chip's watchdog forces it after 30 seconds.
 - **Back in Windows, Lights Out opens by itself** with your tabs (only when you come back from Lights Out; otherwise it stays closed at sign-in).
 - **`lightsout close PANE`**: agents can close a pane, the same as "Close pane" in the actions.
