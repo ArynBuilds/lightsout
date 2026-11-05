@@ -64,7 +64,8 @@ n=$(echo "$cores" | tr ',' ' ' | wc -w)
 total=$(nproc --all)
 { [ -z "$cores" ] || [ "$n" -ge "$total" ]; } && cores="0-$(( total > 1 ? 1 : 0 ))"
 echo "$cores" > /run/lightsout/cores.frugal
-for u in user.slice lightsout.slice lightsout-session.service; do
+# once lightsout-cores runs it decides the cores (this script runs again 20 s after the start)
+systemctl is-active -q lightsout-cores || for u in user.slice lightsout.slice lightsout-session.service; do
   systemctl set-property --runtime "$u" AllowedCPUs="$cores" 2>/dev/null
 done
 echo "lightsout-power: work cores $cores" > /dev/kmsg 2>/dev/null
