@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.2-rc.7
+
+A test build (`irm https://lightsout.sh/rc | iex`).
+
+- **Touchpad scrolling works.** A touchpad moves a few pixels at a time, and each step was rounded down to zero lines. Now the steps add up.
+
 ## 0.3.2-rc.6
 
 A test build (`irm https://lightsout.sh/rc | iex`).

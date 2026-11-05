@@ -342,6 +342,8 @@ struct App {
     palette_rows: usize,
     /// Lists that scroll with the mouse wheel: where they are on screen, and their first item.
     scroll_areas: Vec<(Rect, Scroll)>,
+    /// The part of a line the wheel or touchpad moved that isn't a whole line yet.
+    wheel_rest: f64,
     rooms_top: usize,
     running_top: usize,
     tabs_first: usize,
@@ -444,6 +446,7 @@ impl App {
             mouse_held: None,
             palette_rows: 16,
             scroll_areas: Vec::new(),
+            wheel_rest: 0.0,
             rooms_top: 0,
             running_top: 0,
             tabs_first: 0,
@@ -3580,11 +3583,10 @@ impl ApplicationHandler<UserEvent> for App {
                 ElementState::Released => self.mouse_up(),
             },
             WindowEvent::MouseWheel { delta, .. } => {
-                let lines = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => (y * 3.0) as i32,
-                    MouseScrollDelta::PixelDelta(p) => (p.y / self.fonts.cell_h as f64) as i32,
-                };
-                self.on_wheel(lines);
+                let lines = wheel_lines(&mut self.wheel_rest, delta, self.fonts.cell_h as f64);
+                if lines != 0 {
+                    self.on_wheel(lines);
+                }
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 self.key_press(&event.logical_key, event.text.as_deref());
@@ -4369,6 +4371,43 @@ pub fn main_entry() {
     platform::lid_keep_running();
     let _ = event_loop.run_app(&mut app);
     platform::lid_restore();
+}
+
+/// Lines to scroll (> 0 is up). A touchpad moves a few pixels at a time: the parts of a
+/// line add up in `rest` instead of each rounding down to nothing.
+fn wheel_lines(rest: &mut f64, delta: MouseScrollDelta, cell_h: f64) -> i32 {
+    *rest += match delta {
+        MouseScrollDelta::LineDelta(_, y) => y as f64 * 3.0,
+        MouseScrollDelta::PixelDelta(p) => p.y / cell_h,
+    };
+    let lines = rest.trunc();
+    *rest -= lines;
+    lines as i32
+}
+
+#[cfg(test)]
+mod wheel_tests {
+    use winit::dpi::PhysicalPosition;
+    use winit::event::MouseScrollDelta::{LineDelta, PixelDelta};
+
+    #[test]
+    fn touchpad_steps_add_up_to_lines() {
+        let mut rest = 0.0;
+        // a 20 px line, the touchpad moving 5 px at a time: a line every 4 steps
+        let moved: i32 = (0..12).map(|_| super::wheel_lines(&mut rest, PixelDelta(PhysicalPosition::new(0.0, 5.0)), 20.0)).sum();
+        assert_eq!(moved, 3);
+        let back: i32 = (0..12).map(|_| super::wheel_lines(&mut rest, PixelDelta(PhysicalPosition::new(0.0, -5.0)), 20.0)).sum();
+        assert_eq!(back, -3);
+    }
+
+    #[test]
+    fn a_wheel_notch_is_three_lines() {
+        let mut rest = 0.0;
+        assert_eq!(super::wheel_lines(&mut rest, LineDelta(0.0, 1.0), 20.0), 3);
+        assert_eq!(super::wheel_lines(&mut rest, LineDelta(0.0, -1.0), 20.0), -3);
+        // a precision touchpad on Windows sends parts of a notch
+        assert_eq!((0..4).map(|_| super::wheel_lines(&mut rest, LineDelta(0.0, 0.25), 20.0)).sum::<i32>(), 3);
+    }
 }
 
 #[cfg(test)]

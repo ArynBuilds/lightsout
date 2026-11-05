@@ -12,8 +12,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build
-        run: cd term; cargo build --release
+      - name: Unit tests and build
+        run: cd term; cargo test --release; if ($LASTEXITCODE) { exit 1 }; cargo build --release
       - name: Test (tabs from a switch that didn't happen come back; a quiet view stays connected)
         if: ${{ !contains(github.ref, '-rc') }}  # test builds (vX-rc.N) skip the tests: you test them yourself
         shell: pwsh
@@ -62,7 +62,7 @@ jobs:
           shellcheck -S error installer/install.sh linux/*.sh linux/switch mac/switch mac/logout-later mac/uninstall.sh
       - name: Build and package
         run: |
-          (cd term && cargo build --release)
+          (cd term && cargo test --release && cargo build --release)
           d=out/lightsout-linux-x64; mkdir -p $d/bin $d/lib $d/sbin $d/systemd
           cp term/target/release/lightsout term/target/release/lightsout-app $d/bin/
           cp linux/switch linux/kiosk.sh linux/uninstall.sh $d/lib/
