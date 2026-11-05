@@ -15,7 +15,6 @@ fed="$here/../os/out/fedora"
 for r in "$fed"/shim-x64-*.rpm "$fed"/grub2-efi-x64-*.rpm; do (cd "$fed" && rpm2cpio "$r" | cpio -idm --quiet "*/EFI/fedora/*"); done
 for f in shimx64.efi mmx64.efi grubx64.efi; do cp "$(find "$fed/usr/lib/efi" -path "*/EFI/fedora/$f" | head -n 1)" "$out/EFI/lightsout/$f"; done
 cp "$sys/boot/vmlinuz-$KVER" "$out/EFI/lightsout/vmlinuz"
-echo "$KVER" > "$out/EFI/lightsout/kernel-version"   # the installer keeps the system file only with the same kernel
 cat > "$out/EFI/lightsout/grub.cfg" <<'EOF'
 set timeout=0
 search --no-floppy --file --set=root /EFI/lightsout/starter.img

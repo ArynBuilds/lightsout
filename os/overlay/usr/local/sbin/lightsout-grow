@@ -1,17 +1,17 @@
 #!/bin/bash
-# Grows the Lights Out system file (on C:) when it fills up, in 4 GB steps,
-# while always leaving Windows at least 6 GB free on C:.
-img=/mnt/c/LightsOut/system.img
-[ -f "$img" ] || exit 0
-free_mb=$(df -Pm / | awk 'NR==2{print $4}')
-[ "$free_mb" -lt 1500 ] || exit 0
-c_free_mb=$(df -Pm /mnt/c | awk 'NR==2{print $4}')
+# Grows the Lights Out files on C: (the system, and your own space) when one fills up,
+# in 4 GB steps, while always leaving Windows at least 6 GB free on C:.
 step_mb=4096
-if [ "$c_free_mb" -lt $(( step_mb + 6144 )) ]; then
-  echo "Lights Out is almost full and C: has no room to grow it" | systemd-cat -t lightsout-grow -p warning
-  exit 0
-fi
-loop=$(findmnt -no SOURCE /)
-size=$(stat -c %s "$img")
-truncate -s $(( size + step_mb * 1024 * 1024 )) "$img" && losetup -c "$loop" && resize2fs "$loop" >/dev/null 2>&1 \
-  && echo "grew the system file by ${step_mb} MB" | systemd-cat -t lightsout-grow
+grow() {   # $1 = the file, $2 = where it is mounted
+  [ -f "$1" ] && mountpoint -q "$2" || return 0
+  [ "$(df -Pm "$2" | awk 'NR==2{print $4}')" -lt 1500 ] || return 0
+  if [ "$(df -Pm /mnt/c | awk 'NR==2{print $4}')" -lt $(( step_mb + 6144 )) ]; then
+    echo "$1 is almost full and C: has no room to grow it" | systemd-cat -t lightsout-grow -p warning
+    return 0
+  fi
+  local loop; loop=$(findmnt -no SOURCE "$2")
+  truncate -s $(( $(stat -c %s "$1") + step_mb * 1024 * 1024 )) "$1" && losetup -c "$loop" && resize2fs "$loop" >/dev/null 2>&1 \
+    && echo "grew $1 by ${step_mb} MB" | systemd-cat -t lightsout-grow
+}
+grow /mnt/c/LightsOut/system.img /
+grow /mnt/c/LightsOut/user.img /home/lights

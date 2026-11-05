@@ -3914,6 +3914,7 @@ Lights Out: the terminal for AI agents.
   lightsout room add USER@HOST [NAME]   a room that lives on that server
   lightsout room list | remove NAME
   lightsout --session NAME        a separate, named set of tabs
+  lightsout update                the newest version (your settings, logins and programs stay)
   lightsout uninstall             remove Lights Out from this computer
 
 Control the running app (also for agents; details: `lightsout skill`):
@@ -4221,6 +4222,7 @@ fn run_command(session: &str, rest: &[String]) {
             "-h" | "--help" | "help" => print!("{HELP}"),
             "-V" | "--version" | "version" => println!("lightsout {}", env!("CARGO_PKG_VERSION")),
             "uninstall" => std::process::exit(uninstall()),
+            "update" => std::process::exit(update(session)),
             "room" | "rooms" => std::process::exit(room_cmd(session, &rest[1..])),
             _ => std::process::exit(client(session, rest)),
         }
@@ -4362,6 +4364,62 @@ fn uninstall() -> i32 {
     }
 }
 
+/// `lightsout update`: runs the installer again, from the channel it was installed from
+/// (stable or test builds; the installer saved its address). Settings, logins, programs and
+/// tabs stay. In Lights Out mode the update is asked for here and installed by Windows at
+/// the restart (cleanup.ps1), which comes straight back to Lights Out.
+fn update(session: &str) -> i32 {
+    if platform::image() {
+        let dir = platform::lightsout_dir().join("update");
+        if std::fs::create_dir_all(&dir)
+            .and_then(|_| std::fs::write(dir.join("requested"), ""))
+            .is_err()
+        {
+            eprintln!("lightsout: could not ask for the update");
+            return 1;
+        }
+        println!(
+            "Updating: Lights Out restarts, Windows installs the update and comes straight back."
+        );
+        return client(session, &["switch".to_string()]);
+    }
+    let file = if cfg!(windows) {
+        platform::lightsout_dir().join("bin").join("installer-url")
+    } else {
+        std::path::PathBuf::from("/usr/local/lib/lightsout/installer-url")
+    };
+    let Ok(site) = std::fs::read_to_string(&file) else {
+        eprintln!(
+            "lightsout: no installer address in {} (install once with the installer)",
+            file.display()
+        );
+        return 1;
+    };
+    let site = site.trim();
+    let status = if cfg!(windows) {
+        std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                &format!("irm {site} | iex"),
+            ])
+            .status()
+    } else {
+        std::process::Command::new("sh")
+            .args(["-c", &format!("curl -fsSL {site} | sh")])
+            .status()
+    };
+    match status {
+        Ok(s) if s.success() => 0,
+        _ => {
+            eprintln!("lightsout: the update did not finish");
+            1
+        }
+    }
+}
+
 /// `lightsout-app`: the window itself.
 pub fn main_entry() {
     let (session, rest) = parse_args();
@@ -4435,9 +4493,21 @@ mod wheel_tests {
     fn touchpad_steps_add_up_to_lines() {
         let mut rest = 0.0;
         // a 20 px line, the touchpad moving 5 px at a time: a line every 4 steps
-        let moved: i32 = (0..12).map(|_| super::wheel_lines(&mut rest, PixelDelta(PhysicalPosition::new(0.0, 5.0)), 20.0)).sum();
+        let moved: i32 = (0..12)
+            .map(|_| {
+                super::wheel_lines(&mut rest, PixelDelta(PhysicalPosition::new(0.0, 5.0)), 20.0)
+            })
+            .sum();
         assert_eq!(moved, 3);
-        let back: i32 = (0..12).map(|_| super::wheel_lines(&mut rest, PixelDelta(PhysicalPosition::new(0.0, -5.0)), 20.0)).sum();
+        let back: i32 = (0..12)
+            .map(|_| {
+                super::wheel_lines(
+                    &mut rest,
+                    PixelDelta(PhysicalPosition::new(0.0, -5.0)),
+                    20.0,
+                )
+            })
+            .sum();
         assert_eq!(back, -3);
     }
 
@@ -4445,9 +4515,17 @@ mod wheel_tests {
     fn a_wheel_notch_is_three_lines() {
         let mut rest = 0.0;
         assert_eq!(super::wheel_lines(&mut rest, LineDelta(0.0, 1.0), 20.0), 3);
-        assert_eq!(super::wheel_lines(&mut rest, LineDelta(0.0, -1.0), 20.0), -3);
+        assert_eq!(
+            super::wheel_lines(&mut rest, LineDelta(0.0, -1.0), 20.0),
+            -3
+        );
         // a precision touchpad on Windows sends parts of a notch
-        assert_eq!((0..4).map(|_| super::wheel_lines(&mut rest, LineDelta(0.0, 0.25), 20.0)).sum::<i32>(), 3);
+        assert_eq!(
+            (0..4)
+                .map(|_| super::wheel_lines(&mut rest, LineDelta(0.0, 0.25), 20.0))
+                .sum::<i32>(),
+            3
+        );
     }
 }
 

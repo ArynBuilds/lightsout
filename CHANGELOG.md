@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.2-rc.10
+
+A test build (`irm https://lightsout.sh/rc | iex`).
+
+- **`lightsout update`** on Windows, Linux, Mac and inside Lights Out mode: the newest version from the channel you installed, and everything you have stays. See [Update](docs/update.md).
+- **Your own space in Lights Out mode:** what you install inside Lights Out (agents like Claude Code, `~/.local`, nvm, cargo), logins and SSH keys now live in `C:\LightsOut\user.img`, apart from the system file, so updates keep them. Existing installs move there by themselves at the next start.
+- **Packages you install with `apt` come back** by themselves after an update.
+- **A safe update:** the previous version is kept until the new one has started; if it doesn't, Windows puts it back.
+- **Growing the Lights Out files works**: the tool it needed was missing from the system.
+- **Security:** the scripts Windows runs as SYSTEM (`C:\LightsOut\bin`) can only be changed by admins.
+
 ## 0.3.2-rc.9
 
 A test build (`irm https://lightsout.sh/rc | iex`).

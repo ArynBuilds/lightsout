@@ -1,0 +1,2 @@
+// Packages you install yourself are remembered across updates (see /usr/local/lib/lightsout/packages)
+DPkg::Post-Invoke { "/usr/local/lib/lightsout/packages save || true"; };

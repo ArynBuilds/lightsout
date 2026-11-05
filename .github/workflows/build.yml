@@ -44,6 +44,26 @@ jobs:
           # signing in without coming back from Lights Out: the app stays closed
           $p = Start-Process "$PWD/term/target/release/lightsout-app.exe" -ArgumentList '--if-returning' -PassThru
           if (-not $p.WaitForExit(10000)) { $p.Kill(); throw 'the app opened at sign-in without coming back from Lights Out' }
+          # updates (cleanup.ps1 at Windows start), on stand-in folders for C:\LightsOut and the EFI partition
+          $lo = "$env:RUNNER_TEMP\LightsOut"; $esp = "$env:RUNNER_TEMP\esp"
+          $fresh = {
+            Remove-Item $lo, $esp -Recurse -Force -ErrorAction SilentlyContinue
+            New-Item -ItemType Directory -Force "$lo\update\previous\starter", "$lo\logs", "$esp\EFI\lightsout" | Out-Null
+            'new' | Set-Content "$lo\system.img"; 'old' | Set-Content "$lo\update\previous\system.img"
+            'new' | Set-Content "$esp\EFI\lightsout\starter.img"; 'old' | Set-Content "$lo\update\previous\starter\starter.img"
+            'secret' | Set-Content "$esp\EFI\lightsout\handoff.key"
+            New-Item -ItemType File "$lo\update\trial" | Out-Null
+          }
+          # the updated Lights Out was started (tried) but never came up: the previous version comes back
+          & $fresh; New-Item -ItemType File "$lo\update\tried" | Out-Null
+          & ./installer/cleanup.ps1 -LO $lo -Esp $esp
+          if ((Get-Content "$lo\system.img") -ne 'old' -or (Get-Content "$esp\EFI\lightsout\starter.img") -ne 'old') { throw 'the previous version was not put back' }
+          if ((Test-Path "$lo\update\trial") -or (Test-Path "$lo\update\previous")) { throw 'the update was not closed after putting the previous version back' }
+          if (Test-Path "$esp\EFI\lightsout\handoff.key") { throw 'a leftover drive key stayed on the EFI partition' }
+          # updated but not started in Lights Out yet: nothing changes
+          & $fresh
+          & ./installer/cleanup.ps1 -LO $lo -Esp $esp
+          if ((Get-Content "$lo\system.img") -ne 'new' -or -not (Test-Path "$lo\update\previous\system.img")) { throw 'an update not tried yet was undone' }
           'WINDOWS TEST PASSED'
       - uses: actions/upload-artifact@v4
         with:
@@ -52,6 +72,7 @@ jobs:
             term/target/release/lightsout.exe
             term/target/release/lightsout-app.exe
             installer/uninstall.ps1
+            installer/cleanup.ps1
           retention-days: 14
 
   terminal-linux:
@@ -320,9 +341,7 @@ jobs:
       - name: Build starter
         run: |
           bash starter/build.sh
-          # the installer keeps a system file only with the starter's kernel: both must say the same
-          v=$(cat starter/out/EFI/lightsout/kernel-version)
-          test "$v" = "$(cat os/out/boot/kernel-version)"
+          v=$(cat os/out/boot/kernel-version)   # the starter is built from the same system
           # Linux 7.1+: older NTFS drivers can't open a long-used Windows C: (quiet "No such file")
           test "$(printf '%s\n' 7.1 "${v%%-*}" | sort -V | head -n 1)" = 7.1
       - name: Upload starter

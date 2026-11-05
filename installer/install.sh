@@ -14,6 +14,11 @@ if [ "$CHANNEL" = rc ] && [ -z "${LIGHTSOUT_BASE:-}" ]; then
 fi
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
 stop() { printf 'Lights Out: %s\n' "$*" >&2; exit 1; }
+# `lightsout update` runs this installer again, from the same channel
+remember_site() {
+  site=https://lightsout.sh; [ "$CHANNEL" = stable ] || site=https://lightsout.sh/rc
+  printf '%s\n' "$site" | $SUDO tee /usr/local/lib/lightsout/installer-url >/dev/null
+}
 
 command -v curl >/dev/null || stop "needs curl"
 SUDO=""; [ "$(id -u)" = 0 ] || SUDO=sudo
@@ -30,6 +35,7 @@ install_mac() {
   $SUDO mkdir -p /usr/local/bin /usr/local/lib/lightsout
   $SUDO install -m 755 "$src/bin/lightsout" "$src/bin/lightsout-app" /usr/local/bin/
   $SUDO install -m 755 "$src/lib/switch" "$src/lib/logout-later" "$src/lib/guard" "$src/lib/uninstall.sh" /usr/local/lib/lightsout/
+  remember_site
   home=$(dscl . -read "/Users/$ME" NFSHomeDirectory | awk '{print $2}')
   # Log-out mode: in Lights Out your agents run in a background service and you
   # are logged out, so only macOS's core and your agents run.
@@ -127,6 +133,7 @@ say "Installing the terminal"
 $SUDO install -d /usr/local/lib/lightsout
 $SUDO install -m 755 "$src/bin/lightsout" "$src/bin/lightsout-app" /usr/local/bin/
 $SUDO install -m 755 "$src/lib/switch" "$src/lib/kiosk.sh" "$src/lib/uninstall.sh" /usr/local/lib/lightsout/
+remember_site
 $SUDO install -m 755 "$src/sbin/lightsout-power" "$src/sbin/lightsout-cores" /usr/local/sbin/
 
 home=$(getent passwd "$ME" | cut -d: -f6)

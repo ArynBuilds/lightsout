@@ -3,7 +3,7 @@
 # Windows copies (with Windows-only binaries) are never touched and both keep working.
 #   lightsout-split            scan the usual project folders
 #   lightsout-split <dir>...   only these folders (and the projects inside them)
-# The Linux copies live in the Lights Out system file; the project folder on C:
+# The Linux copies live in your own space (user.img, kept by updates); the project folder on C:
 # only ever sees an empty mount point.
 STORE=/home/lights/.local/share/lightsout/split
 USER_NAME=$(cat /etc/lightsout/windows-user 2>/dev/null)

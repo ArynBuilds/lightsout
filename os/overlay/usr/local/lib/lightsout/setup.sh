@@ -1,9 +1,9 @@
 #!/bin/bash
 # Runs once inside the new system at build time.
 set -e
-chmod 755 /usr/local/sbin/lightsout-home /usr/local/sbin/lightsout-split /usr/local/sbin/lightsout-grow /usr/local/sbin/lightsout-power /usr/local/bin/lightsout-install-agents /usr/local/lib/lightsout/*.sh /usr/local/lib/lightsout/*.py /usr/local/lib/lightsout/sh /usr/local/lib/lightsout/lowest-refresh
+chmod 755 /usr/local/sbin/lightsout-home /usr/local/sbin/lightsout-split /usr/local/sbin/lightsout-grow /usr/local/sbin/lightsout-power /usr/local/bin/lightsout-install-agents /usr/local/lib/lightsout/*.sh /usr/local/lib/lightsout/*.py /usr/local/lib/lightsout/sh /usr/local/lib/lightsout/lowest-refresh /usr/local/lib/lightsout/packages
 
-# The user. Logins and installs live in this home folder, inside system.img.
+# The user. Its home folder is your own space: user.img on C:, kept by updates (see lightsout-home).
 groupadd -f netdev
 useradd -m -s /bin/bash -G sudo,video,input,render,netdev lights
 passwd -d lights            # no password: the Lights Out lock screen protects the session
@@ -29,7 +29,7 @@ systemctl enable iwd systemd-resolved
 ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
 
 systemctl enable lightsout-power.service lightsout-cores.service lightsout-wifi.service lightsout-session.service lightsout-selftest.service \
-  lightsout-split.service lightsout-grow.timer
+  lightsout-split.service lightsout-grow.timer lightsout-packages.service lightsout-updated.service
 systemctl set-default graphical.target
 # Nothing else on the screen: no login prompts
 systemctl mask getty@tty1.service

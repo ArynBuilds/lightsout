@@ -1,0 +1,15 @@
+[Unit]
+Description=Lights Out: install your packages again after an update
+After=lightsout-wifi.service iwd.service network-online.target
+Wants=network-online.target
+# offline: tried again every minute until it worked once
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/lightsout/packages restore
+Restart=on-failure
+RestartSec=60
+
+[Install]
+WantedBy=multi-user.target

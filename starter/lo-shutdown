@@ -2,8 +2,10 @@
 # systemd runs this at the very end of shutdown (from /run/initramfs), after
 # stopping everything. The Lights Out system is mounted at /oldroot, and its
 # file lives on the Windows drive mounted inside it, so close in this order:
-# Windows drive (lazy), system file, loop device, then the BitLocker unlock.
+# your space (if still open), Windows drive (lazy), system file, loop devices, then
+# the BitLocker unlock.
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+umount /oldroot/home/lights 2>/dev/null
 umount -l /oldroot/mnt/c 2>/dev/null
 umount -l /oldroot/boot/efi 2>/dev/null
 sync

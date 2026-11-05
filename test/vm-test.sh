@@ -2,7 +2,8 @@
 # Boots the real starter + system image in a virtual PC (UEFI with Secure Boot, virtual TPM)
 # with a fake Windows "C:" (NTFS) and checks the whole chain, twice:
 #   boot 1: one-time key handoff gets sealed into the TPM, system boots, writes to C:
-#   boot 2: key is unsealed from the TPM, system boots again
+#   boot 2: after an update (a fresh system file), the key is unsealed from the TPM, the
+#           system boots again and your own space (user.img) and packages are still there
 #   boot 3: the partition is cut 64 MB shorter than the file system says (as on a PC where
 #           the partition shrank), so the driver can only open C: read-only: it must stop
 #   after:  the NTFS "C:" must be cleanly closed (Windows would not complain)
@@ -25,7 +26,8 @@ printf 'TEST-1234-5678-ABCD\n' > "$w/handoff.key"; mcopy -i "$w/esp.img" "$w/han
 
 # ---- fake C: (NTFS) holding LightsOut\system.img, a Wi-Fi profile and the user name
 sys_mb=$(( $(stat -c %s "$SYSIMG") / 1048576 ))
-truncate -s "$(( sys_mb + 600 ))M" "$w/c.img"; mkntfs -q -F -f -L Windows "$w/c.img"
+# (room for your own space, user.img: the first start makes it only while Windows keeps 6 GB)
+truncate -s "$(( sys_mb + 12000 ))M" "$w/c.img"; mkntfs -q -F -f -L Windows "$w/c.img"
 ntfs-3g "$w/c.img" "$w/mnt" 2>/dev/null || mount -t ntfs3 -o loop "$w/c.img" "$w/mnt"
 mkdir -p "$w/mnt/LightsOut/wifi" "$w/mnt/LightsOut/config" "$w/mnt/Users/tester/.claude"
 echo "=== system file before boot 1:"; e2fsck -fn "$SYSIMG" 2>&1 | tail -n 2
@@ -69,10 +71,12 @@ boot() {   # $1 = log file
     -serial file:"$1" -monitor none > /dev/null 2>&1 || true
 }
 echo "=== boot 1 (handoff + seal)"; boot "$w/serial1.log"; grep -aE "lightsout:|LIGHTSOUT-SELFTEST" "$w/serial1.log" || true
-# was the system file closed cleanly by boot 1's shutdown? (read in place, no copy)
-cdev=$(losetup -f --show -r -o $(( c_start * 512 )) --sizelimit $(( c_s * 512 )) "$w/disk.img")
-mkdir -p "$w/mid"; ntfs-3g -o ro "$cdev" "$w/mid" && {
-  echo "=== system file after boot 1:"; e2fsck -fn "$w/mid/LightsOut/system.img" 2>&1 | tail -n 3
+# were the system file and your own space closed cleanly by boot 1's shutdown? Then an
+# update: a fresh system file in place (your own space, user.img, stays)
+cdev=$(losetup -f --show -o $(( c_start * 512 )) --sizelimit $(( c_s * 512 )) "$w/disk.img")
+mkdir -p "$w/mid"; ntfs-3g "$cdev" "$w/mid" && {
+  for f in system user; do echo "=== $f.img after boot 1:"; e2fsck -fn "$w/mid/LightsOut/$f.img" 2>&1 | tail -n 3; done
+  cp --sparse=never "$SYSIMG" "$w/mid/LightsOut/system.img"
   umount "$w/mid"; }
 losetup -d "$cdev"
 pkill swtpm 2>/dev/null || true; sleep 1
@@ -105,6 +109,8 @@ check "$w/serial2.log" "LIGHTSOUT-SELFTEST: cd-windows-path=/mnt/c/users" "cd ta
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: windows-commands=0 0 ok.exe 3" "Windows programs in shared settings are skipped quietly"
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: watchdog=1min at-restart=30s" "a frozen system, or a restart that hangs, is forced by the watchdog"
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: splash=success/bgrt" "start-up shows the PC logo with a spinner"
+check "$w/serial1.log" "LIGHTSOUT-SELFTEST: own-space=/mnt/c/LightsOut/user.img kept=new" "boot 1 made your own space (user.img)"
+check "$w/serial2.log" "LIGHTSOUT-SELFTEST: own-space=/mnt/c/LightsOut/user.img kept=yes" "an update (a new system file) kept your own space and your packages"
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: screen-restart=ok" "the emergency key brings a frozen screen back"
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: api: PANE  ROOM .*TAB  STATE" "control commands work inside Lights Out"
 check "$w/serial3.log" "C: opened read-only by the driver" "boot 3 noticed C: opened read-only"

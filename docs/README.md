@@ -26,4 +26,5 @@ It is also a complete terminal for everyday use, with tabs, rooms, splits and al
 |---|---|
 | [Security](security.md) | How your encrypted drive is unlocked without a recovery key, and what Lights Out can access |
 | [Troubleshooting](troubleshooting.md) | Common problems and their fixes |
+| [Update](update.md) | `lightsout update`, and what keeps your things |
 | [Uninstall](uninstall.md) | Removing Lights Out completely |

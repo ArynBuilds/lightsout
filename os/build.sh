@@ -12,7 +12,7 @@ pkgs=(
   # base system
   systemd systemd-sysv udev dbus libpam-systemd sudo bash-completion less nano vim-tiny
   ca-certificates curl wget git openssh-client gnupg jq ripgrep unzip xz-utils zstd
-  procps psmisc file htop tmux man-db locales kmod
+  procps psmisc file htop tmux man-db locales kmod e2fsprogs
   # agent toolbox (more via `sudo apt install`, kept on disk)
   nodejs npm python3 python3-venv python3-pip pipx gh
   # network: iwd does Wi-Fi + DHCP on its own
@@ -35,6 +35,9 @@ mmdebstrap --variant=minbase --components="main contrib non-free non-free-firmwa
   --customize-hook="cp -a $here/overlay/. \"\$1\"/" \
   --customize-hook="chroot \"\$1\" bash /usr/local/lib/lightsout/setup.sh" \
   trixie "$root" http://deb.debian.org/debian
+
+# What the system brings itself: packages beyond these are yours and come back after an update
+chroot "$root" apt-mark showmanual > "$root/usr/local/share/lightsout/base-packages"
 
 # Our terminal (built separately) if present
 for b in lightsout lightsout-app; do

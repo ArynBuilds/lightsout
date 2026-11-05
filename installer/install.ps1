@@ -1,7 +1,8 @@
 # Lights Out installer for Windows:  irm https://lightsout.sh | iex
-# (asks for admin rights; downloads everything from the latest release)
+# (asks for admin rights; downloads everything from the latest release). Run again, it
+# updates (`lightsout update` does that): settings, logins and installed programs stay.
 #   -Source  optional local folder instead of downloading: starter\EFI\lightsout\*,
-#            system\system.img.gz(+.sha256), term\lightsout.exe + lightsout-app.exe + uninstall.ps1
+#            system\system.img.gz(+.sha256), term\lightsout.exe + lightsout-app.exe + cleanup.ps1 + uninstall.ps1
 # What it does (each step is undone by uninstall.ps1):
 #   1. checks this PC can run Lights Out safely
 #   2. unpacks the Lights Out system to C:\LightsOut\system.img
@@ -65,24 +66,33 @@ if (-not $Source) {
   New-Item -ItemType Directory -Force "$Source\system", "$Source\term", "$Source\starter" | Out-Null
   Download 'lightsout-windows-x64.zip' "$Source\lightsout-windows-x64.zip"
   Download 'lightsout-starter.zip' "$Source\lightsout-starter.zip"
+  Download 'system.img.gz.sha256' "$Source\system\system.img.gz.sha256"
   Expand-Archive "$Source\lightsout-windows-x64.zip" "$Source\term" -Force
   Expand-Archive "$Source\lightsout-starter.zip" "$Source\starter" -Force
 }
-# An update keeps the system file (programs installed inside Lights Out) while its Linux kernel
-# matches the starter's: the drivers live in the system file. A new kernel needs the new system file.
-$kernel = (Get-Content (Join-Path $Source 'starter\EFI\lightsout\kernel-version') -ErrorAction SilentlyContinue | Select-Object -First 1)
-$sysKernel = (Get-Content "$LO\config\system-kernel" -ErrorAction SilentlyContinue | Select-Object -First 1)
-$keepSystem = (Test-Path "$LO\system.img") -and (-not $sysKernel -or $sysKernel -eq $kernel)
-if (-not $keepSystem -and -not (Test-Path (Join-Path $Source 'system\system.img.gz'))) {
-  Download 'system.img.gz.sha256' "$Source\system\system.img.gz.sha256"
-  Download 'system.img.gz' "$Source\system\system.img.gz"
-}
-$need = 'starter\EFI\lightsout\shimx64.efi','starter\EFI\lightsout\starter.img','term\lightsout.exe','term\lightsout-app.exe'
-if (-not $keepSystem) { $need += 'system\system.img.gz' }
+# An update: your own space (user.img: programs, logins, keys) always stays. The system
+# file is replaced only when it changed; the previous one is kept until the new one has
+# started in Lights Out (else Windows puts it back, see cleanup.ps1).
+$updating = Test-Path "$LO\system.img"
+$gz = Join-Path $Source 'system\system.img.gz'
+$want = (Get-Content "$gz.sha256" -ErrorAction SilentlyContinue | Select-Object -First 1) -split '\s+' | Select-Object -First 1
+$newSystem = -not $updating -or -not $want -or $want -ne (Get-Content "$LO\config\system-sha256" -ErrorAction SilentlyContinue)
+if ($newSystem -and -not (Test-Path $gz)) { Download 'system.img.gz' $gz }
+$need = 'starter\EFI\lightsout\shimx64.efi','starter\EFI\lightsout\starter.img','term\lightsout.exe','term\lightsout-app.exe','term\cleanup.ps1'
+if ($newSystem) { $need += 'system\system.img.gz' }
 foreach ($f in $need) {
   if (-not (Test-Path (Join-Path $Source $f))) { Fail "missing $f in $Source" }
 }
-$gz = Join-Path $Source 'system\system.img.gz'
+# run by Windows itself (an update asked for inside Lights Out): your settings stay as they are
+$asSystem = [Security.Principal.WindowsIdentity]::GetCurrent().IsSystem
+$user = if ($asSystem) { (Get-Content "$LO\config\windows-user").Trim() } else { $env:USERNAME }
+$prev = "$LO\update\previous"
+$keepPrev = Test-Path "$LO\update\trial"   # an update not started yet: its backup is the last good version
+if ($updating -and -not $keepPrev) {
+  Remove-Item $prev -Recurse -Force -ErrorAction SilentlyContinue
+  New-Item -ItemType Directory -Force "$prev\starter" | Out-Null
+  Copy-Item "$LO\config\system-sha256" $prev -ErrorAction SilentlyContinue
+}
 $freeGB = [math]::Round((Get-PSDrive C).Free / 1GB, 1)
 if ($freeGB -lt 6) { Fail "C: has $freeGB GB free; Lights Out needs about 6 GB" }
 $bl = Get-BitLockerVolume -MountPoint 'C:' -ErrorAction SilentlyContinue
@@ -93,36 +103,36 @@ if ($encrypted -and -not $tpmOk) { Fail 'C: is encrypted (BitLocker) but this PC
 
 # ---------------------------------------------------------------- 2. system file
 Step 'Unpacking the Lights Out system (a few GB on C:)'
-if ($keepSystem) { Write-Host 'keeping the existing system file (your installs and logins stay)' }
+if (-not $newSystem) { Write-Host 'the system file is unchanged' }
 else {
-  if (Test-Path "$LO\system.img") { Write-Host "the Linux kernel changed ($sysKernel -> $kernel): new system file; programs installed inside Lights Out need installing again" }
-  $sumFile = "$gz.sha256"
-  if (Test-Path $sumFile) {
-    $want = ((Get-Content $sumFile) -split '\s+')[0].ToLower()
-    $have = (Get-FileHash $gz -Algorithm SHA256).Hash.ToLower()
-    if ($want -ne $have) { Fail 'the system download is damaged (checksum mismatch)' }
+  if ($want) {
+    if ($want -ne (Get-FileHash $gz -Algorithm SHA256).Hash.ToLower()) { Fail 'the system download is damaged (checksum mismatch)' }
     Write-Host 'checksum ok'
   }
   $in = [IO.File]::OpenRead($gz)
   $z = New-Object IO.Compression.GZipStream($in, [IO.Compression.CompressionMode]::Decompress)
   $out = [IO.File]::Create("$LO\system.img.part")
   try { $z.CopyTo($out, 4MB) } finally { $out.Close(); $z.Close(); $in.Close() }
+  if ($updating -and -not $keepPrev) { Move-Item "$LO\system.img" "$prev\system.img" -Force }
   Move-Item "$LO\system.img.part" "$LO\system.img" -Force
+  [IO.File]::WriteAllText("$LO\config\system-sha256", "$want")
 }
-if ($kernel) { [IO.File]::WriteAllText("$LO\config\system-kernel", $kernel) }
+[IO.File]::WriteAllText("$LO\bin\installer-url", $Site)   # where `lightsout update` gets the next version
 
 # ---------------------------------------------------------------- 3. Wi-Fi, user, PIN
 Step 'Saving your Wi-Fi networks and settings for Lights Out'
 Remove-Item "$LO\wifi\*" -Force -ErrorAction SilentlyContinue
 netsh wlan export profile key=clear folder="$LO\wifi" | Out-Null
 Write-Host "Wi-Fi networks: $((Get-ChildItem "$LO\wifi" -Filter *.xml).Count)"
-[IO.File]::WriteAllText("$LO\config\windows-user", $env:USERNAME)
-# keyboard layout(s) for Lights Out, e.g. "tr" or "us,tr"
-$xkb = @{ 'en-US'='us'; 'en-GB'='gb'; 'tr-TR'='tr'; 'de-DE'='de'; 'fr-FR'='fr'; 'es-ES'='es'; 'it-IT'='it'; 'pt-BR'='br'; 'pt-PT'='pt'; 'nl-NL'='nl'; 'ru-RU'='ru'; 'pl-PL'='pl'; 'sv-SE'='se'; 'da-DK'='dk'; 'nb-NO'='no'; 'fi-FI'='fi'; 'ja-JP'='jp'; 'ko-KR'='kr' }
-$layouts = (Get-WinUserLanguageList | ForEach-Object { $xkb[$_.LanguageTag] } | Where-Object { $_ } | Select-Object -Unique) -join ','
-if (-not $layouts) { $layouts = 'us' }
-[IO.File]::WriteAllText("$LO\config\keyboard", $layouts)
-Write-Host "Keyboard: $layouts"
+[IO.File]::WriteAllText("$LO\config\windows-user", $user)
+# keyboard layout(s) for Lights Out, e.g. "tr" or "us,tr" (yours: not read when Windows runs the update)
+if (-not $asSystem) {
+  $xkb = @{ 'en-US'='us'; 'en-GB'='gb'; 'tr-TR'='tr'; 'de-DE'='de'; 'fr-FR'='fr'; 'es-ES'='es'; 'it-IT'='it'; 'pt-BR'='br'; 'pt-PT'='pt'; 'nl-NL'='nl'; 'ru-RU'='ru'; 'pl-PL'='pl'; 'sv-SE'='se'; 'da-DK'='dk'; 'nb-NO'='no'; 'fi-FI'='fi'; 'ja-JP'='jp'; 'ko-KR'='kr' }
+  $layouts = (Get-WinUserLanguageList | ForEach-Object { $xkb[$_.LanguageTag] } | Where-Object { $_ } | Select-Object -Unique) -join ','
+  if (-not $layouts) { $layouts = 'us' }
+  [IO.File]::WriteAllText("$LO\config\keyboard", $layouts)
+  Write-Host "Keyboard: $layouts"
+}
 $tzmap = @{ 'Turkey Standard Time'='Europe/Istanbul'; 'GMT Standard Time'='Europe/London'; 'W. Europe Standard Time'='Europe/Berlin';
   'Romance Standard Time'='Europe/Paris'; 'Central Europe Standard Time'='Europe/Budapest'; 'E. Europe Standard Time'='Europe/Bucharest';
   'Russian Standard Time'='Europe/Moscow'; 'Eastern Standard Time'='America/New_York'; 'Central Standard Time'='America/Chicago';
@@ -147,7 +157,9 @@ if (-not $NoPin -and -not (Test-Path "$LO\config\pin")) {
   $a = $null; $b = $null
 }
 # Only you (and admins) may read the handover folder
-icacls $LO /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" "Administrators:(OI)(CI)F" "SYSTEM:(OI)(CI)F" | Out-Null
+icacls $LO /inheritance:r /grant:r "$($user):(OI)(CI)F" "Administrators:(OI)(CI)F" "SYSTEM:(OI)(CI)F" | Out-Null
+# Windows runs the scripts and the update address in bin as SYSTEM: only admins may change them
+icacls "$LO\bin" /inheritance:r /grant:r "$($user):(OI)(CI)RX" "Administrators:(OI)(CI)F" "SYSTEM:(OI)(CI)F" | Out-Null
 
 # ---------------------------------------------------------------- 4. BitLocker key for Lights Out
 if ($encrypted) {
@@ -174,7 +186,11 @@ try {
   $existing = 0; if (Test-Path "$esp\EFI\lightsout") { $existing = [math]::Ceiling(((Get-ChildItem "$esp\EFI\lightsout" -Recurse -File | Measure-Object Length -Sum).Sum) / 1MB) }
   if ($freeMB + $existing - $needMB -lt $MinEspFreeMB) { Fail "not enough room on the EFI partition ($freeMB MB free)" }
   New-Item -ItemType Directory -Force "$esp\EFI\lightsout" | Out-Null
+  if ($updating -and -not $keepPrev) {   # the previous starter, never the one-time key files
+    Get-ChildItem "$esp\EFI\lightsout" -File -Exclude 'handoff.*' | Copy-Item -Destination "$prev\starter"
+  }
   Copy-Item "$src\*" "$esp\EFI\lightsout\" -Force
+  if ($updating) { New-Item -ItemType File -Force "$LO\update\trial" | Out-Null }
   # the starter's boot loader is Fedora's, which reads \EFI\fedora\grub.cfg (left alone if Fedora is installed)
   if (-not (Test-Path "$esp\EFI\fedora") -or (Test-Path "$esp\EFI\lightsout\created-fedora-dir")) {
     New-Item -ItemType Directory -Force "$esp\EFI\fedora" | Out-Null
@@ -201,7 +217,8 @@ bcdedit /set '{fwbootmgr}' displayorder $id /addlast | Out-Null   # Windows stay
 
 # ---------------------------------------------------------------- 6. terminal + switch task
 Step 'Installing the Lights Out terminal'
-Get-Process lightsout-app -ErrorAction SilentlyContinue | Stop-Process -Force
+$wasOpen = Get-Process lightsout-app -ErrorAction SilentlyContinue   # opened again at the end, tabs and agents back
+$wasOpen | Stop-Process -Force
 # a running lightsout.exe (Lights Out kept running in the background for a terminal) can't be
 # overwritten, but it can be moved aside: it keeps running, its agents too; the new one is used next time
 Get-ChildItem "$LO\bin\*.old" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
@@ -212,14 +229,10 @@ foreach ($exe in 'lightsout.exe', 'lightsout-app.exe') {
   }
 }
 Copy-Item (Join-Path $Source 'term\lightsout.exe'), (Join-Path $Source 'term\lightsout-app.exe') "$LO\bin\" -Force
+Copy-Item (Join-Path $Source 'term\cleanup.ps1') "$LO\bin\cleanup.ps1" -Force
 $un = Join-Path $Source 'term\uninstall.ps1'
 if (-not (Test-Path $un) -and $PSScriptRoot) { $un = Join-Path $PSScriptRoot 'uninstall.ps1' }
 if (Test-Path $un) { Copy-Item $un "$LO\bin\uninstall.ps1" -Force }
-# `lightsout` opens the app from any terminal (added to your PATH)
-$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-if (($userPath -split ';') -notcontains "$LO\bin") {
-  [Environment]::SetEnvironmentVariable('Path', ($userPath.TrimEnd(';') + ";$LO\bin"), 'User')
-}
 $enter = @"
 # Runs as SYSTEM when the terminal asks to switch: pass the one-time
 # "came from Windows" ticket to the EFI partition, boot Lights Out once, restart.
@@ -236,34 +249,38 @@ try {
     if (`$k) { [IO.File]::WriteAllText("`$(`$letter):\EFI\lightsout\handoff.key", `$k.RecoveryPassword) }
   }
 } finally { mountvol "`$(`$letter):" /D }
+# after an update: this start decides whether it stays (see cleanup.ps1)
+if (Test-Path 'C:\LightsOut\update\trial') { New-Item -ItemType File -Force 'C:\LightsOut\update\tried' | Out-Null }
 bcdedit /set '{fwbootmgr}' bootsequence '$id' | Out-Null
 shutdown /r /t 0 /c 'Switching to Lights Out'
 "@
 [IO.File]::WriteAllText("$LO\bin\enter.ps1", $enter)
-schtasks /create /tn '\LightsOut\Enter' /tr "powershell.exe -NoProfile -ExecutionPolicy Bypass -File $LO\bin\enter.ps1" /sc once /st 00:00 /sd 01/01/2000 /ru SYSTEM /rl HIGHEST /f | Out-Null
-# Windows' default only starts a task when plugged in; Lights Out must also work on battery
-Set-ScheduledTask -TaskPath '\LightsOut\' -TaskName Enter -Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 10)) | Out-Null
-# allow the signed-in user to start (only) this task
-$svc = New-Object -ComObject Schedule.Service; $svc.Connect()
-$svc.GetFolder('\LightsOut').GetTask('Enter').SetSecurityDescriptor('D:(A;;FA;;;BA)(A;;FA;;;SY)(A;;GRGX;;;AU)', 0)
-# Safety: at every Windows start, remove a leftover key or "came from Windows" pass
-# from the boot partition (e.g. if a switch was interrupted).
-$cleanup = @"
-`$letter = (68..90 | ForEach-Object { [char]`$_ } | Where-Object { -not (Test-Path "`$(`$_):\") } | Select-Object -Last 1)
-mountvol "`$(`$letter):" /S
-try { Remove-Item "`$(`$letter):\EFI\lightsout\handoff.key", "`$(`$letter):\EFI\lightsout\handoff.nonce" -Force -ErrorAction SilentlyContinue }
-finally { mountvol "`$(`$letter):" /D }
-"@
-[IO.File]::WriteAllText("$LO\bin\cleanup.ps1", $cleanup)
-schtasks /create /tn '\LightsOut\Cleanup' /tr "powershell.exe -NoProfile -ExecutionPolicy Bypass -File $LO\bin\cleanup.ps1" /sc onstart /ru SYSTEM /rl HIGHEST /f | Out-Null
-# Windows' default only starts a task when plugged in; Lights Out must also work on battery
-Set-ScheduledTask -TaskPath '\LightsOut\' -TaskName Cleanup -Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 10)) | Out-Null
-# back from Lights Out: at sign-in the app opens and takes your tabs back (otherwise it stays closed)
-Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'Lights Out' -Value "`"$LO\bin\lightsout-app.exe`" --if-returning"
-$lnk = (New-Object -ComObject WScript.Shell).CreateShortcut("$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Lights Out.lnk")
-$lnk.TargetPath = "$LO\bin\lightsout-app.exe"; $lnk.WorkingDirectory = $env:USERPROFILE; $lnk.Save()
+# Tasks, PATH, sign-in and Start menu entries: set up by you; Windows running an update keeps them
+if (-not $asSystem) {
+  # Windows' default only starts a task when plugged in; Lights Out must also work on battery
+  $onBattery = { param($limit) New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit $limit }
+  schtasks /create /tn '\LightsOut\Enter' /tr "powershell.exe -NoProfile -ExecutionPolicy Bypass -File $LO\bin\enter.ps1" /sc once /st 00:00 /sd 01/01/2000 /ru SYSTEM /rl HIGHEST /f | Out-Null
+  Set-ScheduledTask -TaskPath '\LightsOut\' -TaskName Enter -Settings (& $onBattery (New-TimeSpan -Minutes 10)) | Out-Null
+  # allow the signed-in user to start (only) this task
+  $svc = New-Object -ComObject Schedule.Service; $svc.Connect()
+  $svc.GetFolder('\LightsOut').GetTask('Enter').SetSecurityDescriptor('D:(A;;FA;;;BA)(A;;FA;;;SY)(A;;GRGX;;;AU)', 0)
+  # at every Windows start (cleanup.ps1): leftovers of a switch, updates (an hour: a download may run)
+  schtasks /create /tn '\LightsOut\Cleanup' /tr "powershell.exe -NoProfile -ExecutionPolicy Bypass -File $LO\bin\cleanup.ps1" /sc onstart /ru SYSTEM /rl HIGHEST /f | Out-Null
+  Set-ScheduledTask -TaskPath '\LightsOut\' -TaskName Cleanup -Settings (& $onBattery (New-TimeSpan -Hours 1)) | Out-Null
+  # `lightsout` opens the app from any terminal (added to your PATH)
+  $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+  if (($userPath -split ';') -notcontains "$LO\bin") {
+    [Environment]::SetEnvironmentVariable('Path', ($userPath.TrimEnd(';') + ";$LO\bin"), 'User')
+  }
+  # back from Lights Out: at sign-in the app opens and takes your tabs back (otherwise it stays closed)
+  Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'Lights Out' -Value "`"$LO\bin\lightsout-app.exe`" --if-returning"
+  $lnk = (New-Object -ComObject WScript.Shell).CreateShortcut("$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Lights Out.lnk")
+  $lnk.TargetPath = "$LO\bin\lightsout-app.exe"; $lnk.WorkingDirectory = $env:USERPROFILE; $lnk.Save()
+  # it was open: open it again as you (not as admin); it takes its tabs back and continues the agents
+  if ($wasOpen) { Start-Process explorer.exe "$LO\bin\lightsout-app.exe" }
+}
 
-Write-Host "`nLights Out is installed." -ForegroundColor Green
+Write-Host "`nLights Out is $(if ($updating) {'updated'} else {'installed'})." -ForegroundColor Green
 Write-Host 'Open it with the command  lightsout  (in a new terminal) or from the Start menu.'
 Write-Host 'The Lights Out button (bottom left, or Ctrl+Shift+L) switches over.'
 Write-Host 'Remove it with:  lightsout uninstall'

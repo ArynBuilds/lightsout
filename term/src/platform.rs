@@ -327,7 +327,11 @@ pub fn battery() -> Option<Battery> {
         percent: pct,
         watts: None,
         charging,
-        hours_left: if charging { None } else { pmset_time_left(line) },
+        hours_left: if charging {
+            None
+        } else {
+            pmset_time_left(line)
+        },
     })
 }
 

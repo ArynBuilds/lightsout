@@ -1,0 +1,18 @@
+#!/bin/sh
+# Packages you install yourself (apt), remembered in your own space (user.img) so that an
+# update, which brings a new system file, installs them again.
+#   save     after every apt run (/etc/apt/apt.conf.d/90lightsout)
+#   restore  at every start, once online (lightsout-packages.service); fails only while offline
+F=/home/lights/.lightsout-packages
+case "${1:-}" in
+  save)
+    mountpoint -q /home/lights || exit 0
+    { apt-mark showmanual | grep -vxF -f /usr/local/share/lightsout/base-packages; true; } > "$F.new" && mv "$F.new" "$F" ;;
+  restore)
+    [ -s "$F" ] || exit 0
+    missing=$(while read -r p; do dpkg -s "$p" >/dev/null 2>&1 || echo "$p"; done < "$F")
+    [ -n "$missing" ] || exit 0
+    apt-get update -q || exit 1
+    for p in $missing; do apt-get install -y -q "$p" || echo "could not install $p again"; done ;;
+  *) echo "usage: packages save|restore" >&2; exit 2 ;;
+esac

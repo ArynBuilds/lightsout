@@ -25,6 +25,16 @@ s "cd-windows-path=$(bash -c '. /usr/local/lib/lightsout/lightsout-env.sh; cd c:
 s "windows-commands=$(sh -c '"C:/x/hook.exe" Stop'; echo $?) $(sh -c 'powershell -File C:\\x.ps1'; echo $?) $(sh -c 'echo ok.exe') $(sh -c 'exit 3'; echo $?)"
 s "mounts: $(findmnt -no OPTIONS /mnt/c | grep -o nocase || echo case-sensitive)"
 s "splash=$(systemctl show -p Result --value plymouth-start.service)/$(sed -n 's/^Theme=//p' /etc/plymouth/plymouthd.conf)"
+# your own space and your packages survive an update (the test puts a fresh system file in
+# place between boot 1 and boot 2)
+if [ -f /home/lights/.update-test ]; then
+  if grep -qxF "$(cat /home/lights/.update-test)" /home/lights/.lightsout-packages; then kept=yes; else kept=packages-lost; fi
+else
+  p=$(apt-mark showauto | head -n 1); apt-mark manual "$p" >/dev/null
+  /usr/local/lib/lightsout/packages save && /usr/local/lib/lightsout/packages restore && echo "$p" > /home/lights/.update-test
+  kept=new
+fi
+s "own-space=$(losetup -nO BACK-FILE "$(findmnt -no SOURCE /home/lights)" 2>/dev/null) kept=$kept"
 s "watchdog=$(systemctl show -p RuntimeWatchdogUSec --value) at-restart=$(systemctl show -p RebootWatchdogUSec --value)"
 # a crashed or frozen terminal (the emergency key Ctrl+Alt+Backspace kills it): a new one must come up
 old=$(pgrep -xn lightsout-app)

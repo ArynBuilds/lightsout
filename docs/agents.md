@@ -58,6 +58,7 @@ Every pane can be driven with `lightsout` commands, from any terminal or from an
 | `lightsout skill` | Prints the skill: every command, written for agents |
 | `lightsout room add/list/remove` | Rooms here and rooms on a server |
 | `lightsout open me@server` | Lights Out on a server, in this terminal |
+| `lightsout update` | Installs the newest version; settings, logins and programs stay |
 | `lightsout uninstall` | Removes Lights Out |
 
 Every program in a pane knows its own pane id from `$LIGHTSOUT_PANE`.

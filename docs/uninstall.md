@@ -14,7 +14,7 @@ It asks for admin rights and removes everything Lights Out added.
 - the scheduled tasks, the Start menu entry and the `lightsout` command
 - the app's saved tabs and settings
 
-To keep what you installed in Lights Out for a later install, run the uninstaller with `-KeepSystem`:
+To keep what you installed in Lights Out for a later install (the system file and your own space, `user.img`), run the uninstaller with `-KeepSystem`:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File C:\LightsOut\bin\uninstall.ps1 -KeepSystem

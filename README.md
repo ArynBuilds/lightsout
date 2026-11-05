@@ -18,7 +18,7 @@ Linux and Mac:
 curl -fsSL https://lightsout.sh | sh
 ```
 
-Then open it with `lightsout`. Remove it any time with `lightsout uninstall`.
+Then open it with `lightsout`. Update with `lightsout update` (everything you have stays); remove it any time with `lightsout uninstall`.
 
 **[Read the docs](docs/README.md)** · [lightsout.sh/docs](https://lightsout.sh/docs)
 

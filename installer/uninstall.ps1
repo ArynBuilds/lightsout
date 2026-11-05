@@ -1,5 +1,5 @@
 # Removes Lights Out (`lightsout uninstall` runs this as administrator).
-#   -KeepSystem  keep C:\LightsOut\system.img (your Lights Out installs and logins)
+#   -KeepSystem  keep C:\LightsOut\system.img and user.img (your Lights Out installs and logins)
 param([switch] $KeepSystem)
 $ErrorActionPreference = 'Continue'
 $LO = 'C:\LightsOut'
@@ -40,8 +40,8 @@ $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 Remove-Item "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Lights Out.lnk" -ErrorAction SilentlyContinue
 Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'Lights Out' -ErrorAction SilentlyContinue
 if ($KeepSystem) {
-  Get-ChildItem $LO -Exclude system.img | Remove-Item -Recurse -Force
-  Write-Host "kept $LO\system.img"
+  Get-ChildItem $LO -Exclude system.img, user.img | Remove-Item -Recurse -Force
+  Write-Host "kept $LO\system.img and user.img"
 } else {
   Remove-Item $LO -Recurse -Force
 }

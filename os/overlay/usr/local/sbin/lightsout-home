@@ -5,7 +5,19 @@
 # permissions, which a Windows drive can't store).
 USER_NAME=$(cat /etc/lightsout/windows-user 2>/dev/null)
 WINHOME="/mnt/c/Users/$USER_NAME"
-LOCAL=/home/lights            # Lights Out's own space, inside the system file
+LOCAL=/home/lights            # Lights Out's own space: your programs, logins and keys here
+# It lives in its own file on C:, apart from the system file, so an update (a new system
+# file) keeps it. The first start makes it from what is here (it grows like the system file).
+U=/mnt/c/LightsOut/user.img
+if ! mountpoint -q "$LOCAL"; then
+  mb=$(( $(du -sm "$LOCAL" | cut -f1) + 4096 ))
+  # (Windows keeps at least 6 GB free on C:, as when the files grow)
+  if [ ! -f "$U" ] && [ "$(df -Pm /mnt/c | awk 'NR==2{print $4}')" -gt $(( mb + 6144 )) ]; then
+    rm -f "$U.new"
+    truncate -s "${mb}M" "$U.new" && mkfs.ext4 -q -L lightsout-user -d "$LOCAL" "$U.new" && mv "$U.new" "$U"
+  fi
+  mount -o loop,noatime "$U" "$LOCAL" || echo "$U could not be made or opened; using the system file's space"
+fi
 [ -n "$USER_NAME" ] && [ -d "$WINHOME" ] || { echo "no Windows home found; keeping $LOCAL"; exit 0; }
 
 usermod -d "$WINHOME" lights 2>/dev/null
