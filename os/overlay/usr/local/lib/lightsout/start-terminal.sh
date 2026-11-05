@@ -4,7 +4,7 @@
 . /usr/local/lib/lightsout/lightsout-env.sh
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 term=/usr/local/bin/lightsout-app
-[ -x "$term" ] || term="foot --font='JetBrains Mono:size=11'"
+[ -x "$term" ] || term=foot   # (plain: it goes inside sh -c '...' below)
 
 # keyboard layout from Windows (installer writes e.g. "tr" or "us")
 layout=$(tr -dc 'a-z,' < /mnt/c/LightsOut/config/keyboard 2>/dev/null)
@@ -27,9 +27,10 @@ for_window [app_id=".*"] fullscreen enable
 # closing the lid switches the screen off; opening it switches it back on
 bindswitch --reload --locked lid:on exec sh -c 'swaymsg "output * power off"; lightsout screen off'
 bindswitch --reload --locked lid:off exec sh -c 'swaymsg "output * power on"; lightsout screen on'
-# a frozen screen: Ctrl+Alt+Backspace restarts the Lights Out screen (your tabs come back)
-bindsym --locked Ctrl+Alt+BackSpace exec swaymsg exit
+# a frozen screen: Ctrl+Alt+Backspace stops the terminal, which restarts it (your tabs come back)
+bindsym --locked Ctrl+Alt+BackSpace exec pkill -KILL -x lightsout-app
 exec /usr/local/lib/lightsout/lowest-refresh
-exec $term
+# the terminal ended (closed, crashed, stopped by the key): sway ends too, so the service restarts both
+exec sh -c '$term; swaymsg exit'
 CONF
 exec sway --unsupported-gpu -c "$conf"

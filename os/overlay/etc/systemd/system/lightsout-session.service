@@ -17,6 +17,8 @@ Environment=XDG_SESSION_TYPE=wayland
 ExecStart=/usr/local/lib/lightsout/start-terminal.sh
 Restart=always
 RestartSec=1
+# what's left of a crashed terminal gets 5 s to end, so the screen is back fast
+TimeoutStopSec=5
 
 [Install]
 WantedBy=graphical.target
