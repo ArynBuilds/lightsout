@@ -21,6 +21,7 @@ for u in $(systemctl --failed --no-legend --plain | awk '{print $1}'); do
   journalctl -b -u "$u" -n 8 --no-pager -o cat 2>/dev/null | sed "s/^/LIGHTSOUT-SELFTEST: [$u] /" > /dev/ttyS0
 done
 journalctl -b -u lightsout-session -n 25 --no-pager -o cat 2>/dev/null | sed 's/^/LIGHTSOUT-SELFTEST: [session] /' > /dev/ttyS0
+s "cd-windows-path=$(bash -c '. /usr/local/lib/lightsout/lightsout-env.sh; cd c:/users && pwd')"
 s "mounts: $(findmnt -no OPTIONS /mnt/c | grep -o nocase || echo case-sensitive)"
 s "done, powering off"
 systemctl poweroff

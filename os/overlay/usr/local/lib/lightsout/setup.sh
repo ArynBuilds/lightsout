@@ -37,6 +37,8 @@ systemctl mask getty@tty1.service
 mkdir -p /etc/systemd/logind.conf.d
 printf '[Login]\nHandleLidSwitch=ignore\nHandleLidSwitchExternalPower=ignore\nHandlePowerKey=ignore\nIdleAction=ignore\n' \
   > /etc/systemd/logind.conf.d/lightsout.conf
+# Fedora's kernel loads drivers on demand through /usr/bin/modprobe; Debian keeps it in /usr/sbin
+ln -sf ../sbin/modprobe /usr/bin/modprobe
 # Smaller journal, kept in RAM (fewer disk writes = less power)
 mkdir -p /etc/systemd/journald.conf.d
 printf '[Journal]\nStorage=volatile\nRuntimeMaxUse=32M\n' > /etc/systemd/journald.conf.d/lightsout.conf

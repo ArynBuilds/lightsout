@@ -13,6 +13,12 @@ export GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0=
 export GIT_CONFIG_KEY_1=credential.helper GIT_CONFIG_VALUE_1='!gh auth git-credential'
 
 alias c='cd /mnt/c'
+# Windows paths work too: cd c:/dev/app, cd 'C:\DEV\app' (quoted: bash drops a bare \)
+cd() {
+  local win='^([A-Za-z]):[\/]?(.*)$'
+  if [[ ${1:-} =~ $win ]]; then set -- "/mnt/${BASH_REMATCH[1],,}/${BASH_REMATCH[2]//\\//}"; fi
+  builtin cd "$@"
+}
 
 # First start: a hint when no agent is installed yet (installs stay on disk)
 if [ -n "${PS1:-}" ] && ! command -v claude >/dev/null 2>&1 && ! command -v codex >/dev/null 2>&1; then

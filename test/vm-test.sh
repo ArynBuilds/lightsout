@@ -99,6 +99,8 @@ check "$w/serial2.log" "LIGHTSOUT-SELFTEST: iwd-networks=.*psk" "Wi-Fi network i
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: split=ok" "project got its own Linux node_modules"
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: home=/mnt/c/Users/tester per-system-local=yes" "home is the Windows user folder, programs kept per system"
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: resume-claude=claude = claude --continue" "resume list shipped as data"
+check "$w/serial2.log" "LIGHTSOUT-SELFTEST: failed-units=[[:space:]]*$" "every system service started (Wi-Fi included)"
+check "$w/serial2.log" "LIGHTSOUT-SELFTEST: cd-windows-path=/mnt/c/users" "cd takes Windows paths"
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: api: PANE  ROOM .*TAB  STATE" "control commands work inside Lights Out"
 check "$w/serial3.log" "C: opened read-only by the driver" "boot 3 noticed C: opened read-only"
 check "$w/serial3.log" "The system file needs a writable drive" "boot 3 stopped instead of running read-only"

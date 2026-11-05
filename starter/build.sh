@@ -19,7 +19,7 @@ echo "$KVER" > "$out/EFI/lightsout/kernel-version"   # the installer keeps the s
 cat > "$out/EFI/lightsout/grub.cfg" <<'EOF'
 set timeout=0
 search --no-floppy --file --set=root /EFI/lightsout/starter.img
-linux /EFI/lightsout/vmlinuz quiet loglevel=3 nmi_watchdog=0 pcie_aspm.policy=powersupersave modprobe.blacklist=nouveau,nvidia,nvidia_drm,nvidia_modeset reboot=efi
+linux /EFI/lightsout/vmlinuz quiet loglevel=3 nmi_watchdog=0 pcie_aspm.policy=powersupersave modprobe.blacklist=nouveau,nvidia,nvidia_drm,nvidia_modeset reboot=efi selinux=0
 initrd /EFI/lightsout/starter.img
 boot
 EOF

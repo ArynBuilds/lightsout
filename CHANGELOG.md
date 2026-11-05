@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.2-rc.6
+
+A test build (`irm https://lightsout.sh/rc | iex`).
+
+- **Wi-Fi starts in Lights Out.** The system was missing `modprobe`, which Fedora's kernel uses to load extra pieces on demand. Without it the Wi-Fi service couldn't get a cipher it needs and quit, so agents couldn't be installed either.
+- **`cd` takes Windows paths:** `cd c:/dev` or `cd 'C:\DEV\app'` go to `/mnt/c/DEV/app`.
+- No more SELinux message at start (Lights Out doesn't use it).
+- These fixes are inside the system file, which an update keeps while the kernel stays the same. To get them, delete `C:\LightsOut\system.img` before updating (programs installed inside Lights Out need installing again).
+
 ## 0.3.2-rc.5
 
 A test build (`irm https://lightsout.sh/rc | iex`).
