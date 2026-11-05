@@ -3617,6 +3617,7 @@ impl ApplicationHandler<UserEvent> for App {
                 ElementState::Released => self.mouse_up(),
             },
             WindowEvent::MouseWheel { delta, .. } => {
+                self.last_input = Instant::now();
                 let lines = wheel_lines(&mut self.wheel_rest, delta, self.fonts.cell_h as f64);
                 if lines != 0 {
                     self.on_wheel(lines);
