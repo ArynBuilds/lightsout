@@ -29,7 +29,7 @@ systemctl enable iwd systemd-resolved
 ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
 
 systemctl enable lightsout-power.service lightsout-cores.service lightsout-wifi.service lightsout-session.service lightsout-selftest.service \
-  lightsout-split.service lightsout-grow.timer lightsout-packages.service lightsout-started.service
+  lightsout-split.service lightsout-grow.timer lightsout-packages.service lightsout-started.service lightsout-learn.service
 systemctl set-default graphical.target
 # Nothing else on the screen: no login prompts
 systemctl mask getty@tty1.service
@@ -39,6 +39,8 @@ printf '[Login]\nHandleLidSwitch=ignore\nHandleLidSwitchExternalPower=ignore\nHa
   > /etc/systemd/logind.conf.d/lightsout.conf
 # Fedora's kernel loads drivers on demand through /usr/bin/modprobe; Debian keeps it in /usr/sbin
 ln -sf ../sbin/modprobe /usr/bin/modprobe
+# driver settings this PC needs, learned once and kept on C: (see lightsout-learn)
+ln -sf /mnt/c/LightsOut/config/modprobe.conf /etc/modprobe.d/lightsout.conf
 # /bin/sh is dash behind a front that lets Windows programs (Windows is off) succeed quietly
 dpkg-divert --local --no-rename --divert /usr/bin/sh.dash --add /usr/bin/sh
 ln -sf /usr/local/lib/lightsout/sh /usr/bin/sh

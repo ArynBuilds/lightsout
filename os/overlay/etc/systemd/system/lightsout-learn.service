@@ -1,0 +1,12 @@
+[Unit]
+Description=Lights Out: what this PC needs, learned at its first start (before the terminal)
+After=systemd-udev-trigger.service lightsout-wifi.service
+Before=plymouth-quit.service lightsout-session.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/lightsout-learn
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

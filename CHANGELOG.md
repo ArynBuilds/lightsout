@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.2-rc.13
+
+A test build (`lightsout update`, or `irm https://lightsout.sh/rc | iex`).
+
+- **Right from the first start:** what a PC needs is set up before you ever see the Lights Out terminal.
+  - PCIe link power saving: the installer reads from the BIOS (the same table Linux reads) whether it keeps that from Linux, and tries the setting from the very first start. It stays only if that start comes up.
+  - Brightness on OLED panels that need another control: noticed during the first start, before the terminal shows. Lights Out then starts once more, straight into Lights Out (the splash stays), and the setting is kept on C:, so updates don't need to learn it again.
+- Power settings no longer take cores back from the helper that adds them while work is waiting.
+
 ## 0.3.2-rc.12
 
 A test build (`lightsout update`, or `irm https://lightsout.sh/rc | iex`).

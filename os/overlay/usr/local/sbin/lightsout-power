@@ -69,14 +69,4 @@ systemctl is-active -q lightsout-cores || for u in user.slice lightsout.slice li
   systemctl set-property --runtime "$u" AllowedCPUs="$cores" 2>/dev/null
 done
 echo "lightsout-power: work cores $cores" > /dev/kmsg 2>/dev/null
-
-# Panels (OLED) whose brightness goes over the display link, not the backlight: the driver
-# says so at start (its hint names 3, Intel's own interface; panels such as the 2024 ROG
-# Zephyrus G16's follow only the standard VESA one, 1), and uses that control from the next
-# start on. Lights Out mode only (its system is ours to set); a PC's own Linux keeps its settings.
-if [ -f /mnt/c/LightsOut/system.img ] && [ ! -f /etc/modprobe.d/lightsout-backlight.conf ] \
-   && dmesg | grep -q 'enable_dpcd_backlight=3'; then
-  echo 'options i915 enable_dpcd_backlight=1' > /etc/modprobe.d/lightsout-backlight.conf
-  echo "lightsout-power: brightness over the display link from the next start" > /dev/kmsg 2>/dev/null
-fi
 exit 0

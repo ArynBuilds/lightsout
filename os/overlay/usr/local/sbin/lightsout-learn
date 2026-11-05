@@ -1,0 +1,24 @@
+#!/bin/sh
+# What this PC needs from Linux, learned at its first start, before the terminal shows.
+# Some settings are read by a driver only when it loads: when one is new, Lights Out starts
+# again right away, straight into Lights Out (the splash stays; the boot line, and so the
+# drive key's seal, is unchanged). Learned settings are kept on C: (config\modprobe.conf,
+# read through /etc/modprobe.d/lightsout.conf), so an update doesn't learn them again.
+C=/mnt/c/LightsOut/config/modprobe.conf
+[ -f /mnt/c/LightsOut/system.img ] || exit 0   # Lights Out mode only
+# every device found at start has its driver (the graphics one set the screen up)
+udevadm settle -t 15
+new=""
+# an OLED panel whose brightness goes over the display link: the driver names the setting
+# (its hint says 3, Intel's own interface; panels such as the 2024 ROG Zephyrus G16's
+# follow only the standard VESA one, 1)
+if dmesg | grep -q 'enable_dpcd_backlight=3' && ! grep -qs 'enable_dpcd_backlight' "$C"; then
+  echo 'options i915 enable_dpcd_backlight=1' >> "$C"; new="brightness control"
+fi
+[ -n "$new" ] || exit 0
+# this start came this far with what it tried on the boot line: that stays (see the starter)
+sed -i 's/ trying$/ on/' /boot/efi/EFI/lightsout/tries 2>/dev/null
+n=$(efibootmgr | sed -n 's/^Boot\([0-9A-Fa-f]\{4\}\)\*\{0,1\} Lights Out\b.*/\1/p' | head -n 1)
+[ -n "$n" ] || exit 0   # (no entry to start again: the setting applies from the next start)
+echo "lightsout-learn: $new set up for this PC; starting again" > /dev/kmsg
+efibootmgr -q -n "$n" && systemctl reboot

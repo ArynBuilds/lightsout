@@ -1,6 +1,6 @@
 [Unit]
-Description=Lights Out: what this start tried, and an update, are kept once it runs fine
-After=lightsout-session.service lightsout-power.service
+Description=Lights Out: an update, and what this start tried, are kept once it runs fine
+After=lightsout-session.service
 
 [Service]
 Type=oneshot

@@ -1,6 +1,6 @@
 [package]
 name = "lightsout-term"
-version = "0.3.2-rc.12"
+version = "0.3.2-rc.13"
 edition = "2021"
 autobins = false
 

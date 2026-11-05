@@ -4,8 +4,8 @@
 #   boot 1: one-time key handoff gets sealed into the TPM, system boots, writes to C:
 #   boot 2: after an update (a fresh system file), the key is unsealed from the TPM, the
 #           system boots again and your own space (user.img) and packages are still there
-#   boot 3: with a kernel option on trial (a new boot line: the key is handed over again,
-#           as from Windows): it comes up, so the option is kept
+#   boot 3: with a kernel option on trial, put there as the installer does (a new boot line,
+#           so the key is handed over again, as from Windows): it comes up, so it is kept
 #   boot 4: the partition is cut 64 MB shorter than the file system says (as on a PC where
 #           the partition shrank), so the driver can only open C: read-only: it must stop
 #   boot 5: boot 4 used another option on trial and never came up: it is taken off again
@@ -89,10 +89,20 @@ mkdir -p "$w/mid"; ntfs-3g "$cdev" "$w/mid" && {
   umount "$w/mid"; }
 losetup -d "$cdev"
 echo "=== boot 2 (unseal)"; boot "$w/serial2.log"; grep -aE "lightsout:|LIGHTSOUT-SELFTEST" "$w/serial2.log" || true
-# boot 2 put a kernel option on trial: a new boot line changes the TPM's measurements, so,
-# as at every switch from Windows, the key is handed over for this start
+try() {   # as the installer does: a kernel option on this PC's trial list, and on the boot line
+  mtype -i "$ESP" ::/EFI/lightsout/tries > "$w/tries" 2>/dev/null || : > "$w/tries"
+  echo "$1 try" >> "$w/tries"; mcopy -o -i "$ESP" "$w/tries" ::/EFI/lightsout/tries
+  for d in lightsout fedora; do
+    mtype -i "$ESP" "::/EFI/$d/grub.cfg" | sed "s|^\(linux .*\)\$|\1 $1|" > "$w/g.cfg"
+    mcopy -o -i "$ESP" "$w/g.cfg" "::/EFI/$d/grub.cfg"
+  done
+}
+# a new boot line changes the TPM's measurements, so, as at every switch from Windows,
+# the key is handed over for this start
+try lightsout.works=1
 mcopy -o -i "$ESP" "$w/handoff.key" ::/EFI/lightsout/handoff.key
 echo "=== boot 3 (an option on trial; the key handed over again)"; boot "$w/serial3.log"; grep -aE "lightsout:|LIGHTSOUT-SELFTEST" "$w/serial3.log" || true
+try lightsout.fails=1
 sgdisk -d 2 -n 2:${c_start}:+$(( c_s - 131072 )) -t 2:0700 "$w/disk.img" >/dev/null
 echo "=== boot 4 (C: shorter than its file system)"; boot "$w/serial4.log"; grep -a "lightsout:" "$w/serial4.log" || true
 # boot 4 started with a kernel option on trial and never came up: boot 5 takes it off again
@@ -136,7 +146,7 @@ check "$w/restart.log" "now: reboot" "a restart records each step on the EFI par
 check "$w/restart.log" "drive locked again (0)" "the restart locks the unlocked drive again, without hanging"
 # kernel options on trial: kept after a start that came up, taken off after one that didn't
 check "$w/serial3.log" "drive key sealed into the TPM" "after a new boot line, the key handed over is sealed anew"
-check "$w/serial3.log" "LIGHTSOUT-SELFTEST: tries: lightsout.works=1 on lightsout.fails=1 try on-this-start=lightsout.works=1" "an option on trial whose start came up is kept"
+check "$w/serial3.log" "LIGHTSOUT-SELFTEST: tries: lightsout.works=1 on on-this-start=lightsout.works=1" "an option on trial whose start came up is kept"
 check "$w/serial4.log" "trying lightsout.fails=1" "the start using an option on trial marks it"
 check "$w/serial5.log" "on screen: A setting Lights Out was trying didn" "a start after one that never came up says so, in one line"
 mtype -i "$ESP" ::/EFI/lightsout/tries > "$w/tries" 2>/dev/null || true

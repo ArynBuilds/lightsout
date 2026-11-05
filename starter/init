@@ -57,7 +57,8 @@ done
 grep -q ' /esp ' /proc/mounts || { say "EFI partition not found"; fail "Lights Out couldn't find its files on this PC."; }
 L=/esp/EFI/lightsout
 
-# ---- kernel options being tried on this PC (see lightsout-tries): a start that uses one
+# ---- kernel options being tried on this PC (the installer puts them on the list and the
+# boot line; lightsout-started keeps them): a start that uses one
 # marks it; one whose start never came up is taken off the boot line for good
 if [ -f "$L/tries" ]; then
   while read -r opt state; do

@@ -53,6 +53,17 @@ $tpm = Get-Tpm -ErrorAction SilentlyContinue
 $tpmOk = $tpm -and $tpm.TpmReady
 $sb = $false; try { $sb = Confirm-SecureBootUEFI } catch {}
 Write-Host "Secure Boot: $sb, TPM: $(if ($tpmOk) {'ready'} else {'none'})"
+# The BIOS keeps PCIe link power saving from the OS: ACPI FADT, boot flags (offset 109), bit 0x10
+function Test-NoAspmFromBios {
+  if (-not ('LO.Fw' -as [type])) {
+    Add-Type -Namespace LO -Name Fw -MemberDefinition '[DllImport("kernel32.dll")] public static extern uint GetSystemFirmwareTable(uint provider, uint id, byte[] buf, uint size);'
+  }
+  $acpi = 0x41435049; $fadt = 0x50434146   # 'ACPI', 'FACP'
+  $n = [LO.Fw]::GetSystemFirmwareTable($acpi, $fadt, $null, 0)
+  if ($n -lt 111) { return $false }
+  $b = New-Object byte[] $n; [void][LO.Fw]::GetSystemFirmwareTable($acpi, $fadt, $b, $n)
+  return [bool]([BitConverter]::ToUInt16($b, 109) -band 0x10)
+}
 function Download($f, $to) { Write-Host "  $f"; curl.exe -fL --progress-bar -o $to "$Base/$f"; if ($LASTEXITCODE -ne 0) { Fail "could not download $f" } }
 if (-not $Source) {
   Step 'Downloading Lights Out'
@@ -186,10 +197,23 @@ try {
   }
   Copy-Item "$src\*" "$esp\EFI\lightsout\" -Force
   if ($updating) { New-Item -ItemType File -Force "$LO\update\trial" | Out-Null }
+  # Kernel options this PC tries, kept only if its start comes up (EFI\lightsout\tries,
+  # "<option> try|trying|on|off": the starter and lightsout-started move them on). A BIOS
+  # that keeps PCIe link power saving from the OS (ACPI FADT boot flag 0x10) gets
+  # pcie_aspm=force, what Windows' own drivers do in effect.
+  $tries = "$esp\EFI\lightsout\tries"
+  if ((Test-NoAspmFromBios) -and -not (Select-String -Quiet '^pcie_aspm=force ' $tries -ErrorAction SilentlyContinue)) {
+    [IO.File]::AppendAllText($tries, "pcie_aspm=force try`n")
+  }
+  # the boot line: this version's, with what this PC tries or keeps
+  $opts = @(Get-Content $tries -ErrorAction SilentlyContinue | Where-Object { $_ -match ' (try|trying|on)$' } | ForEach-Object { ($_ -split ' ')[0] })
+  $cfg = [IO.File]::ReadAllText("$src\grub.cfg")
+  if ($opts) { $cfg = $cfg -replace '(?m)^(linux /EFI/lightsout/vmlinuz [^\n]*)', "`$1 $($opts -join ' ')" }
+  [IO.File]::WriteAllText("$esp\EFI\lightsout\grub.cfg", $cfg)
   # the starter's boot loader is Fedora's, which reads \EFI\fedora\grub.cfg (left alone if Fedora is installed)
   if (-not (Test-Path "$esp\EFI\fedora") -or (Test-Path "$esp\EFI\lightsout\created-fedora-dir")) {
     New-Item -ItemType Directory -Force "$esp\EFI\fedora" | Out-Null
-    Copy-Item "$src\grub.cfg" "$esp\EFI\fedora\grub.cfg" -Force
+    [IO.File]::WriteAllText("$esp\EFI\fedora\grub.cfg", $cfg)
     Set-Content "$esp\EFI\lightsout\created-fedora-dir" 'yes'
   }
   # a new key was made above: the old sealed copy is useless now
