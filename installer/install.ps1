@@ -36,13 +36,8 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
   Start-Process powershell -Verb RunAs -ArgumentList $a
   return
 }
-if ($Channel -eq 'rc' -and -not $env:LIGHTSOUT_BASE -and -not $Source) {
-  # the newest release of any kind (test builds included)
-  $tag = ((Invoke-RestMethod 'https://api.github.com/repos/ArynBuilds/lightsout/releases?per_page=10') | Where-Object { -not $_.draft } | Select-Object -First 1).tag_name
-  if (-not $tag) { Write-Host 'STOP: could not find the newest test build' -ForegroundColor Red; return }
-  $Base = "https://github.com/ArynBuilds/lightsout/releases/download/$tag"
-  Write-Host "Test build: $tag" -ForegroundColor Yellow
-}
+# (lightsout.sh/rc sends this installer already pointed at the newest test build)
+if ($Channel -eq 'rc') { Write-Host "Test build: $(Split-Path $Base -Leaf)" -ForegroundColor Yellow }
 $LO = 'C:\LightsOut'
 New-Item -ItemType Directory -Force "$LO\config", "$LO\bin", "$LO\handoff", "$LO\wifi", "$LO\logs" | Out-Null
 Start-Transcript -Path "$LO\logs\install.log" -Force | Out-Null
