@@ -133,6 +133,7 @@ check "$w/serial4.log" "shown under the spinner" "the starter's splash shows tha
 for f in start restart; do mtype -i "$ESP" "::/EFI/lightsout/results/$f.log" > "$w/$f.log" 2>/dev/null || true; done
 check "$w/start.log" "TPM locked until the next start" "every start leaves its record on the EFI partition"
 check "$w/restart.log" "now: reboot" "a restart records each step on the EFI partition, to the last one"
+check "$w/restart.log" "drive locked again (0)" "the restart locks the unlocked drive again, without hanging"
 # kernel options on trial: kept after a start that came up, taken off after one that didn't
 check "$w/serial3.log" "drive key sealed into the TPM" "after a new boot line, the key handed over is sealed anew"
 check "$w/serial3.log" "LIGHTSOUT-SELFTEST: tries: lightsout.works=1 on lightsout.fails=1 try on-this-start=lightsout.works=1" "an option on trial whose start came up is kept"

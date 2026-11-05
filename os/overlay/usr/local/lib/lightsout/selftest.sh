@@ -58,5 +58,13 @@ if runuser -u lights -- env XDG_RUNTIME_DIR=/run/user/1000 SWAYSOCK="$(ls /run/u
   for i in $(seq 30); do new=$(pgrep -xn lightsout-app); [ -n "$new" ] && [ "$new" != "$old" ] && break; sleep 1; done
 fi
 if [ -n "${new:-}" ] && [ "$new" != "$old" ]; then s "screen-restart=ok"; else s "screen-restart=FAILED"; fi
+# the test C: is not BitLocker: a stand-in unlocked drive under the starter's name for it,
+# so the restart has one to lock again, as on a real PC
+if [ ! -e /dev/mapper/winc ]; then
+  head -c 8M /dev/zero > /run/winc.img; head -c 32 /dev/urandom > /run/winc.key
+  cryptsetup open --type plain --cipher aes-xts-plain64 --key-size 256 --key-file /run/winc.key \
+    "$(losetup -f --show /run/winc.img)" winc
+fi
+s "unlocked drive to lock at the restart: $(ls /dev/mapper/winc 2>&1)"
 s "done, restarting (as Lights On does; the test PC stops there)"
 systemctl reboot

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.2-rc.12
+
+A test build (`lightsout update`, or `irm https://lightsout.sh/rc | iex`).
+
+- **Lights On restarts into Windows on BitLocker PCs.** The restart hung at its last step, locking the drive again: the tool waited for an answer from a part of Linux that was already stopped. It no longer waits for it, and never more than 10 seconds. (Found with the new restart record.)
+
 ## 0.3.2-rc.11
 
 A test build (`irm https://lightsout.sh/rc | iex`, or `lightsout update`).

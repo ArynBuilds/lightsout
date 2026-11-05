@@ -19,7 +19,9 @@ step "your space and the system file closed"
 for l in /dev/loop*; do losetup -d "$l" 2>/dev/null; done
 sleep 1
 step "loop devices let go"
-cryptsetup close winc 2>/dev/null
+# udev is gone by now, but its mark in /run is not: without DM_DISABLE_UDEV the device-mapper
+# library waits for udev's answer forever (a restart that hangs); and never more than 10 s
+DM_DISABLE_UDEV=1 timeout 10 cryptsetup close winc 2>/dev/null
 step "drive locked again ($?)"
 step "now: ${1:-reboot} (anything after this is the kernel and the PC's firmware)"
 umount /esp 2>/dev/null; sync
