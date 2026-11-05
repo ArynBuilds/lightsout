@@ -4,9 +4,11 @@
 #   boot 1: one-time key handoff gets sealed into the TPM, system boots, writes to C:
 #   boot 2: after an update (a fresh system file), the key is unsealed from the TPM, the
 #           system boots again and your own space (user.img) and packages are still there
-#   boot 3: the partition is cut 64 MB shorter than the file system says (as on a PC where
+#   boot 3: with a kernel option on trial (a new boot line: the key is handed over again,
+#           as from Windows): it comes up, so the option is kept
+#   boot 4: the partition is cut 64 MB shorter than the file system says (as on a PC where
 #           the partition shrank), so the driver can only open C: read-only: it must stop
-#   boot 4: boot 3 used a kernel option on trial and never came up: it is taken off again
+#   boot 5: boot 4 used another option on trial and never came up: it is taken off again
 #   after:  the NTFS "C:" must be cleanly closed (Windows would not complain)
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -60,11 +62,16 @@ rm -f "$w/esp.img" "$w/c.img"
 df -h "$w" | tail -n 1
 
 # ---- virtual TPM 2.0 + UEFI firmware with Secure Boot on and Microsoft's keys, like a PC
-swtpm socket --tpm2 --tpmstate dir="$w/tpm" --ctrl type=unixio,path="$w/tpm.sock" --daemon
+tpm() {   # (re)started before each boot, as a PC's chip starts fresh; its state stays
+  pkill swtpm 2>/dev/null || true; sleep 1
+  swtpm socket --tpm2 --tpmstate dir="$w/tpm" --ctrl type=unixio,path="$w/tpm.sock" --daemon
+}
 OVMF_CODE=/usr/share/OVMF/OVMF_CODE_4M.secboot.fd
 cp /usr/share/OVMF/OVMF_VARS_4M.ms.fd "$w/vars.fd"
+ESP="$w/disk.img@@$(( 2048 * 512 ))"   # the EFI partition inside the disk, for mtools
 
 boot() {   # $1 = log file
+  tpm
   timeout 1500 qemu-system-x86_64 -machine q35,smm=on -global driver=cfi.pflash01,property=secure,value=on \
     -m 3072 -smp 2 -display none -vga virtio -no-reboot \
     -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" -drive if=pflash,format=raw,file="$w/vars.fd" \
@@ -81,18 +88,16 @@ mkdir -p "$w/mid"; ntfs-3g "$cdev" "$w/mid" && {
   cp --sparse=never "$SYSIMG" "$w/mid/LightsOut/system.img"
   umount "$w/mid"; }
 losetup -d "$cdev"
-pkill swtpm 2>/dev/null || true; sleep 1
-swtpm socket --tpm2 --tpmstate dir="$w/tpm" --ctrl type=unixio,path="$w/tpm.sock" --daemon
 echo "=== boot 2 (unseal)"; boot "$w/serial2.log"; grep -aE "lightsout:|LIGHTSOUT-SELFTEST" "$w/serial2.log" || true
+# boot 2 put a kernel option on trial: a new boot line changes the TPM's measurements, so,
+# as at every switch from Windows, the key is handed over for this start
+mcopy -o -i "$ESP" "$w/handoff.key" ::/EFI/lightsout/handoff.key
+echo "=== boot 3 (an option on trial; the key handed over again)"; boot "$w/serial3.log"; grep -aE "lightsout:|LIGHTSOUT-SELFTEST" "$w/serial3.log" || true
 sgdisk -d 2 -n 2:${c_start}:+$(( c_s - 131072 )) -t 2:0700 "$w/disk.img" >/dev/null
-pkill swtpm 2>/dev/null || true; sleep 1
-swtpm socket --tpm2 --tpmstate dir="$w/tpm" --ctrl type=unixio,path="$w/tpm.sock" --daemon
-echo "=== boot 3 (C: shorter than its file system)"; boot "$w/serial3.log"; grep -a "lightsout:" "$w/serial3.log" || true
-# boot 3 started with a kernel option on trial and never came up: boot 4 takes it off again
+echo "=== boot 4 (C: shorter than its file system)"; boot "$w/serial4.log"; grep -a "lightsout:" "$w/serial4.log" || true
+# boot 4 started with a kernel option on trial and never came up: boot 5 takes it off again
 sgdisk -d 2 -n 2:${c_start}:+${c_s} -t 2:0700 "$w/disk.img" >/dev/null
-pkill swtpm 2>/dev/null || true; sleep 1
-swtpm socket --tpm2 --tpmstate dir="$w/tpm" --ctrl type=unixio,path="$w/tpm.sock" --daemon
-echo "=== boot 4 (after a start whose option on trial never came up)"; boot "$w/serial4.log"; grep -a "lightsout:" "$w/serial4.log" || true
+echo "=== boot 5 (after a start whose option on trial never came up)"; boot "$w/serial5.log"; grep -a "lightsout:" "$w/serial5.log" || true
 
 # ---- checks
 ok=1
@@ -120,20 +125,21 @@ check "$w/serial1.log" "LIGHTSOUT-SELFTEST: own-space=/mnt/c/LightsOut/user.img 
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: own-space=/mnt/c/LightsOut/user.img kept=yes" "an update (a new system file) kept your own space and your packages"
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: screen-restart=ok" "the emergency key brings a frozen screen back"
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: api: PANE  ROOM .*TAB  STATE" "control commands work inside Lights Out"
-check "$w/serial3.log" "C: opened read-only by the driver" "boot 3 noticed C: opened read-only"
-check "$w/serial3.log" "The system file needs a writable drive" "boot 3 stopped instead of running read-only"
-check "$w/serial3.log" "on screen: Windows didn.t fully shut down" "boot 3 told you why, in one line"
-check "$w/serial3.log" "shown under the spinner" "the starter's splash shows that line"
-# the records on the EFI partition (partition 1, 1 MB in): every start, and boot 2's restart to its last step
-for f in start restart; do mtype -i "$w/disk.img@@$(( 2048 * 512 ))" "::/EFI/lightsout/results/$f.log" > "$w/$f.log" 2>/dev/null || true; done
+check "$w/serial4.log" "C: opened read-only by the driver" "boot 4 noticed C: opened read-only"
+check "$w/serial4.log" "The system file needs a writable drive" "boot 4 stopped instead of running read-only"
+check "$w/serial4.log" "on screen: Windows didn.t fully shut down" "boot 4 told you why, in one line"
+check "$w/serial4.log" "shown under the spinner" "the starter's splash shows that line"
+# the records on the EFI partition: every start, and boot 3's restart to its last step
+for f in start restart; do mtype -i "$ESP" "::/EFI/lightsout/results/$f.log" > "$w/$f.log" 2>/dev/null || true; done
 check "$w/start.log" "TPM locked until the next start" "every start leaves its record on the EFI partition"
 check "$w/restart.log" "now: reboot" "a restart records each step on the EFI partition, to the last one"
 # kernel options on trial: kept after a start that came up, taken off after one that didn't
-check "$w/serial2.log" "LIGHTSOUT-SELFTEST: tries: lightsout.works=1 on lightsout.fails=1 try on-this-start=lightsout.works=1" "an option on trial whose start came up is kept"
-check "$w/serial3.log" "trying lightsout.fails=1" "the start using an option on trial marks it"
-check "$w/serial4.log" "on screen: A setting Lights Out was trying didn" "a start after one that never came up says so, in one line"
-mtype -i "$w/disk.img@@$(( 2048 * 512 ))" ::/EFI/lightsout/tries > "$w/tries" 2>/dev/null || true
-mtype -i "$w/disk.img@@$(( 2048 * 512 ))" ::/EFI/fedora/grub.cfg > "$w/grub-after.cfg" 2>/dev/null || true
+check "$w/serial3.log" "drive key sealed into the TPM" "after a new boot line, the key handed over is sealed anew"
+check "$w/serial3.log" "LIGHTSOUT-SELFTEST: tries: lightsout.works=1 on lightsout.fails=1 try on-this-start=lightsout.works=1" "an option on trial whose start came up is kept"
+check "$w/serial4.log" "trying lightsout.fails=1" "the start using an option on trial marks it"
+check "$w/serial5.log" "on screen: A setting Lights Out was trying didn" "a start after one that never came up says so, in one line"
+mtype -i "$ESP" ::/EFI/lightsout/tries > "$w/tries" 2>/dev/null || true
+mtype -i "$ESP" ::/EFI/fedora/grub.cfg > "$w/grub-after.cfg" 2>/dev/null || true
 check "$w/tries" "lightsout.fails=1 off" "that option is off for good"
 if grep -q "lightsout.works=1" "$w/grub-after.cfg" && ! grep -q "lightsout.fails=1" "$w/grub-after.cfg"; then
   echo "PASS: the boot line keeps the option that worked and drops the one that didn't"
