@@ -25,6 +25,7 @@ lightsout read PANE [--lines N]             what a pane shows (the last N lines,
 lightsout wait PANE [--until idle|done|needs-you] [--timeout SECONDS]
                                             wait until the pane gets there (default: done or idle)
 lightsout explain PANE                      why Lights Out thinks a pane is in its state
+lightsout close PANE                        close a pane and stop its program (like "Close pane")
 ```
 
 States: `working` (output is changing), `needs-you` (it asks a question),

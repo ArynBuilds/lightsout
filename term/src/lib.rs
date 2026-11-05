@@ -2690,6 +2690,14 @@ impl App {
                 }
                 _ => json!({ "error": "no such pane" }),
             },
+            // the same as "Close pane" in the actions: its program is stopped
+            "close" => match pane_arg(&a) {
+                Some(id) if self.panes.contains_key(&id) => {
+                    self.close_pane(id);
+                    json!({ "ok": true })
+                }
+                _ => json!({ "error": "no such pane" }),
+            },
             "notify" => {
                 let t = a["text"].as_str().unwrap_or("").to_string();
                 self.toast(t, self.theme.accent);
@@ -3909,7 +3917,7 @@ Lights Out: the terminal for AI agents.
   lightsout uninstall             remove Lights Out from this computer
 
 Control the running app (also for agents; details: `lightsout skill`):
-  lightsout list | new | send | read | wait | explain | focus | notify | screen | power | switch
+  lightsout list | new | send | read | wait | explain | focus | close | notify | screen | power | switch
 ";
 
 /// One word of a command, quoted for the shell that runs it (PowerShell on Windows, sh elsewhere).
@@ -3989,6 +3997,7 @@ fn client(session: &str, args: &[String]) -> i32 {
         ),
         "explain" => ("explain", json!({ "pane": pane(0) })),
         "focus" => ("focus", json!({ "pane": pane(0) })),
+        "close" => ("close", json!({ "pane": pane(0) })),
         "notify" => ("notify", json!({ "text": positional.join(" ") })),
         "screen" => (
             "screen",
@@ -4360,8 +4369,8 @@ pub fn main_entry() {
         alacritty_terminal::tty::setup_env();
         return headless::run(&session);
     }
-    // Mac sign-in: open only when coming back from Lights Out
-    if rest.first().map(String::as_str) == Some("--if-returning") && !platform::in_lightsout() {
+    // signing in (Windows, Mac): open only when coming back from Lights Out
+    if rest.first().map(String::as_str) == Some("--if-returning") && !platform::returning() {
         return;
     }
     let rest: Vec<String> = rest.into_iter().filter(|a| a != "--if-returning").collect();

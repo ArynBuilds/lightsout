@@ -1,13 +1,16 @@
 # Changelog
 
-## 0.3.2-rc.8
+## 0.3.2-rc.9
 
 A test build (`irm https://lightsout.sh/rc | iex`).
 
+- **Lights On restarts into Windows without hanging.** Some laptops hung at the last step of the restart (the firmware's own restart call, which Lights Out used). It now restarts the usual way, and if a restart or shut-down still hangs, the chip's watchdog forces it after 30 seconds.
+- **Back in Windows, Lights Out opens by itself** with your tabs (only when you come back from Lights Out; otherwise it stays closed at sign-in).
+- **`lightsout close PANE`**: agents can close a pane, the same as "Close pane" in the actions.
 - **Everything goes back to normal, however Lights Out stops.**
   - Mac: a small background service puts your settings back (sleep, Low Power Mode, Spotlight, Time Machine, Bluetooth, slowed-down apps) when Lights Out stopped without Lights On: a crash, a force quit, a restart or an empty battery. It checks at start-up and every 30 seconds.
   - Linux PC: Bluetooth and the keyboard light are put back before a shutdown saves their state.
-  - Lights Out mode on a Windows PC: a frozen system restarts by itself after a minute, into Windows.
+  - Lights Out mode on a Windows PC: a crashed terminal comes back within seconds with your tabs (before, the screen stayed black), and a frozen system restarts by itself after a minute, into Windows.
   - A frozen screen: `Ctrl+Alt+Backspace` restarts the Lights Out screen (and on a Linux PC, brings the desktop back).
 - **Battery time left** next to the battery % (and in `lightsout power`).
 - **Hooks from Windows settings don't fail in Lights Out mode.** Your home folder is the Windows one, so CLI hooks and status lines that start a Windows program (a `C:\` path, an `.exe`, PowerShell) ran into "not found" on every event. They now quietly do nothing, since Windows is off.

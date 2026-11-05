@@ -38,6 +38,7 @@ Remove-Item $state -Recurse -Force -ErrorAction SilentlyContinue
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 [Environment]::SetEnvironmentVariable('Path', ((($userPath -split ';') | Where-Object { $_ -and $_ -ne "$LO\bin" }) -join ';'), 'User')
 Remove-Item "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Lights Out.lnk" -ErrorAction SilentlyContinue
+Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'Lights Out' -ErrorAction SilentlyContinue
 if ($KeepSystem) {
   Get-ChildItem $LO -Exclude system.img | Remove-Item -Recurse -Force
   Write-Host "kept $LO\system.img"

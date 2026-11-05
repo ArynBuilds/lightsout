@@ -56,6 +56,16 @@ pub fn in_lightsout() -> bool {
     image() || in_place()
 }
 
+/// Signing in after Lights Out: Windows, its tabs are waiting (back.json); Mac, Lights Out
+/// is still on (the background service has the tabs).
+pub fn returning() -> bool {
+    if cfg!(windows) {
+        lightsout_dir().join("handoff").join("back.json").exists()
+    } else {
+        in_lightsout()
+    }
+}
+
 /// Kept across restarts (sessions, handover). Linux: ~/.local/state/lightsout.
 pub fn data_dir() -> PathBuf {
     let d = if cfg!(windows) {

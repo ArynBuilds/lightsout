@@ -51,6 +51,7 @@ Every pane can be driven with `lightsout` commands, from any terminal or from an
 | `lightsout read PANE [--lines N]` | Prints what a pane shows (the last 60 lines unless `--lines`) |
 | `lightsout wait PANE [--until idle\|done\|needs-you] [--timeout S]` | Waits until the pane reaches that state |
 | `lightsout explain PANE` | Why Lights Out thinks a pane is in its state |
+| `lightsout close PANE` | Close a pane and stop its program (like "Close pane" in the actions) |
 | `lightsout notify TEXT...` | Shows a popup |
 | `lightsout screen off\|on` | Switches the screen off or on |
 | `lightsout power` | Battery and power draw |

@@ -41,6 +41,9 @@ jobs:
           $w.WriteLine('{"Resize":[101,30]}')
           if ($s.Read($buf, 0, $buf.Length) -le 0) { throw 'the quiet view was dropped' }
           Get-Process lightsout | Stop-Process -Force
+          # signing in without coming back from Lights Out: the app stays closed
+          $p = Start-Process "$PWD/term/target/release/lightsout-app.exe" -ArgumentList '--if-returning' -PassThru
+          if (-not $p.WaitForExit(10000)) { $p.Kill(); throw 'the app opened at sign-in without coming back from Lights Out' }
           'WINDOWS TEST PASSED'
       - uses: actions/upload-artifact@v4
         with:
@@ -126,6 +129,8 @@ jobs:
           $B/lightsout read "$(pane 2)" | grep -q continued-plain
           if $B/lightsout read "$(pane 3)" | grep -qE '^typed-back\s*$'; then echo "an unknown command ran"; exit 1; fi
           $B/lightsout read "$(pane 3)" | grep -q "echo typed-back"
+          $B/lightsout close "$(pane 3)"; sleep 1          # closing a pane: it is gone from the list
+          ! $B/lightsout list | awk 'NR > 1 {print $1}' | grep -qx "$(pane 3)"
           pkill -f -- "--session cireopen --server" || true
           echo "TERMINAL VIEW TEST PASSED"
       - name: Test on this Linux machine (install, Lights Out screen, power restore, uninstall)

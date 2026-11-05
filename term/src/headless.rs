@@ -204,6 +204,13 @@ pub fn run(session: &str) {
                         }
                         None => json!({ "error": "no such pane" }),
                     },
+                    "close" => match pane_of(&a).and_then(|id| panes.get(&id)) {
+                        Some(p) => {
+                            p.shutdown();
+                            json!({ "ok": true })
+                        }
+                        None => json!({ "error": "no such pane" }),
+                    },
                     "power" => match platform::battery() {
                         Some(b) => {
                             json!({ "percent": b.percent, "watts": b.watts, "charging": b.charging, "hours_left": b.hours_left })

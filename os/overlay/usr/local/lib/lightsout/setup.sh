@@ -42,10 +42,10 @@ ln -sf ../sbin/modprobe /usr/bin/modprobe
 # /bin/sh is dash behind a front that lets Windows programs (Windows is off) succeed quietly
 dpkg-divert --local --no-rename --divert /usr/bin/sh.dash --add /usr/bin/sh
 ln -sf /usr/local/lib/lightsout/sh /usr/bin/sh
-# A frozen system restarts by itself after a minute (the chip's watchdog): on a Windows PC,
-# into Windows, which checks the drive
+# A frozen system restarts by itself after a minute, and a restart or shut-down that hangs
+# is forced after 30 s (the chip's watchdog). On a Windows PC: into Windows, which checks the drive
 mkdir -p /etc/systemd/system.conf.d
-printf '[Manager]\nRuntimeWatchdogSec=1min\n' > /etc/systemd/system.conf.d/lightsout.conf
+printf '[Manager]\nRuntimeWatchdogSec=1min\nRebootWatchdogSec=30s\n' > /etc/systemd/system.conf.d/lightsout.conf
 # Smaller journal, kept in RAM (fewer disk writes = less power)
 mkdir -p /etc/systemd/journald.conf.d
 printf '[Journal]\nStorage=volatile\nRuntimeMaxUse=32M\n' > /etc/systemd/journald.conf.d/lightsout.conf

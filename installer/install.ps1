@@ -258,6 +258,8 @@ finally { mountvol "`$(`$letter):" /D }
 schtasks /create /tn '\LightsOut\Cleanup' /tr "powershell.exe -NoProfile -ExecutionPolicy Bypass -File $LO\bin\cleanup.ps1" /sc onstart /ru SYSTEM /rl HIGHEST /f | Out-Null
 # Windows' default only starts a task when plugged in; Lights Out must also work on battery
 Set-ScheduledTask -TaskPath '\LightsOut\' -TaskName Cleanup -Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 10)) | Out-Null
+# back from Lights Out: at sign-in the app opens and takes your tabs back (otherwise it stays closed)
+Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'Lights Out' -Value "`"$LO\bin\lightsout-app.exe`" --if-returning"
 $lnk = (New-Object -ComObject WScript.Shell).CreateShortcut("$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Lights Out.lnk")
 $lnk.TargetPath = "$LO\bin\lightsout-app.exe"; $lnk.WorkingDirectory = $env:USERPROFILE; $lnk.Save()
 
