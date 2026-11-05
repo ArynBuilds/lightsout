@@ -182,7 +182,7 @@ try {
   if ($freeMB + $existing - $needMB -lt $MinEspFreeMB) { Fail "not enough room on the EFI partition ($freeMB MB free)" }
   New-Item -ItemType Directory -Force "$esp\EFI\lightsout" | Out-Null
   if ($updating -and -not $keepPrev) {   # the previous starter, never the one-time key files
-    Get-ChildItem "$esp\EFI\lightsout" -File -Exclude 'handoff.*' | Copy-Item -Destination "$prev\starter"
+    Get-ChildItem "$esp\EFI\lightsout\*" -File -Exclude 'handoff.*' | Copy-Item -Destination "$prev\starter"   # (\*: -Exclude needs it)
   }
   Copy-Item "$src\*" "$esp\EFI\lightsout\" -Force
   if ($updating) { New-Item -ItemType File -Force "$LO\update\trial" | Out-Null }
