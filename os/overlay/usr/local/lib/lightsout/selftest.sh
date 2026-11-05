@@ -16,6 +16,7 @@ api=$(runuser -u lights -- env XDG_RUNTIME_DIR=/run/user/1000 /usr/local/bin/lig
 s "api: $api"
 s "windows-user=$(cat /etc/lightsout/windows-user 2>/dev/null)"
 s "iwd-networks=$(ls /var/lib/iwd 2>/dev/null | tr '\n' ' ')"
+systemctl is-system-running --wait >/dev/null 2>&1   # every service has started (or failed) by now
 s "failed-units=$(systemctl --failed --no-legend --plain | awk '{print $1}' | tr '\n' ' ')"
 for u in $(systemctl --failed --no-legend --plain | awk '{print $1}'); do
   journalctl -b -u "$u" -n 8 --no-pager -o cat 2>/dev/null | sed "s/^/LIGHTSOUT-SELFTEST: [$u] /" > /dev/ttyS0

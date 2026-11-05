@@ -75,9 +75,9 @@ mkdir -p "$out/boot"
 cp "$root/boot/vmlinuz-$KVER" "$out/boot/vmlinuz"
 echo "$KVER" > "$out/boot/kernel-version"
 
-# Pack: used size + 1.5 GB headroom (grows later from inside Lights Out)
+# Pack: used size + 3 GB of room, more than the 1.5 GB at which it grows (later, from inside Lights Out)
 used_mb=$(du -sm "$root" | cut -f1)
-size_mb=$(( used_mb + 1536 ))
+size_mb=$(( used_mb + 3072 ))
 rm -f "$out/system.img"
 mkfs.ext4 -q -L lightsout -d "$root" "$out/system.img" "${size_mb}M"
 # gzip: Windows can unpack it without extra tools

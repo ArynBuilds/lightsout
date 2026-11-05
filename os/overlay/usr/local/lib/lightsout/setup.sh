@@ -1,7 +1,7 @@
 #!/bin/bash
 # Runs once inside the new system at build time.
 set -e
-chmod 755 /usr/local/sbin/lightsout-home /usr/local/sbin/lightsout-split /usr/local/sbin/lightsout-grow /usr/local/sbin/lightsout-power /usr/local/bin/lightsout-install-agents /usr/local/lib/lightsout/*.sh /usr/local/lib/lightsout/*.py /usr/local/lib/lightsout/sh /usr/local/lib/lightsout/lowest-refresh /usr/local/lib/lightsout/packages
+chmod 755 /usr/local/sbin/* /usr/local/bin/* /usr/local/lib/lightsout/*   # every script of ours (a list misses new ones)
 
 # The user. Its home folder is your own space: user.img on C:, kept by updates (see lightsout-home).
 groupadd -f netdev
@@ -51,7 +51,7 @@ printf '[Manager]\nRuntimeWatchdogSec=1min\nRebootWatchdogSec=30s\n' > /etc/syst
 # once the terminal is gone.
 printf '[Daemon]\nTheme=bgrt\n' > /etc/plymouth/plymouthd.conf
 mkdir -p /etc/systemd/system/plymouth-quit.service.d
-printf '[Service]\nExecStart=\nExecStart=-/usr/bin/plymouth quit --retain-splash\n' > /etc/systemd/system/plymouth-quit.service.d/lightsout.conf
+printf '[Unit]\n# the splash stays until just before the terminal starts (after your space and Wi-Fi are ready)\nAfter=lightsout-wifi.service lightsout-split.service\n[Service]\nExecStart=\nExecStart=-/usr/bin/plymouth quit --retain-splash\n' > /etc/systemd/system/plymouth-quit.service.d/lightsout.conf
 for u in reboot poweroff halt; do
   mkdir -p "/etc/systemd/system/plymouth-$u.service.d"
   printf '[Unit]\nAfter=lightsout-session.service\n' > "/etc/systemd/system/plymouth-$u.service.d/lightsout.conf"

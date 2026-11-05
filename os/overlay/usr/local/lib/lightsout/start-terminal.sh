@@ -29,6 +29,9 @@ bindswitch --reload --locked lid:on exec sh -c 'swaymsg "output * power off"; li
 bindswitch --reload --locked lid:off exec sh -c 'swaymsg "output * power on"; lightsout screen on'
 # a frozen screen: Ctrl+Alt+Backspace stops the terminal, which restarts it (your tabs come back)
 bindsym --locked Ctrl+Alt+BackSpace exec pkill -KILL -x lightsout-app
+# the brightness keys (never fully dark: 1% is the lowest)
+bindsym --locked XF86MonBrightnessUp exec brightnessctl -q set 5%+
+bindsym --locked XF86MonBrightnessDown exec brightnessctl -q -n 1% set 5%-
 exec /usr/local/lib/lightsout/lowest-refresh
 # the terminal ended (closed, crashed, stopped by the key): sway ends too, so the service restarts both
 exec sh -c '$term; swaymsg exit'

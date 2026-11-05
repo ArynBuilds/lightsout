@@ -20,6 +20,9 @@ bindswitch --reload --locked lid:on exec sh -c 'swaymsg "output * power off"; li
 bindswitch --reload --locked lid:off exec sh -c 'swaymsg "output * power on"; lightsout screen on'
 # a frozen screen: Ctrl+Alt+Backspace ends Lights Out and brings the desktop back
 bindsym --locked Ctrl+Alt+BackSpace exec pkill -KILL -x lightsout-app
+# the brightness keys (never fully dark: 1% is the lowest)
+bindsym --locked XF86MonBrightnessUp exec brightnessctl -q set 5%+
+bindsym --locked XF86MonBrightnessDown exec brightnessctl -q -n 1% set 5%-
 exec sh -c 'lightsout-app; swaymsg exit'
 CONF
 # lid closed = screen off, never sleep (while Lights Out runs)

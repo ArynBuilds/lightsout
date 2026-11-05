@@ -53,6 +53,7 @@ const DONE: u32 = 0x6fcf7f;
 const BORDER: u32 = 0x26262c;
 const PADX: i32 = 6;
 const FRAME: Duration = Duration::from_millis(33); // at most ~30 redraws per second, only when something changed
+const FRAME_ON_BATTERY: Duration = Duration::from_millis(100); // ~10: streaming text still reads smoothly
 
 fn rgb(c: Rgb) -> u32 {
     (c.r as u32) << 16 | (c.g as u32) << 8 | c.b as u32
@@ -351,6 +352,10 @@ struct App {
     seen_room: usize,
     seen_tab: usize,
     battery_text: String,
+    /// On battery: fewer redraws per second.
+    on_battery: bool,
+    /// The frame on screen, so the compositor is told only what changed.
+    shown: Vec<u32>,
     battery_at: Instant,
     /// The time left, averaged over readings (one busy moment doesn't swing it).
     hours_avg: Option<f32>,
@@ -455,6 +460,8 @@ impl App {
             seen_room: usize::MAX,
             seen_tab: usize::MAX,
             battery_text: String::new(),
+            on_battery: false,
+            shown: Vec::new(),
             battery_at: Instant::now() - Duration::from_secs(60),
             hours_avg: None,
             bar_texts: Vec::new(),
@@ -2736,7 +2743,9 @@ impl App {
             return;
         }
         self.battery_at = Instant::now();
-        self.battery_text = match platform::battery() {
+        let battery = platform::battery();
+        self.on_battery = battery.as_ref().is_some_and(|b| !b.charging);
+        self.battery_text = match battery {
             Some(b) => {
                 self.hours_avg = b
                     .hours_left
@@ -2893,7 +2902,7 @@ impl App {
             );
             let dots: String = "●".repeat(self.pin.chars().count());
             cv.text(f, center(&dots), cy + ch * 4, &dots, false, t.fg);
-            let _ = buffer.present();
+            present(buffer, &mut self.shown, w);
             return;
         }
 
@@ -3480,7 +3489,7 @@ impl App {
             cv.rect(tx, toast_y, tw as u32, (ch + 6) as u32, 0x000000);
             cv.text(f, tx + cw, toast_y + 3, &toast.text, false, t.fg);
         }
-        let _ = buffer.present();
+        present(buffer, &mut self.shown, w);
     }
 
     fn reload_config_if_changed(&mut self) {
@@ -3890,7 +3899,7 @@ impl App {
             self.save_session();
         }
         if self.dirty && !self.screen_off && !self.hidden {
-            let frame = self.last_draw + FRAME;
+            let frame = self.last_draw + if self.on_battery { FRAME_ON_BATTERY } else { FRAME };
             if now >= frame {
                 self.redraw = true;
             } else {
@@ -4452,6 +4461,31 @@ pub fn main_entry() {
     platform::lid_restore();
 }
 
+/// Shows a drawn frame. The compositor is told only the rows that changed since the last one
+/// (a moving spinner is a thin strip, not the whole screen); an unchanged frame isn't sent.
+fn present(buffer: softbuffer::Buffer<'_, Rc<Window>, Rc<Window>>, shown: &mut Vec<u32>, w: u32) {
+    let Some((top, bottom)) = changed_rows(&buffer, shown, w as usize) else {
+        return;
+    };
+    shown.clear();
+    shown.extend_from_slice(&buffer);
+    let (Some(width), Some(height)) = (NonZeroU32::new(w), NonZeroU32::new((bottom - top + 1) as u32)) else {
+        return;
+    };
+    let _ = buffer.present_with_damage(&[softbuffer::Rect { x: 0, y: top as u32, width, height }]);
+}
+
+/// The first and last row (of `w` pixels) that differ; none for the same frame. A frame of
+/// another size differs everywhere.
+fn changed_rows(new: &[u32], old: &[u32], w: usize) -> Option<(usize, usize)> {
+    let rows = new.len().checked_div(w).filter(|r| *r > 0)?;
+    if new.len() != old.len() {
+        return Some((0, rows - 1));
+    }
+    let same = |i: usize| new[i * w..(i + 1) * w] == old[i * w..(i + 1) * w];
+    Some(((0..rows).find(|&i| !same(i))?, (0..rows).rev().find(|&i| !same(i))?))
+}
+
 /// 0.75 h -> "45m", 1.67 h -> "1h40".
 fn time_left(hours: f32) -> String {
     let m = (hours * 60.0).round() as u32;
@@ -4472,6 +4506,21 @@ fn wheel_lines(rest: &mut f64, delta: MouseScrollDelta, cell_h: f64) -> i32 {
     let lines = rest.trunc();
     *rest -= lines;
     lines as i32
+}
+
+#[cfg(test)]
+mod present_tests {
+    #[test]
+    fn only_the_rows_that_changed_are_sent() {
+        let old = vec![0u32; 4 * 5]; // 4 pixels wide, 5 rows
+        let mut new = old.clone();
+        assert_eq!(super::changed_rows(&new, &old, 4), None); // the same frame: nothing to send
+        new[4 * 2 + 1] = 7; // row 2
+        new[4 * 3] = 7; // row 3
+        assert_eq!(super::changed_rows(&new, &old, 4), Some((2, 3)));
+        assert_eq!(super::changed_rows(&new, &[], 4), Some((0, 4))); // first frame or resized: all
+        assert_eq!(super::changed_rows(&new, &old, 0), None);
+    }
 }
 
 #[cfg(test)]

@@ -4,7 +4,8 @@ ConditionPathExists=/boot/efi/EFI/lightsout/selftest
 After=lightsout-session.service lightsout-wifi.service
 
 [Service]
-Type=oneshot
+# simple: start-up counts as finished without it, so it can wait for that
+Type=simple
 ExecStart=/usr/local/lib/lightsout/selftest.sh
 
 [Install]
