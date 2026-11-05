@@ -47,6 +47,7 @@ lo send "$id" "sleep 6001; true" >/dev/null
 tabs="$(getent passwd lights | cut -d: -f6)/.local/state/lightsout"
 for i in $(seq 15); do grep -qs '"command":"sleep 6001"' "$tabs"/session-*.json && break; sleep 1; done
 s "program-in-tab-recorded=$(grep -qs '"command":"sleep 6001"' "$tabs"/session-*.json && echo yes || echo no)"
+before=$(lo list 2>/dev/null | grep -c " /tmp$")
 old=$(pgrep -xn lightsout-app)
 key='bindsym --locked Ctrl+Alt+BackSpace exec pkill -KILL -x lightsout-app'
 if runuser -u lights -- env XDG_RUNTIME_DIR=/run/user/1000 SWAYSOCK="$(ls /run/user/1000/sway-ipc.*.sock 2>/dev/null | head -n1)" \
@@ -55,6 +56,7 @@ if runuser -u lights -- env XDG_RUNTIME_DIR=/run/user/1000 SWAYSOCK="$(ls /run/u
 fi
 if [ -n "${new:-}" ] && [ "$new" != "$old" ]; then s "screen-restart=ok"; else s "screen-restart=FAILED"; fi
 sleep 3
-s "tabs-after-restart=$(lo list 2>/dev/null | grep -c ' /tmp$') (1 = the tab came back)"
+after=$(lo list 2>/dev/null | grep -c " /tmp$")
+if [ "$before" -gt 0 ] && [ "$after" = "$before" ]; then s "tabs-after-restart=all ($after)"; else s "tabs-after-restart=LOST ($before before, $after after)"; fi
 s "done, restarting (as Lights On does; the test PC stops there)"
 systemctl reboot

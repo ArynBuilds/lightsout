@@ -139,7 +139,7 @@ check "$w/serial1.log" "LIGHTSOUT-SELFTEST: own-space=/mnt/c/LightsOut/user.img 
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: own-space=/mnt/c/LightsOut/user.img kept=yes" "an update (a new system file) kept your own space and your packages"
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: screen-restart=ok" "the emergency key brings a frozen screen back"
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: program-in-tab-recorded=yes" "a program typed in a tab is recorded right away"
-check "$w/serial2.log" "LIGHTSOUT-SELFTEST: tabs-after-restart=1 " "after a crash or the emergency key, the tabs come back"
+check "$w/serial2.log" "LIGHTSOUT-SELFTEST: tabs-after-restart=all " "after a crash or the emergency key, the tabs come back"
 check "$w/serial2.log" "EFI partition checked" "a start after a forced power-off checks the EFI partition"
 if [ "$dirty_after" = 0 ]; then echo "PASS: the EFI partition is no longer marked (no warning at every start)"
 else echo "FAIL: the EFI partition is still marked as not closed cleanly"; ok=0; fi
