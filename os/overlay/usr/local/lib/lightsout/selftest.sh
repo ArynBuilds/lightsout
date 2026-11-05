@@ -39,7 +39,14 @@ s "own-space=$(losetup -nO BACK-FILE "$(findmnt -no SOURCE /home/lights)" 2>/dev
 # kernel options on trial (the test puts them on the list and the boot line, as the installer does)
 s "tries: $(tr '\n' ' ' < /boot/efi/EFI/lightsout/tries 2>/dev/null)on-this-start=$(grep -o 'lightsout.works=1' /proc/cmdline)"
 s "watchdog=$(systemctl show -p RuntimeWatchdogUSec --value) at-restart=$(systemctl show -p RebootWatchdogUSec --value) kept-on-in-restart=$(cat /sys/module/watchdog/parameters/stop_on_reboot 2>/dev/null)"
-# a crashed or frozen terminal (the emergency key Ctrl+Alt+Backspace kills it): a new one must come up
+# a crashed or frozen terminal (the emergency key Ctrl+Alt+Backspace kills it): a new one must come
+# up with the same tabs, knowing what ran in them (agents continue from that)
+lo() { runuser -u lights -- env XDG_RUNTIME_DIR=/run/user/1000 /usr/local/bin/lightsout "$@"; }
+id=$(lo new --cwd /tmp | grep -o '[0-9]\+' | head -n1)
+lo send "$id" "sleep 6001; true" >/dev/null
+tabs="$(getent passwd lights | cut -d: -f6)/.local/state/lightsout"
+for i in $(seq 15); do grep -qs '"command":"sleep 6001"' "$tabs"/session-*.json && break; sleep 1; done
+s "program-in-tab-recorded=$(grep -qs '"command":"sleep 6001"' "$tabs"/session-*.json && echo yes || echo no)"
 old=$(pgrep -xn lightsout-app)
 key='bindsym --locked Ctrl+Alt+BackSpace exec pkill -KILL -x lightsout-app'
 if runuser -u lights -- env XDG_RUNTIME_DIR=/run/user/1000 SWAYSOCK="$(ls /run/user/1000/sway-ipc.*.sock 2>/dev/null | head -n1)" \
@@ -47,5 +54,7 @@ if runuser -u lights -- env XDG_RUNTIME_DIR=/run/user/1000 SWAYSOCK="$(ls /run/u
   for i in $(seq 30); do new=$(pgrep -xn lightsout-app); [ -n "$new" ] && [ "$new" != "$old" ] && break; sleep 1; done
 fi
 if [ -n "${new:-}" ] && [ "$new" != "$old" ]; then s "screen-restart=ok"; else s "screen-restart=FAILED"; fi
+sleep 3
+s "tabs-after-restart=$(lo list 2>/dev/null | grep -c ' /tmp$') (1 = the tab came back)"
 s "done, restarting (as Lights On does; the test PC stops there)"
 systemctl reboot

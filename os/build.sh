@@ -12,7 +12,7 @@ pkgs=(
   # base system
   systemd systemd-sysv udev dbus libpam-systemd sudo bash-completion less nano vim-tiny
   ca-certificates curl wget git openssh-client gnupg jq ripgrep unzip xz-utils zstd
-  procps psmisc file htop tmux man-db locales kmod e2fsprogs efibootmgr
+  procps psmisc file htop tmux man-db locales kmod e2fsprogs efibootmgr dosfstools
   # agent toolbox (more via `sudo apt install`, kept on disk)
   nodejs npm python3 python3-venv python3-pip pipx gh
   # network: iwd does Wi-Fi + DHCP on its own

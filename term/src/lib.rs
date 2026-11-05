@@ -52,7 +52,8 @@ const ALERT: u32 = 0xff6b5b;
 const DONE: u32 = 0x6fcf7f;
 const BORDER: u32 = 0x26262c;
 const PADX: i32 = 6;
-const FRAME: Duration = Duration::from_millis(33); // at most ~30 redraws per second, only when something changed
+/// At most ~30 redraws per second, only when something changed.
+const FRAME: Duration = Duration::from_millis(33);
 // On battery, while you aren't typing or pointing: ~4 a second. Every screen update wakes the
 // display (the panel stops refreshing itself), so agent output comes in fewer, bigger steps.
 const FRAME_ON_BATTERY: Duration = Duration::from_millis(250);
@@ -1190,7 +1191,6 @@ impl App {
     fn save_session(&mut self) {
         self.saved_at = Instant::now();
         if !self.cfg.history.keep
-            || platform::in_lightsout()
             || (self.tabs.is_empty() && self.rooms.iter().all(|r| r.tabs.is_empty()))
         {
             return;
@@ -1302,18 +1302,16 @@ impl App {
     }
 
     fn start(&mut self) {
-        if platform::in_lightsout() {
-            if let Some(s) = platform::take_handoff() {
-                self.restore(s, platform::image());
-            }
-        } else if let Some(s) = platform::take_handoff() {
-            // back on the Linux desktop / logged back in on the Mac, or a Windows switch that
-            // didn't reach Lights Out: the tabs saved at the switch are the newest
-            self.restore(s, false);
+        if let Some(s) = platform::take_handoff() {
+            // the tabs saved at a switch are the newest: in Lights Out the ones from Windows
+            // (their paths mapped); back on the Linux desktop / logged back in on the Mac; or a
+            // Windows switch that didn't reach Lights Out
+            self.restore(s, platform::image());
         } else if let Some(s) = platform::take_handback() {
             // back in Windows: the tabs from Lights Out come along (conversations continue)
             self.restore(s, true);
         } else if self.cfg.history.keep {
+            // also a terminal that crashed or was closed with Ctrl+Alt+Backspace in Lights Out
             if let Some(s) = session::load(&session::local_file(&self.session)) {
                 self.restore(s, false);
             }
@@ -3829,11 +3827,13 @@ impl App {
                 Ok(map) => {
                     self.commands = map;
                     self.commands_rx = None;
+                    // a program started or ended in a tab: a crash from now on brings it back
+                    self.save_session();
                 }
                 Err(mpsc::TryRecvError::Empty) => soon(now + Duration::from_millis(500)),
                 Err(_) => self.commands_rx = None,
             }
-        } else if self.commands_stale && cfg!(windows) {
+        } else if self.commands_stale {
             self.commands_stale = false;
             let pids: Vec<u32> = self.panes.values().filter_map(|p| p.shell_pid).collect();
             let (tx, rx) = mpsc::channel();

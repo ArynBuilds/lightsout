@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.2-rc.14
+
+A test build (`lightsout update`, or `irm https://lightsout.sh/rc | iex`).
+
+- **Your tabs come back after a crash or Ctrl+Alt+Backspace in Lights Out.** The terminal saves them there too, right after a program starts or ends in a tab, so agents continue their conversation.
+- **Agents you start by typing (`claude`, `codex`...) come along on Lights On** on Linux and Mac, as they did on Windows: the terminal now sees what runs in each tab there too, npm programs included.
+- **No more "volume was not properly unmounted" message.** A forced power-off leaves the EFI partition marked, and Linux kept the mark for good. The next start checks the partition, which clears it.
+- **Restart into Windows:** on some laptops the last restart step waited until a key or the power button was pressed. The cores now stay awake for that step (the restart record says so).
+- **Battery:** on battery, about 4 screen updates a second while you aren't typing, clicking or scrolling (full speed for a second after you do).
+- **Brightness-down key** works again.
+
 ## 0.3.2-rc.13
 
 A test build (`lightsout update`, or `irm https://lightsout.sh/rc | iex`).

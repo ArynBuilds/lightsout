@@ -487,13 +487,52 @@ pub fn running_in_tabs(shells: &[u32]) -> std::collections::HashMap<u32, Option<
     out
 }
 
+/// Linux and Mac: the full command line of the program each tab's shell runs (the program
+/// found the same way as for the tab titles), so a switch or a restart starts it again.
 #[cfg(not(windows))]
-pub fn running_in_tabs(_shells: &[u32]) -> std::collections::HashMap<u32, Option<String>> {
-    Default::default()
+pub fn running_in_tabs(shells: &[u32]) -> std::collections::HashMap<u32, Option<String>> {
+    running_programs(shells)
+        .into_iter()
+        .map(|(shell, found)| {
+            let command = found
+                .map(|(pid, name)| command_line(pid).unwrap_or(name))
+                .map(|c| friendly_command(&c))
+                .filter(|c| !c.is_empty());
+            (shell, command)
+        })
+        .collect()
+}
+
+/// A process's command line, arguments with spaces in quotes (as friendly_command reads it).
+#[cfg(not(windows))]
+fn command_line(pid: u32) -> Option<String> {
+    #[cfg(target_os = "macos")]
+    let args: Vec<String> = {
+        let o = Command::new("ps")
+            .args(["-o", "args=", "-p", &pid.to_string()])
+            .output()
+            .ok()?;
+        vec![String::from_utf8_lossy(&o.stdout).trim().to_string()]
+    };
+    #[cfg(not(target_os = "macos"))]
+    let args: Vec<String> = std::fs::read(format!("/proc/{pid}/cmdline"))
+        .ok()?
+        .split(|b| *b == 0)
+        .filter(|a| !a.is_empty())
+        .map(|a| {
+            let a = String::from_utf8_lossy(a);
+            if a.contains(' ') {
+                format!("\"{a}\"")
+            } else {
+                a.to_string()
+            }
+        })
+        .collect();
+    let line = args.join(" ");
+    (!line.is_empty()).then_some(line)
 }
 
 /// "C:\Program Files\nodejs\node.exe" "...\npm-cli.js" run dev  ->  npm run dev
-#[cfg_attr(not(windows), allow(dead_code))]
 fn friendly_command(cmdline: &str) -> String {
     let mut tokens = Vec::new();
     let mut cur = String::new();
@@ -567,7 +606,7 @@ fn friendly_command(cmdline: &str) -> String {
 
 /// Which globally installed npm command runs this script? Looks through the
 /// .cmd shims npm creates (e.g. %APPDATA%\\npm\\codex.cmd), so any npm CLI works.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(windows)]
 fn npm_command_for(script: &str) -> Option<String> {
     let lower = script.to_lowercase().replace('/', "\\");
     let rel = &lower[lower.find("node_modules\\")?..];
@@ -588,6 +627,65 @@ fn npm_command_for(script: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Linux and Mac: the command in PATH that links to this script (npm installs each command as
+/// a link to its script, e.g. /usr/local/bin/codex -> ../lib/node_modules/@openai/codex/bin/codex.js).
+#[cfg(not(windows))]
+fn npm_command_for(script: &str) -> Option<String> {
+    let path = std::env::var_os("PATH")?;
+    npm_command_in(script, std::env::split_paths(&path))
+}
+
+#[cfg(not(windows))]
+fn npm_command_in(script: &str, dirs: impl Iterator<Item = PathBuf>) -> Option<String> {
+    let target = std::fs::canonicalize(script).ok()?;
+    dirs.filter_map(|d| std::fs::read_dir(d).ok())
+        .flatten()
+        .flatten()
+        .find(|e| {
+            e.file_type().is_ok_and(|t| t.is_symlink())
+                && std::fs::canonicalize(e.path()).is_ok_and(|t| t == target)
+        })
+        .map(|e| e.file_name().to_string_lossy().to_string())
+}
+
+#[cfg(all(test, not(windows)))]
+mod running_tests {
+    #[test]
+    fn finds_the_program_typed_in_a_tab() {
+        let mut sh = std::process::Command::new("sh")
+            .args(["-c", "sleep 7; true"])
+            .spawn()
+            .unwrap();
+        let mut got = None;
+        for _ in 0..20 {
+            got = super::running_in_tabs(&[sh.id()])
+                .remove(&sh.id())
+                .flatten();
+            if got.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let _ = sh.kill();
+        let _ = sh.wait();
+        assert_eq!(got.as_deref(), Some("sleep 7"));
+    }
+
+    #[test]
+    fn names_an_npm_script_after_its_command() {
+        let d = std::env::temp_dir().join(format!("lo-npm-{}", std::process::id()));
+        let pkg = d.join("lib/node_modules/@x/codex/bin");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::create_dir_all(d.join("bin")).unwrap();
+        std::fs::write(pkg.join("codex.js"), "").unwrap();
+        std::os::unix::fs::symlink(pkg.join("codex.js"), d.join("bin/codex")).unwrap();
+        let script = pkg.join("codex.js").to_string_lossy().to_string();
+        let got = super::npm_command_in(&script, [d.join("bin")].into_iter());
+        let _ = std::fs::remove_dir_all(&d);
+        assert_eq!(got.as_deref(), Some("codex"));
+    }
 }
 
 #[cfg(test)]

@@ -56,6 +56,14 @@ for dev in $PARTS; do
 done
 grep -q ' /esp ' /proc/mounts || { say "EFI partition not found"; fail "Lights Out couldn't find its files on this PC."; }
 L=/esp/EFI/lightsout
+ESPDEV=$(awk '$2=="/esp"{print $1}' /proc/mounts)
+# A forced power-off leaves the partition marked as not closed cleanly, and Linux keeps
+# that mark (and says so at every mount) until the partition is checked: check it now
+if dmesg | grep -q "FAT-fs (${ESPDEV#/dev/}): Volume was not properly unmounted"; then
+  umount /esp && fsck.fat -a -w "$ESPDEV" >> "$LOG" 2>&1
+  mount -t vfat -o rw "$ESPDEV" /esp || fail "Lights Out couldn't open its files on this PC."
+  say "EFI partition checked (it had not been closed cleanly)"
+fi
 
 # ---- kernel options being tried on this PC (the installer puts them on the list and the
 # boot line; lightsout-started keeps them): a start that uses one
@@ -178,7 +186,6 @@ fi
 [ -d "/newroot/lib/modules/$(uname -r)" ] || say "warning: the system file has no drivers for kernel $(uname -r) (it has: $(ls /newroot/lib/modules 2>&1 | tr '\n' ' '))"
 # a record of every start on the EFI partition (Windows copies it to C:\LightsOut\logs\boot)
 mkdir -p /esp/EFI/lightsout/results && cp "$LOG" /esp/EFI/lightsout/results/start.log && sync
-ESPDEV=$(awk '$2=="/esp"{print $1}' /proc/mounts)
 mkdir -p /newroot/mnt/c /newroot/boot/efi
 mount --move /mnt/c /newroot/mnt/c
 mount --move /esp /newroot/boot/efi

@@ -23,7 +23,10 @@ step "loop devices let go"
 # library waits for udev's answer forever (a restart that hangs); and never more than 10 s
 DM_DISABLE_UDEV=1 timeout 10 cryptsetup close winc 2>/dev/null
 step "drive locked again ($?)"
-step "now: ${1:-reboot} (anything after this is the kernel and the PC's firmware)"
+# Some laptops (Intel Meteor Lake seen) then wait in the restart until an interrupt comes
+# (a tap on the power button let it go on): the cores stay awake for these last steps
+n=0; for s in /sys/devices/system/cpu/cpu*/cpuidle/state[1-9]*/disable; do echo 1 > "$s" 2>/dev/null && n=$((n+1)); done
+step "now: ${1:-reboot}, cores kept awake ($n sleep states off; anything after this is the kernel and the PC's firmware)"
 umount /esp 2>/dev/null; sync
 case "$1" in
   poweroff|halt) poweroff -f ;;

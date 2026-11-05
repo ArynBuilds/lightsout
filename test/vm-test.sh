@@ -88,7 +88,11 @@ mkdir -p "$w/mid"; ntfs-3g "$cdev" "$w/mid" && {
   cp --sparse=never "$SYSIMG" "$w/mid/LightsOut/system.img"
   umount "$w/mid"; }
 losetup -d "$cdev"
-echo "=== boot 2 (unseal)"; boot "$w/serial2.log"; grep -aE "lightsout:|LIGHTSOUT-SELFTEST" "$w/serial2.log" || true
+# a forced power-off leaves the EFI partition marked as not closed cleanly (FAT32: bit 1 of byte 65)
+dirty_at=$(( 2048 * 512 + 65 ))
+printf '\001' | dd of="$w/disk.img" bs=1 seek="$dirty_at" conv=notrunc status=none
+echo "=== boot 2 (unseal; the EFI partition left marked by a forced power-off)"; boot "$w/serial2.log"; grep -aE "lightsout:|LIGHTSOUT-SELFTEST" "$w/serial2.log" || true
+dirty_after=$(( $(od -An -tu1 -j "$dirty_at" -N1 "$w/disk.img") & 1 ))
 try() {   # as the installer does: a kernel option on this PC's trial list, and on the boot line
   mtype -i "$ESP" ::/EFI/lightsout/tries > "$w/tries" 2>/dev/null || : > "$w/tries"
   echo "$1 try" >> "$w/tries"; mcopy -o -i "$ESP" "$w/tries" ::/EFI/lightsout/tries
@@ -134,6 +138,11 @@ check "$w/serial2.log" "LIGHTSOUT-SELFTEST: splash=success/bgrt" "start-up shows
 check "$w/serial1.log" "LIGHTSOUT-SELFTEST: own-space=/mnt/c/LightsOut/user.img kept=new" "boot 1 made your own space (user.img)"
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: own-space=/mnt/c/LightsOut/user.img kept=yes" "an update (a new system file) kept your own space and your packages"
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: screen-restart=ok" "the emergency key brings a frozen screen back"
+check "$w/serial2.log" "LIGHTSOUT-SELFTEST: program-in-tab-recorded=yes" "a program typed in a tab is recorded right away"
+check "$w/serial2.log" "LIGHTSOUT-SELFTEST: tabs-after-restart=1 " "after a crash or the emergency key, the tabs come back"
+check "$w/serial2.log" "EFI partition checked" "a start after a forced power-off checks the EFI partition"
+if [ "$dirty_after" = 0 ]; then echo "PASS: the EFI partition is no longer marked (no warning at every start)"
+else echo "FAIL: the EFI partition is still marked as not closed cleanly"; ok=0; fi
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: api: PANE  ROOM .*TAB  STATE" "control commands work inside Lights Out"
 check "$w/serial4.log" "C: opened read-only by the driver" "boot 4 noticed C: opened read-only"
 check "$w/serial4.log" "The system file needs a writable drive" "boot 4 stopped instead of running read-only"
@@ -142,7 +151,7 @@ check "$w/serial4.log" "shown under the spinner" "the starter's splash shows tha
 # the records on the EFI partition: every start, and boot 3's restart to its last step
 for f in start restart; do mtype -i "$ESP" "::/EFI/lightsout/results/$f.log" > "$w/$f.log" 2>/dev/null || true; done
 check "$w/start.log" "TPM locked until the next start" "every start leaves its record on the EFI partition"
-check "$w/restart.log" "now: reboot" "a restart records each step on the EFI partition, to the last one"
+check "$w/restart.log" "now: reboot, cores kept awake" "a restart records each step on the EFI partition, to the last one (cores kept awake for it)"
 # kernel options on trial: kept after a start that came up, taken off after one that didn't
 check "$w/serial3.log" "drive key sealed into the TPM" "after a new boot line, the key handed over is sealed anew"
 check "$w/serial3.log" "LIGHTSOUT-SELFTEST: tries: lightsout.works=1 on on-this-start=lightsout.works=1" "an option on trial whose start came up is kept"
