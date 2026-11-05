@@ -16,9 +16,7 @@ for ($i = 0; $i -lt $fw.Count; $i++) {
 $letter = (68..90 | ForEach-Object { [char]$_ } | Where-Object { -not (Test-Path "$($_):\") } | Select-Object -Last 1)
 mountvol "$($letter):" /S
 try {
-  foreach ($d in 'fedora', 'debian') {
-    if (Test-Path "$($letter):\EFI\lightsout\created-$d-dir") { Remove-Item "$($letter):\EFI\$d" -Recurse -Force }
-  }
+  if (Test-Path "$($letter):\EFI\lightsout\created-fedora-dir") { Remove-Item "$($letter):\EFI\fedora" -Recurse -Force }
   Remove-Item "$($letter):\EFI\lightsout" -Recurse -Force -ErrorAction SilentlyContinue
   Write-Host 'removed the starter from the EFI partition'
 } finally { mountvol "$($letter):" /D }

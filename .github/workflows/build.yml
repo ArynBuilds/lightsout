@@ -278,7 +278,6 @@ jobs:
       - uses: actions/checkout@v4
       - name: Tools
         run: |
-          sed -i 's/^Components: main$/Components: main contrib non-free non-free-firmware/' /etc/apt/sources.list.d/debian.sources
           apt-get update
           apt-get install -y --no-install-recommends \
             mmdebstrap e2fsprogs zstd pigz cpio build-essential pkg-config curl kmod busybox-static util-linux \
