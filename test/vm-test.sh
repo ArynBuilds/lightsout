@@ -17,7 +17,7 @@ mmd -i "$w/esp.img" ::/EFI ::/EFI/BOOT ::/EFI/lightsout ::/EFI/fedora
 mcopy -i "$w/esp.img" "$STARTER"/EFI/lightsout/* ::/EFI/lightsout/
 mcopy -i "$w/esp.img" "$STARTER/EFI/lightsout/shimx64.efi" ::/EFI/BOOT/BOOTX64.EFI
 mcopy -i "$w/esp.img" "$STARTER/EFI/lightsout/grubx64.efi" ::/EFI/BOOT/grubx64.efi
-sed 's#reboot=efi#reboot=efi console=ttyS0,115200#' "$STARTER/EFI/lightsout/grub.cfg" > "$w/grub.cfg"
+sed 's#^\(linux .*\)$#\1 console=ttyS0,115200#' "$STARTER/EFI/lightsout/grub.cfg" > "$w/grub.cfg"   # the screen goes to the test log
 mcopy -o -i "$w/esp.img" "$w/grub.cfg" ::/EFI/fedora/grub.cfg
 mcopy -o -i "$w/esp.img" "$w/grub.cfg" ::/EFI/lightsout/grub.cfg
 printf 'TEST-1234-5678-ABCD\n' > "$w/handoff.key"; mcopy -i "$w/esp.img" "$w/handoff.key" ::/EFI/lightsout/handoff.key
