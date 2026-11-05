@@ -36,7 +36,17 @@ else
   kept=new
 fi
 s "own-space=$(losetup -nO BACK-FILE "$(findmnt -no SOURCE /home/lights)" 2>/dev/null) kept=$kept"
-s "watchdog=$(systemctl show -p RuntimeWatchdogUSec --value) at-restart=$(systemctl show -p RebootWatchdogUSec --value)"
+# kernel options on trial (lightsout-tries): boot 1 puts one on trial, boot 2 starts with it
+# (kept) and puts one on trial that boot 3, a start that never comes up, uses (boot 4: off)
+T=/boot/efi/EFI/lightsout/tries
+if grep -q '^lightsout.works=1 ' "$T" 2>/dev/null; then
+  grep -q '^lightsout.fails=1 ' "$T" || echo "lightsout.fails=1 try" >> "$T"
+else
+  echo "lightsout.works=1 try" >> "$T"
+fi
+/usr/local/sbin/lightsout-tries
+s "tries: $(tr '\n' ' ' < "$T")on-this-start=$(grep -o 'lightsout.works=1' /proc/cmdline)"
+s "watchdog=$(systemctl show -p RuntimeWatchdogUSec --value) at-restart=$(systemctl show -p RebootWatchdogUSec --value) kept-on-in-restart=$(cat /sys/module/watchdog/parameters/stop_on_reboot 2>/dev/null)"
 # a crashed or frozen terminal (the emergency key Ctrl+Alt+Backspace kills it): a new one must come up
 old=$(pgrep -xn lightsout-app)
 key='bindsym --locked Ctrl+Alt+BackSpace exec pkill -KILL -x lightsout-app'

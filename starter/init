@@ -57,6 +57,23 @@ done
 grep -q ' /esp ' /proc/mounts || { say "EFI partition not found"; fail "Lights Out couldn't find its files on this PC."; }
 L=/esp/EFI/lightsout
 
+# ---- kernel options being tried on this PC (see lightsout-tries): a start that uses one
+# marks it; one whose start never came up is taken off the boot line for good
+if [ -f "$L/tries" ]; then
+  while read -r opt state; do
+    case "$state" in
+      try) case " $(cat /proc/cmdline) " in *" $opt "*) sed -i "s|^$opt try\$|$opt trying|" "$L/tries"; say "trying $opt" ;; esac ;;
+      trying)
+        sed -i "s|^$opt trying\$|$opt off|" "$L/tries"
+        for g in "$L/grub.cfg" /esp/EFI/fedora/grub.cfg; do   # (the Fedora folder's only if ours)
+          { [ "$g" = "$L/grub.cfg" ] || [ -f "$L/created-fedora-dir" ]; } && sed -i -e "s| $opt | |" -e "s| $opt\$||" "$g"
+        done
+        say "$opt: the last start with it never came up; off from now on"
+        fail "A setting Lights Out was trying didn't work on this PC, so it's off now." ;;
+    esac
+  done < "$L/tries"
+fi
+
 # ---- TPM: seal / unseal the drive key, bound to this exact boot (PCRs)
 PCRS="sha256:4,7,8,9"
 export TPM2TOOLS_TCTI="device:/dev/tpmrm0"
@@ -158,11 +175,12 @@ if ! mount -o loop,noatime /mnt/c/LightsOut/system.img /newroot 2>/run/lightsout
 fi
 # the system file keeps its own drivers; an older one may not have them for this starter's kernel
 [ -d "/newroot/lib/modules/$(uname -r)" ] || say "warning: the system file has no drivers for kernel $(uname -r) (it has: $(ls /newroot/lib/modules 2>&1 | tr '\n' ' '))"
+# a record of every start on the EFI partition (Windows copies it to C:\LightsOut\logs\boot)
+mkdir -p /esp/EFI/lightsout/results && cp "$LOG" /esp/EFI/lightsout/results/start.log && sync
+ESPDEV=$(awk '$2=="/esp"{print $1}' /proc/mounts)
 mkdir -p /newroot/mnt/c /newroot/boot/efi
 mount --move /mnt/c /newroot/mnt/c
 mount --move /esp /newroot/boot/efi
-echo "$CDEV" > /run/lightsout/cdev
-cp "$LOG" /run/lightsout/ 2>/dev/null
 
 # Clean shutdown later: systemd hands control back to this small system,
 # which closes the system file, the Windows drive and the unlock in order.
@@ -171,6 +189,7 @@ cp -a /bin /sbin /lib /lib64 /usr /etc /run/initramfs/ 2>/dev/null
 rm -rf /run/initramfs/lib/modules /run/initramfs/lib/firmware
 cp /bin/lo-shutdown /run/initramfs/shutdown
 chmod 755 /run/initramfs/shutdown
+echo "$ESPDEV" > /run/initramfs/esp-dev   # where the restart writes its record
 mount --move /run /newroot/run
 mount --move /dev /newroot/dev
 mount --move /sys /newroot/sys

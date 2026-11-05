@@ -1,0 +1,10 @@
+#!/bin/sh
+# At every start: what this PC seems to need goes on the boot line (lightsout-tries). Once
+# the terminal has run for a while, this start counts as good: an update keeps its new
+# version (else Windows puts the previous one back, see cleanup.ps1) and what this start
+# tried is kept.
+/usr/local/sbin/lightsout-tries
+sleep 15
+pgrep -x lightsout-app >/dev/null || exit 0
+rm -rf /mnt/c/LightsOut/update/trial /mnt/c/LightsOut/update/tried /mnt/c/LightsOut/update/previous
+/usr/local/sbin/lightsout-tries started

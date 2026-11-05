@@ -1,0 +1,10 @@
+[Unit]
+Description=Lights Out: what this start tried, and an update, are kept once it runs fine
+After=lightsout-session.service lightsout-power.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/lightsout-started
+
+[Install]
+WantedBy=graphical.target

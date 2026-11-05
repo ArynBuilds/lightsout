@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.2-rc.11
+
+A test build (`irm https://lightsout.sh/rc | iex`, or `lightsout update`).
+
+- **A restart that hangs ends in Windows by itself.** Linux used to switch the PC's hardware watchdog off at the start of a restart, exactly where it can hang; it now stays on, so about 30 seconds after any hang the PC starts Windows.
+- **Every start and restart leaves a short record**, copied to `C:\LightsOut\logs\boot` at each Windows start (no admin rights needed to read it), so a problem on any PC can be read afterwards.
+- **Settings tried once, kept only if they work:** Lights Out can try a kernel setting a PC seems to need (first: PCIe link power saving, which some BIOSes keep from Linux). If the start with it comes up, it stays; if not, the next start takes it off and says so in one line.
+- **Battery:** the terminal redraws at most 10 times a second on battery, and only the part of the screen that changed goes to the screen. `lightsout-cores`, which keeps agents on the frugal cores, now actually runs.
+- **Brightness:** the brightness keys work in Lights Out (you're allowed to change it now), and OLED panels that take brightness over the display link get that control.
+- **The start-up splash stays until the terminal is there** (no black gap).
+- **Test builds:** `lightsout.sh/rc` finds the newest test build itself, so installing no longer stops at GitHub's hourly limit.
+- Fixes: updates back up the previous starter too; `uninstall -KeepSystem` removes the rest again; a new system file has room enough not to grow at its first start.
+
 ## 0.3.2-rc.10
 
 A test build (`irm https://lightsout.sh/rc | iex`).

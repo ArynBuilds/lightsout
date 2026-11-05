@@ -6,6 +6,7 @@
 #           system boots again and your own space (user.img) and packages are still there
 #   boot 3: the partition is cut 64 MB shorter than the file system says (as on a PC where
 #           the partition shrank), so the driver can only open C: read-only: it must stop
+#   boot 4: boot 3 used a kernel option on trial and never came up: it is taken off again
 #   after:  the NTFS "C:" must be cleanly closed (Windows would not complain)
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -23,6 +24,7 @@ mcopy -o -i "$w/esp.img" "$w/grub.cfg" ::/EFI/fedora/grub.cfg
 mcopy -o -i "$w/esp.img" "$w/grub.cfg" ::/EFI/lightsout/grub.cfg
 printf 'TEST-1234-5678-ABCD\n' > "$w/handoff.key"; mcopy -i "$w/esp.img" "$w/handoff.key" ::/EFI/lightsout/handoff.key
 : > "$w/selftest"; mcopy -i "$w/esp.img" "$w/selftest" ::/EFI/lightsout/selftest
+mcopy -i "$w/esp.img" "$w/selftest" ::/EFI/lightsout/created-fedora-dir   # as the installer leaves it
 
 # ---- fake C: (NTFS) holding LightsOut\system.img, a Wi-Fi profile and the user name
 sys_mb=$(( $(stat -c %s "$SYSIMG") / 1048576 ))
@@ -86,6 +88,11 @@ sgdisk -d 2 -n 2:${c_start}:+$(( c_s - 131072 )) -t 2:0700 "$w/disk.img" >/dev/n
 pkill swtpm 2>/dev/null || true; sleep 1
 swtpm socket --tpm2 --tpmstate dir="$w/tpm" --ctrl type=unixio,path="$w/tpm.sock" --daemon
 echo "=== boot 3 (C: shorter than its file system)"; boot "$w/serial3.log"; grep -a "lightsout:" "$w/serial3.log" || true
+# boot 3 started with a kernel option on trial and never came up: boot 4 takes it off again
+sgdisk -d 2 -n 2:${c_start}:+${c_s} -t 2:0700 "$w/disk.img" >/dev/null
+pkill swtpm 2>/dev/null || true; sleep 1
+swtpm socket --tpm2 --tpmstate dir="$w/tpm" --ctrl type=unixio,path="$w/tpm.sock" --daemon
+echo "=== boot 4 (after a start whose option on trial never came up)"; boot "$w/serial4.log"; grep -a "lightsout:" "$w/serial4.log" || true
 
 # ---- checks
 ok=1
@@ -107,7 +114,7 @@ check "$w/serial2.log" "LIGHTSOUT-SELFTEST: resume-claude=claude = claude --cont
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: failed-units=[[:space:]]*$" "every system service started (Wi-Fi included)"
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: cd-windows-path=/mnt/c/users" "cd takes Windows paths"
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: windows-commands=0 0 ok.exe 3" "Windows programs in shared settings are skipped quietly"
-check "$w/serial2.log" "LIGHTSOUT-SELFTEST: watchdog=1min at-restart=30s" "a frozen system, or a restart that hangs, is forced by the watchdog"
+check "$w/serial2.log" "LIGHTSOUT-SELFTEST: watchdog=1min at-restart=30s kept-on-in-restart=0" "a frozen system, or a restart that hangs anywhere, is forced by the watchdog"
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: splash=success/bgrt" "start-up shows the PC logo with a spinner"
 check "$w/serial1.log" "LIGHTSOUT-SELFTEST: own-space=/mnt/c/LightsOut/user.img kept=new" "boot 1 made your own space (user.img)"
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: own-space=/mnt/c/LightsOut/user.img kept=yes" "an update (a new system file) kept your own space and your packages"
@@ -117,6 +124,20 @@ check "$w/serial3.log" "C: opened read-only by the driver" "boot 3 noticed C: op
 check "$w/serial3.log" "The system file needs a writable drive" "boot 3 stopped instead of running read-only"
 check "$w/serial3.log" "on screen: Windows didn.t fully shut down" "boot 3 told you why, in one line"
 check "$w/serial3.log" "shown under the spinner" "the starter's splash shows that line"
+# the records on the EFI partition (partition 1, 1 MB in): every start, and boot 2's restart to its last step
+for f in start restart; do mtype -i "$w/disk.img@@$(( 2048 * 512 ))" "::/EFI/lightsout/results/$f.log" > "$w/$f.log" 2>/dev/null || true; done
+check "$w/start.log" "TPM locked until the next start" "every start leaves its record on the EFI partition"
+check "$w/restart.log" "now: reboot" "a restart records each step on the EFI partition, to the last one"
+# kernel options on trial: kept after a start that came up, taken off after one that didn't
+check "$w/serial2.log" "LIGHTSOUT-SELFTEST: tries: lightsout.works=1 on lightsout.fails=1 try on-this-start=lightsout.works=1" "an option on trial whose start came up is kept"
+check "$w/serial3.log" "trying lightsout.fails=1" "the start using an option on trial marks it"
+check "$w/serial4.log" "on screen: A setting Lights Out was trying didn" "a start after one that never came up says so, in one line"
+mtype -i "$w/disk.img@@$(( 2048 * 512 ))" ::/EFI/lightsout/tries > "$w/tries" 2>/dev/null || true
+mtype -i "$w/disk.img@@$(( 2048 * 512 ))" ::/EFI/fedora/grub.cfg > "$w/grub-after.cfg" 2>/dev/null || true
+check "$w/tries" "lightsout.fails=1 off" "that option is off for good"
+if grep -q "lightsout.works=1" "$w/grub-after.cfg" && ! grep -q "lightsout.fails=1" "$w/grub-after.cfg"; then
+  echo "PASS: the boot line keeps the option that worked and drops the one that didn't"
+else echo "FAIL: boot line after the tries: $(grep ^linux "$w/grub-after.cfg")"; ok=0; fi
 cdev=$(losetup -f --show -o $(( c_start * 512 )) --sizelimit $(( c_s * 512 )) "$w/disk.img")
 if ntfs-3g.probe --readwrite "$cdev"; then echo "PASS: C: closed cleanly"; else echo "FAIL: C: left dirty (code $?)"; ok=0; fi
 losetup -d "$cdev"

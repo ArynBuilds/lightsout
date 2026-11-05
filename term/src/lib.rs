@@ -3899,7 +3899,12 @@ impl App {
             self.save_session();
         }
         if self.dirty && !self.screen_off && !self.hidden {
-            let frame = self.last_draw + if self.on_battery { FRAME_ON_BATTERY } else { FRAME };
+            let frame = self.last_draw
+                + if self.on_battery {
+                    FRAME_ON_BATTERY
+                } else {
+                    FRAME
+                };
             if now >= frame {
                 self.redraw = true;
             } else {
@@ -4469,10 +4474,18 @@ fn present(buffer: softbuffer::Buffer<'_, Rc<Window>, Rc<Window>>, shown: &mut V
     };
     shown.clear();
     shown.extend_from_slice(&buffer);
-    let (Some(width), Some(height)) = (NonZeroU32::new(w), NonZeroU32::new((bottom - top + 1) as u32)) else {
+    let (Some(width), Some(height)) = (
+        NonZeroU32::new(w),
+        NonZeroU32::new((bottom - top + 1) as u32),
+    ) else {
         return;
     };
-    let _ = buffer.present_with_damage(&[softbuffer::Rect { x: 0, y: top as u32, width, height }]);
+    let _ = buffer.present_with_damage(&[softbuffer::Rect {
+        x: 0,
+        y: top as u32,
+        width,
+        height,
+    }]);
 }
 
 /// The first and last row (of `w` pixels) that differ; none for the same frame. A frame of
@@ -4483,7 +4496,10 @@ fn changed_rows(new: &[u32], old: &[u32], w: usize) -> Option<(usize, usize)> {
         return Some((0, rows - 1));
     }
     let same = |i: usize| new[i * w..(i + 1) * w] == old[i * w..(i + 1) * w];
-    Some(((0..rows).find(|&i| !same(i))?, (0..rows).rev().find(|&i| !same(i))?))
+    Some((
+        (0..rows).find(|&i| !same(i))?,
+        (0..rows).rev().find(|&i| !same(i))?,
+    ))
 }
 
 /// 0.75 h -> "45m", 1.67 h -> "1h40".

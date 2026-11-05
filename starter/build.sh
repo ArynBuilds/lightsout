@@ -18,7 +18,7 @@ cp "$sys/boot/vmlinuz-$KVER" "$out/EFI/lightsout/vmlinuz"
 cat > "$out/EFI/lightsout/grub.cfg" <<'EOF'
 set timeout=0
 search --no-floppy --file --set=root /EFI/lightsout/starter.img
-linux /EFI/lightsout/vmlinuz quiet splash loglevel=3 systemd.show_status=false vt.global_cursor_default=0 plymouth.use-simpledrm nmi_watchdog=0 pcie_aspm.policy=powersupersave modprobe.blacklist=nouveau,nvidia,nvidia_drm,nvidia_modeset selinux=0
+linux /EFI/lightsout/vmlinuz quiet splash loglevel=3 systemd.show_status=false vt.global_cursor_default=0 plymouth.use-simpledrm nmi_watchdog=0 pcie_aspm.policy=powersupersave modprobe.blacklist=nouveau,nvidia,nvidia_drm,nvidia_modeset selinux=0 watchdog.stop_on_reboot=0
 initrd /EFI/lightsout/starter.img
 boot
 EOF

@@ -48,7 +48,8 @@ jobs:
           $lo = "$env:RUNNER_TEMP\LightsOut"; $esp = "$env:RUNNER_TEMP\esp"
           $fresh = {
             Remove-Item $lo, $esp -Recurse -Force -ErrorAction SilentlyContinue
-            New-Item -ItemType Directory -Force "$lo\update\previous\starter", "$lo\logs", "$esp\EFI\lightsout" | Out-Null
+            New-Item -ItemType Directory -Force "$lo\update\previous\starter", "$lo\logs", "$esp\EFI\lightsout\results" | Out-Null
+            'drive locked again' | Set-Content "$esp\EFI\lightsout\results\restart.log"
             'new' | Set-Content "$lo\system.img"; 'old' | Set-Content "$lo\update\previous\system.img"
             'new' | Set-Content "$esp\EFI\lightsout\starter.img"; 'old' | Set-Content "$lo\update\previous\starter\starter.img"
             'secret' | Set-Content "$esp\EFI\lightsout\handoff.key"
@@ -60,6 +61,7 @@ jobs:
           if ((Get-Content "$lo\system.img") -ne 'old' -or (Get-Content "$esp\EFI\lightsout\starter.img") -ne 'old') { throw 'the previous version was not put back' }
           if ((Test-Path "$lo\update\trial") -or (Test-Path "$lo\update\previous")) { throw 'the update was not closed after putting the previous version back' }
           if (Test-Path "$esp\EFI\lightsout\handoff.key") { throw 'a leftover drive key stayed on the EFI partition' }
+          if ((Get-Content "$lo\logs\boot\restart.log") -ne 'drive locked again') { throw 'the restart record was not copied where you can read it' }
           # updated but not started in Lights Out yet: nothing changes
           & $fresh
           & ./installer/cleanup.ps1 -LO $lo -Esp $esp

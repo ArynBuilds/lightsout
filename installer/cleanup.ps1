@@ -1,6 +1,7 @@
 # Runs as SYSTEM at every Windows start (task \LightsOut\Cleanup):
 #   1. removes a leftover drive key or "came from Windows" pass from the boot partition
-#      (a switch that was interrupted)
+#      (a switch that was interrupted), and copies what the last starts and restarts
+#      wrote there to C:\LightsOut\logs\boot (readable without admin rights)
 #   2. an update whose Lights Out never came up: puts the previous version back
 #   3. an update asked for inside Lights Out (`lightsout update`): runs the installer,
 #      then goes straight back to Lights Out with your tabs
@@ -17,6 +18,8 @@ if (-not $Esp) {
 }
 try {
   Remove-Item "$Esp\EFI\lightsout\handoff.key", "$Esp\EFI\lightsout\handoff.nonce" -Force -ErrorAction SilentlyContinue
+  New-Item -ItemType Directory -Force "$LO\logs\boot" | Out-Null
+  Copy-Item "$Esp\EFI\lightsout\results\*" "$LO\logs\boot\" -Force -ErrorAction SilentlyContinue
   $p = "$u\previous"
   if ((Test-Path "$u\trial") -and (Test-Path "$u\tried")) {
     # the updated Lights Out was started but never came up (else it removes trial itself)

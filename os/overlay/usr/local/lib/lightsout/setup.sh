@@ -29,7 +29,7 @@ systemctl enable iwd systemd-resolved
 ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
 
 systemctl enable lightsout-power.service lightsout-cores.service lightsout-wifi.service lightsout-session.service lightsout-selftest.service \
-  lightsout-split.service lightsout-grow.timer lightsout-packages.service lightsout-updated.service
+  lightsout-split.service lightsout-grow.timer lightsout-packages.service lightsout-started.service
 systemctl set-default graphical.target
 # Nothing else on the screen: no login prompts
 systemctl mask getty@tty1.service
