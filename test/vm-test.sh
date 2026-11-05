@@ -151,6 +151,9 @@ check "$w/serial4.log" "shown under the spinner" "the starter's splash shows tha
 # the records on the EFI partition: every start, and boot 3's restart to its last step
 for f in start restart; do mtype -i "$ESP" "::/EFI/lightsout/results/$f.log" > "$w/$f.log" 2>/dev/null || true; done
 check "$w/start.log" "TPM locked until the next start" "every start leaves its record on the EFI partition"
+check "$w/restart.log" "closing the system" "Lights On starts the restart record first"
+check "$w/restart.log" "PCIe power saving: " "PCIe links leave power saving before devices close"
+check "$w/restart.log" "programs stopped, systemd closed what it could" "the record marks the end of systemd's part"
 check "$w/restart.log" "now: reboot, cores kept awake" "a restart records each step on the EFI partition, to the last one (cores kept awake for it)"
 # kernel options on trial: kept after a start that came up, taken off after one that didn't
 check "$w/serial3.log" "drive key sealed into the TPM" "after a new boot line, the key handed over is sealed anew"

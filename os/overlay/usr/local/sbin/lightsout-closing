@@ -1,0 +1,15 @@
+#!/bin/sh
+# Lights On (or a shut-down) has begun: systemd stops this first. It starts the restart record
+# on the EFI partition (restart.log, which the later steps add to; Windows copies it to
+# C:\LightsOut\logs\boot), and takes PCIe links out of power saving before devices close:
+# on some PCs (the BIOS keeps it from Linux, Lights Out forces it on) a link stuck in its
+# deepest saving hangs the restart.
+R=/boot/efi/EFI/lightsout/results/restart.log
+mkdir -p "${R%/*}"
+echo "$(cut -d' ' -f1 /proc/uptime) closing the system" > "$R"
+if echo performance > /sys/module/pcie_aspm/parameters/policy 2>/dev/null; then
+  echo "$(cut -d' ' -f1 /proc/uptime) PCIe power saving: off for the restart" >> "$R"
+else
+  echo "$(cut -d' ' -f1 /proc/uptime) PCIe power saving: not in use on this PC" >> "$R"
+fi
+sync

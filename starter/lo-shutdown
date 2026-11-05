@@ -3,13 +3,13 @@
 # stopping everything. The Lights Out system is mounted at /oldroot, and its
 # file lives on the Windows drive mounted inside it, so close in this order:
 # your space (if still open), Windows drive (lazy), system file, loop devices, then
-# the BitLocker unlock. Each step is written to the EFI partition (restart.log; Windows
-# copies it to C:\LightsOut\logs\boot), so a restart that stops tells where.
+# the BitLocker unlock. Each step is added to the restart record on the EFI partition
+# (restart.log, started by lightsout-closing; Windows copies it to C:\LightsOut\logs\boot),
+# so a restart that stops tells where.
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 umount -l /oldroot/boot/efi 2>/dev/null
 mkdir -p /esp && mount -t vfat "$(cat /esp-dev)" /esp 2>/dev/null
 R=/esp/EFI/lightsout/results/restart.log
-: > "$R" 2>/dev/null
 step() { echo "$(cut -d' ' -f1 /proc/uptime) $*" >> "$R" 2>/dev/null; sync; }
 step "closing, then: ${1:-reboot}"
 umount /oldroot/home/lights 2>/dev/null

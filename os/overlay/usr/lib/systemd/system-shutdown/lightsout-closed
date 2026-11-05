@@ -1,0 +1,6 @@
+#!/bin/sh
+# systemd runs this once every program has stopped and it has closed what it can, right before
+# the last steps (lo-shutdown): marks that point in the restart record.
+mkdir -p /run/lo-esp && mount -t vfat "$(cat /run/initramfs/esp-dev)" /run/lo-esp 2>/dev/null || exit 0
+echo "$(cut -d' ' -f1 /proc/uptime) programs stopped, systemd closed what it could" >> /run/lo-esp/EFI/lightsout/results/restart.log
+umount /run/lo-esp; sync

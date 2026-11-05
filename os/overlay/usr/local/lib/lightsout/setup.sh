@@ -1,7 +1,7 @@
 #!/bin/bash
 # Runs once inside the new system at build time.
 set -e
-chmod 755 /usr/local/sbin/* /usr/local/bin/* /usr/local/lib/lightsout/*   # every script of ours (a list misses new ones)
+chmod 755 /usr/local/sbin/* /usr/local/bin/* /usr/local/lib/lightsout/* /usr/lib/systemd/system-shutdown/lightsout-*   # every script of ours (a list misses new ones)
 
 # The user. Its home folder is your own space: user.img on C:, kept by updates (see lightsout-home).
 groupadd -f netdev
@@ -29,7 +29,7 @@ systemctl enable iwd systemd-resolved
 ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
 
 systemctl enable lightsout-power.service lightsout-cores.service lightsout-wifi.service lightsout-session.service lightsout-selftest.service \
-  lightsout-split.service lightsout-grow.timer lightsout-packages.service lightsout-started.service lightsout-learn.service
+  lightsout-split.service lightsout-grow.timer lightsout-packages.service lightsout-started.service lightsout-learn.service lightsout-closing.service
 systemctl set-default graphical.target
 # Nothing else on the screen: no login prompts
 systemctl mask getty@tty1.service

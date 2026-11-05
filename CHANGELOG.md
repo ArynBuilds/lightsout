@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.2-rc.15
+
+A test build (`lightsout update`, or `irm https://lightsout.sh/rc | iex`).
+
+- **Restart into Windows on PCs whose BIOS keeps PCIe power saving from Linux:** Lights Out turns that saving on there (since rc.13), and on some PCs a link stuck in its deepest saving hung the restart. Lights On now takes the links out of it first, before anything closes.
+- **The restart record starts at Lights On** and marks the end of systemd's part, so a restart that stops anywhere tells where.
+- Tabs that come back with an agent (Claude, Codex...) no longer show the old screen text under the agent's own.
+
 ## 0.3.2-rc.14
 
 A test build (`lightsout update`, or `irm https://lightsout.sh/rc | iex`).
