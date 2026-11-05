@@ -1,5 +1,5 @@
 [Unit]
-Description=Lights Out: a restart or shut-down is recorded, and PCIe links leave power saving for it
+Description=Lights Out: a restart or shut-down starts its record
 # stopped first at a restart (after the screen's target), while the EFI partition is still open
 After=graphical.target
 RequiresMountsFor=/boot/efi
