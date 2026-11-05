@@ -1261,17 +1261,6 @@ impl App {
                 if from_windows {
                     platform::link_claude_history(&p.cwd, &cwd);
                 }
-                let mut env = Vec::new();
-                if let Some(screen) = p.screen.as_ref().filter(|s| !s.trim().is_empty()) {
-                    let f =
-                        std::env::temp_dir().join(format!("lightsout-screen-{room}-{ti}-{n}.txt"));
-                    if std::fs::write(&f, screen).is_ok() {
-                        env.push((
-                            "LIGHTSOUT_SCREEN".to_string(),
-                            f.to_string_lossy().to_string(),
-                        ));
-                    }
-                }
                 // a known way to continue (resume.conf) runs; any other command is typed back in
                 let resume = p
                     .command
@@ -1282,6 +1271,17 @@ impl App {
                 } else {
                     None
                 };
+                let mut env = Vec::new();
+                if let Some(screen) = screen_to_show(p.screen.as_deref(), resume.as_deref()) {
+                    let f =
+                        std::env::temp_dir().join(format!("lightsout-screen-{room}-{ti}-{n}.txt"));
+                    if std::fs::write(&f, screen).is_ok() {
+                        env.push((
+                            "LIGHTSOUT_SCREEN".to_string(),
+                            f.to_string_lossy().to_string(),
+                        ));
+                    }
+                }
                 let size = self.grid_size(self.content());
                 let id = self.spawn(cwd, resume, env, size);
                 if let (Some(id), Some(cmd)) = (id, typed) {
@@ -4532,6 +4532,22 @@ fn wheel_lines(rest: &mut f64, delta: MouseScrollDelta, cell_h: f64) -> i32 {
     let lines = rest.trunc();
     *rest -= lines;
     lines as i32
+}
+
+/// A restored tab's last screen, shown once, dimmed; not for an agent that continues
+/// (it draws its own conversation again, and the old text would sit under it).
+fn screen_to_show<'a>(screen: Option<&'a str>, resume: Option<&str>) -> Option<&'a str> {
+    screen.filter(|s| resume.is_none() && !s.trim().is_empty())
+}
+
+#[cfg(test)]
+mod screen_tests {
+    #[test]
+    fn old_screen_only_for_tabs_that_dont_redraw_themselves() {
+        assert_eq!(super::screen_to_show(Some("$ ls\nfile"), None), Some("$ ls\nfile"));
+        assert_eq!(super::screen_to_show(Some("chat text"), Some("claude --resume x")), None);
+        assert_eq!(super::screen_to_show(Some("  \n "), None), None);
+    }
 }
 
 #[cfg(test)]
