@@ -9,6 +9,8 @@ term=/usr/local/bin/lightsout-app
 # keyboard layout from Windows (installer writes e.g. "tr" or "us")
 layout=$(tr -dc 'a-z,' < /mnt/c/LightsOut/config/keyboard 2>/dev/null)
 [ -n "$layout" ] || layout=us
+# the lowest brightness for the keys, 1%, as a number (brightnessctl takes it only as --min-value=N)
+dim=$(( $(brightnessctl m 2>/dev/null || echo 100) / 100 + 1 ))
 
 conf="$XDG_RUNTIME_DIR/lightsout-sway.conf"
 cat > "$conf" <<CONF
@@ -31,7 +33,7 @@ bindswitch --reload --locked lid:off exec sh -c 'swaymsg "output * power on"; li
 bindsym --locked Ctrl+Alt+BackSpace exec pkill -KILL -x lightsout-app
 # the brightness keys (never fully dark: 1% is the lowest)
 bindsym --locked XF86MonBrightnessUp exec brightnessctl -q set 5%+
-bindsym --locked XF86MonBrightnessDown exec brightnessctl -q -n 1% set 5%-
+bindsym --locked XF86MonBrightnessDown exec brightnessctl -q --min-value=$dim set 5%-
 exec /usr/local/lib/lightsout/lowest-refresh
 # the terminal ended (closed, crashed, stopped by the key): sway ends too, so the service restarts both
 exec sh -c '$term; swaymsg exit'

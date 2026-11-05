@@ -53,7 +53,11 @@ const DONE: u32 = 0x6fcf7f;
 const BORDER: u32 = 0x26262c;
 const PADX: i32 = 6;
 const FRAME: Duration = Duration::from_millis(33); // at most ~30 redraws per second, only when something changed
-const FRAME_ON_BATTERY: Duration = Duration::from_millis(100); // ~10: streaming text still reads smoothly
+// On battery, while you aren't typing or pointing: ~4 a second. Every screen update wakes the
+// display (the panel stops refreshing itself), so agent output comes in fewer, bigger steps.
+const FRAME_ON_BATTERY: Duration = Duration::from_millis(250);
+/// After your last key or mouse use, this long at full speed (what you do shows at once).
+const ACTIVE: Duration = Duration::from_secs(1);
 
 fn rgb(c: Rgb) -> u32 {
     (c.r as u32) << 16 | (c.g as u32) << 8 | c.b as u32
@@ -354,6 +358,8 @@ struct App {
     battery_text: String,
     /// On battery: fewer redraws per second.
     on_battery: bool,
+    /// Your last key or mouse use.
+    last_input: Instant,
     /// The frame on screen, so the compositor is told only what changed.
     shown: Vec<u32>,
     battery_at: Instant,
@@ -461,6 +467,7 @@ impl App {
             seen_tab: usize::MAX,
             battery_text: String::new(),
             on_battery: false,
+            last_input: Instant::now(),
             shown: Vec::new(),
             battery_at: Instant::now() - Duration::from_secs(60),
             hours_avg: None,
@@ -2164,6 +2171,7 @@ impl App {
 
     /// A key was pressed (from the window, or from the terminal Lights Out runs in).
     pub(crate) fn key_press(&mut self, key: &Key, text: Option<&str>) {
+        self.last_input = Instant::now();
         if self.screen_off {
             platform::screen(true);
             self.screen_off = false;
@@ -2196,6 +2204,7 @@ impl App {
     }
 
     pub(crate) fn mouse_down(&mut self, button: MouseButton) {
+        self.last_input = Instant::now();
         let (x, y) = (self.mouse.x as i32, self.mouse.y as i32);
         self.dirty = true;
         if let Overlay::Menu {
@@ -3900,7 +3909,7 @@ impl App {
         }
         if self.dirty && !self.screen_off && !self.hidden {
             let frame = self.last_draw
-                + if self.on_battery {
+                + if self.on_battery && self.last_input.elapsed() > ACTIVE {
                     FRAME_ON_BATTERY
                 } else {
                     FRAME
