@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.2-rc.16
+
+A test build (`lightsout update`, or `irm https://lightsout.sh/rc | iex`).
+
+- **An empty battery no longer cuts Lights Out off.** At 10% a warning shows (and "plug in!" next to the battery); at 2% Lights Out saves your tabs and shuts down cleanly, closing and locking the drive first. The next start is Windows (or your Linux desktop), and the tabs come back there. It also works with the screen off.
+
 ## 0.3.2-rc.15
 
 A test build (`lightsout update`, or `irm https://lightsout.sh/rc | iex`).

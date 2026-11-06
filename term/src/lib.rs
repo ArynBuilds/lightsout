@@ -49,6 +49,10 @@ const BAR: u32 = 0x000000; // full black: OLED pixels stay off
 const BAR_ACTIVE: u32 = 0x000000;
 const DIMTEXT: u32 = 0x7a7a85;
 const ALERT: u32 = 0xff6b5b;
+/// Lights Out on a PC: at this battery level a warning (and "plug in!" next to it)...
+const LOW_BATTERY: u8 = 10;
+/// ...and at this one the tabs are saved and the PC shuts down cleanly.
+const EMPTY_BATTERY: u8 = 2;
 const DONE: u32 = 0x6fcf7f;
 const BORDER: u32 = 0x26262c;
 const PADX: i32 = 6;
@@ -364,6 +368,8 @@ struct App {
     /// The frame on screen, so the compositor is told only what changed.
     shown: Vec<u32>,
     battery_at: Instant,
+    /// The low-battery warning was shown (once until the PC charges).
+    battery_warned: bool,
     /// The time left, averaged over readings (one busy moment doesn't swing it).
     hours_avg: Option<f32>,
     bar_texts: Vec<String>,
@@ -471,6 +477,7 @@ impl App {
             last_input: Instant::now(),
             shown: Vec::new(),
             battery_at: Instant::now() - Duration::from_secs(60),
+            battery_warned: false,
             hours_avg: None,
             bar_texts: Vec::new(),
             clipboard: arboard::Clipboard::new().ok(),
@@ -2752,7 +2759,7 @@ impl App {
         self.battery_at = Instant::now();
         let battery = platform::battery();
         self.on_battery = battery.as_ref().is_some_and(|b| !b.charging);
-        self.battery_text = match battery {
+        let text = match &battery {
             Some(b) => {
                 self.hours_avg = b
                     .hours_left
@@ -2764,10 +2771,39 @@ impl App {
                     .map(|w| format!(" {w:.1} W"))
                     .unwrap_or_default();
                 let plus = if b.charging { "+" } else { "" };
-                format!("{plus}{}%{}{w}", b.percent, left.unwrap_or_default())
+                let plug = if !b.charging && b.percent <= LOW_BATTERY {
+                    "plug in! "
+                } else {
+                    ""
+                };
+                format!("{plug}{plus}{}%{}{w}", b.percent, left.unwrap_or_default())
             }
             None => String::new(),
         };
+        if text != self.battery_text {
+            self.battery_text = text;
+            self.dirty = true;
+        }
+        let Some(b) = battery.filter(|_| watches_battery()) else {
+            return;
+        };
+        match low_battery(b.percent, b.charging, self.battery_warned) {
+            LowBattery::Fine => self.battery_warned &= !b.charging && b.percent <= LOW_BATTERY,
+            LowBattery::Warn => {
+                self.battery_warned = true;
+                self.toast(
+                    format!("Battery {}%: plug in. At {EMPTY_BATTERY}% Lights Out saves your tabs and shuts down.", b.percent),
+                    ALERT,
+                );
+            }
+            LowBattery::ShutDown => {
+                self.toast(
+                    "Battery empty: saving your tabs and shutting down.".into(),
+                    ALERT,
+                );
+                platform::shut_down_saved(&self.saved(80));
+            }
+        }
     }
 
     /// What the bar and sidebar show: each tab's title and state; each room and what runs in it.
@@ -3625,7 +3661,6 @@ impl ApplicationHandler<UserEvent> for App {
                 self.key_press(&event.logical_key, event.text.as_deref());
             }
             WindowEvent::RedrawRequested => {
-                self.refresh_battery();
                 self.draw();
                 self.dirty = false;
                 self.last_draw = Instant::now();
@@ -3882,6 +3917,11 @@ impl App {
             if let Some(d) = self.waiters.iter().map(|w| w.deadline).min() {
                 soon(d);
             }
+        }
+        // the battery, also with the screen off: in Lights Out nothing else watches it
+        self.refresh_battery();
+        if watches_battery() {
+            soon(self.battery_at + Duration::from_secs(20));
         }
         let before = self.toasts.len();
         self.toasts
@@ -4512,6 +4552,48 @@ fn changed_rows(new: &[u32], old: &[u32], w: usize) -> Option<(usize, usize)> {
     ))
 }
 
+/// Lights Out on a PC (Windows off, or the Linux desktop stopped): nothing else acts on an
+/// empty battery there. (A Mac keeps its own; Windows and desktops have theirs.)
+fn watches_battery() -> bool {
+    cfg!(target_os = "linux") && platform::in_lightsout()
+}
+
+#[derive(Debug, PartialEq)]
+enum LowBattery {
+    Fine,
+    Warn,
+    ShutDown,
+}
+
+/// What a battery reading asks for: a warning once at LOW_BATTERY, the clean shut-down at
+/// EMPTY_BATTERY; nothing while charging.
+fn low_battery(percent: u8, charging: bool, warned: bool) -> LowBattery {
+    if charging {
+        LowBattery::Fine
+    } else if percent <= EMPTY_BATTERY {
+        LowBattery::ShutDown
+    } else if percent <= LOW_BATTERY && !warned {
+        LowBattery::Warn
+    } else {
+        LowBattery::Fine
+    }
+}
+
+#[cfg(test)]
+mod low_battery_tests {
+    use super::{low_battery, LowBattery::*};
+    #[test]
+    fn warns_once_then_shuts_down_and_never_while_charging() {
+        assert_eq!(low_battery(50, false, false), Fine);
+        assert_eq!(low_battery(10, false, false), Warn);
+        assert_eq!(low_battery(9, false, true), Fine);
+        assert_eq!(low_battery(3, false, true), Fine);
+        assert_eq!(low_battery(2, false, true), ShutDown);
+        assert_eq!(low_battery(2, false, false), ShutDown);
+        assert_eq!(low_battery(1, true, true), Fine);
+    }
+}
+
 /// 0.75 h -> "45m", 1.67 h -> "1h40".
 fn time_left(hours: f32) -> String {
     let m = (hours * 60.0).round() as u32;
@@ -4544,8 +4626,14 @@ fn screen_to_show<'a>(screen: Option<&'a str>, resume: Option<&str>) -> Option<&
 mod screen_tests {
     #[test]
     fn old_screen_only_for_tabs_that_dont_redraw_themselves() {
-        assert_eq!(super::screen_to_show(Some("$ ls\nfile"), None), Some("$ ls\nfile"));
-        assert_eq!(super::screen_to_show(Some("chat text"), Some("claude --resume x")), None);
+        assert_eq!(
+            super::screen_to_show(Some("$ ls\nfile"), None),
+            Some("$ ls\nfile")
+        );
+        assert_eq!(
+            super::screen_to_show(Some("chat text"), Some("claude --resume x")),
+            None
+        );
         assert_eq!(super::screen_to_show(Some("  \n "), None), None);
     }
 }

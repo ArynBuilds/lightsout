@@ -844,23 +844,42 @@ pub fn back_to_windows(saved: &crate::session::Saved) {
     }
     #[allow(unreachable_code)]
     if in_place() {
-        let dir = handoff_dir();
-        let _ = std::fs::create_dir_all(&dir);
-        crate::session::save(&dir.join("tabs.json"), saved);
+        save_handoff(saved);
         let _ = linux_switch("in");
         return;
     }
+    save_back(saved);
+    systemctl("reboot");
+}
+
+/// The battery is almost empty in Lights Out (Windows off, or the Linux desktop stopped):
+/// the tabs are saved as for Lights On, then the PC shuts down, closing and locking the drive
+/// first. The next start is Windows (or the desktop), and the tabs come back there.
+pub fn shut_down_saved(saved: &crate::session::Saved) {
+    if in_place() {
+        save_handoff(saved);
+    } else {
+        save_back(saved);
+    }
+    systemctl("poweroff");
+}
+
+/// Lights Out on a Windows PC: the tabs for Windows (back.json, taken when it starts).
+fn save_back(saved: &crate::session::Saved) {
     if image() {
         let dir = lightsout_dir().join("handoff");
         let _ = std::fs::create_dir_all(&dir);
         crate::session::save(&dir.join("back.json"), saved);
     }
+}
+
+fn systemctl(action: &str) {
     let ok = Command::new("systemctl")
-        .arg("reboot")
+        .arg(action)
         .status()
         .is_ok_and(|s| s.success());
     if !ok {
-        let _ = Command::new("sudo").args(["systemctl", "reboot"]).status();
+        let _ = Command::new("sudo").args(["systemctl", action]).status();
     }
 }
 
