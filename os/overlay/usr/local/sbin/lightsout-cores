@@ -13,20 +13,31 @@ for c in /sys/devices/system/cpu/cpu[0-9]*; do
   f=$(cat "$c/cpufreq/cpuinfo_max_freq" 2>/dev/null)
   [ -n "$f" ] && [ "$f" != "$top" ] && mid="$mid${mid:+,}${c##*cpu}"
 done
-pressure() {  # % of the last 10 s that work was waiting for a core
-  if [ -r /proc/pressure/cpu ]; then
-    awk '/^some/ { split($2, a, "="); print int(a[2]) }' /proc/pressure/cpu
+# This runs every 5 s, so it uses the shell's own commands only: each program started would
+# wake the processor (only `sleep` is started).
+count() {  # cores in a list like "0-3,8,10-11" -> $n
+  n=0; rest="$1,"
+  while [ -n "$rest" ]; do
+    part=${rest%%,*}; rest=${rest#*,}
+    case $part in
+      *-*) n=$((n + ${part#*-} - ${part%-*} + 1)) ;;
+      ?*) n=$((n + 1)) ;;
+    esac
+  done
+}
+pressure() {  # $p = % of the last 10 s that work was waiting for a core ($1 = the cores in use)
+  if read -r _ p _ 2>/dev/null < /proc/pressure/cpu; then
+    p=${p#avg10=}; p=${p%%.*}
   else  # older kernels: load compared to the cores in use
-    awk -v n="$1" '{ print int($1 * 100 / (n > 0 ? n : 1)) - 100 }' /proc/loadavg
+    count "$1"; read -r l _ < /proc/loadavg; l=${l%%.*}
+    p=$((l * 100 / (n > 0 ? n : 1) - 100))
   fi
 }
-count() { echo "$1" | tr ',' '\n' | awk -F- '{ n += (NF == 2 ? $2 - $1 + 1 : 1) } END { print n }'; }
-set_cores() { for u in $units; do systemctl set-property --runtime "$u" AllowedCPUs="$1" 2>/dev/null; done; }
 step=0; calm=0
 while sleep 5; do
-  frugal=$(cat "$F" 2>/dev/null) || continue
+  read -r frugal 2>/dev/null < "$F" || continue
   case $step in 0) cur=$frugal ;; 1) cur=${mid:-$all} ;; *) cur=$all ;; esac
-  p=$(pressure "$(count "$cur")")
+  pressure "$cur"
   if [ "$p" -ge 20 ] && [ $step -lt 2 ]; then
     step=$((step + 1)); calm=0
   elif [ "$p" -lt 5 ] && [ $step -gt 0 ]; then

@@ -84,9 +84,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check scripts
         run: |
-          for f in installer/install.sh linux/*.sh linux/switch os/overlay/usr/local/sbin/lightsout-power; do sh -n "$f"; done
+          for f in installer/install.sh linux/*.sh linux/switch os/overlay/usr/local/sbin/lightsout-power os/overlay/usr/local/sbin/lightsout-cores; do sh -n "$f"; done
           shellcheck -S error installer/install.sh linux/*.sh linux/switch mac/switch mac/logout-later mac/guard mac/uninstall.sh
           sh test/lowest-refresh.sh
+          sudo sh test/cores.sh
           sh test/mac-guard.sh
       - name: Build and package
         run: |

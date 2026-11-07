@@ -5,6 +5,7 @@
 A test build (`lightsout update`, or `irm https://lightsout.sh/rc | iex`).
 
 - **Lighter on battery, on Windows and Mac:** to know what runs in each tab (so agents come back after a switch or a restart), the terminal used to start a helper program: PowerShell on Windows each time a program started or ended in a tab (about 0.7 s of CPU each time), and `ps` on the Mac every 1.5 s while agents worked, plus `pmset` every 20 s for the battery. It now asks Windows and macOS directly, which costs next to nothing (Linux already did). Windows, Linux and Mac share the same code for it.
+- **Lighter in Lights Out mode:** the helper that adds cores while agents are busy checks every 5 seconds; each check used to start four small programs, each waking the processor. It now reads what it needs itself.
 
 ## 0.3.2-rc.16
 
