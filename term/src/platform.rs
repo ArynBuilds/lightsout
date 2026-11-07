@@ -438,58 +438,9 @@ fn agent_session_in(dir: &std::path::Path, pid: u32) -> Option<String> {
     v["sessionId"].as_str().map(str::to_string)
 }
 
-/// Windows: the command running inside each tab's shell (any program),
-/// e.g. "claude", "npm run dev", "python manage.py runserver".
-#[cfg(windows)]
-pub fn running_in_tabs(shells: &[u32]) -> std::collections::HashMap<u32, Option<String>> {
-    use std::collections::HashMap;
-    #[derive(serde::Deserialize)]
-    #[allow(non_snake_case)]
-    struct P {
-        ProcessId: u32,
-        ParentProcessId: u32,
-        Name: Option<String>,
-        CommandLine: Option<String>,
-    }
-    let mut out = HashMap::new();
-    let ps = quiet("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-Command",
-            "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress",
-        ])
-        .output();
-    let Ok(ps) = ps else { return out };
-    let procs: Vec<P> = serde_json::from_slice(&ps.stdout).unwrap_or_default();
-    for &shell in shells {
-        // everything below the shell
-        let mut all: Vec<&P> = Vec::new();
-        let mut queue = vec![shell];
-        while let Some(pid) = queue.pop() {
-            for c in procs
-                .iter()
-                .filter(|p| p.ParentProcessId == pid && p.ProcessId != pid)
-            {
-                let n = c.Name.clone().unwrap_or_default().to_lowercase();
-                if n == "conhost.exe" || n == "openconsole.exe" {
-                    continue;
-                }
-                all.push(c);
-                queue.push(c.ProcessId);
-            }
-        }
-        let command = all
-            .first()
-            .and_then(|p| p.CommandLine.as_deref())
-            .map(friendly_command);
-        out.insert(shell, command.filter(|c| !c.is_empty()));
-    }
-    out
-}
-
-/// Linux and Mac: the full command line of the program each tab's shell runs (the program
-/// found the same way as for the tab titles), so a switch or a restart starts it again.
-#[cfg(not(windows))]
+/// The full command line of the program each tab's shell runs (any program, e.g. "claude",
+/// "npm run dev"; found the same way as for the tab titles), so a switch or a restart
+/// starts it again. Asked of the system directly: no helper program is started.
 pub fn running_in_tabs(shells: &[u32]) -> std::collections::HashMap<u32, Option<String>> {
     running_programs(shells)
         .into_iter()
@@ -501,6 +452,50 @@ pub fn running_in_tabs(shells: &[u32]) -> std::collections::HashMap<u32, Option<
             (shell, command)
         })
         .collect()
+}
+
+/// A process's command line, arguments with spaces in quotes (as friendly_command reads it).
+#[cfg(windows)]
+fn command_line(pid: u32) -> Option<String> {
+    use windows_sys::Wdk::System::Threading::{
+        NtQueryInformationProcess, ProcessCommandLineInformation,
+    };
+    use windows_sys::Win32::Foundation::{CloseHandle, UNICODE_STRING};
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if h.is_null() {
+            return None;
+        }
+        // the answer is a UNICODE_STRING followed by its text; u64s keep it aligned
+        let mut buf = vec![0u64; 512];
+        let ask = |buf: &mut Vec<u64>| {
+            let mut len = 0u32;
+            let status = NtQueryInformationProcess(
+                h,
+                ProcessCommandLineInformation,
+                buf.as_mut_ptr().cast(),
+                (buf.len() * 8) as u32,
+                &mut len,
+            );
+            (status, len as usize)
+        };
+        let (mut status, len) = ask(&mut buf);
+        if status < 0 && len > buf.len() * 8 {
+            buf = vec![0u64; len.div_ceil(8)];
+            status = ask(&mut buf).0;
+        }
+        CloseHandle(h);
+        if status < 0 {
+            return None;
+        }
+        let us = &*(buf.as_ptr() as *const UNICODE_STRING);
+        if us.Buffer.is_null() || us.Length == 0 {
+            return None;
+        }
+        let text = std::slice::from_raw_parts(us.Buffer, us.Length as usize / 2);
+        Some(String::from_utf16_lossy(text))
+    }
 }
 
 /// A process's command line, arguments with spaces in quotes (as friendly_command reads it).
@@ -650,14 +645,27 @@ fn npm_command_in(script: &str, dirs: impl Iterator<Item = PathBuf>) -> Option<S
         .map(|e| e.file_name().to_string_lossy().to_string())
 }
 
-#[cfg(all(test, not(windows)))]
+#[cfg(test)]
 mod running_tests {
     #[test]
     fn finds_the_program_typed_in_a_tab() {
-        let mut sh = std::process::Command::new("sh")
-            .args(["-c", "sleep 7; true"])
-            .spawn()
-            .unwrap();
+        // a shell running a program (cmd on Windows), as in a tab
+        #[cfg(windows)]
+        let (mut sh, want) = (
+            std::process::Command::new("cmd")
+                .args(["/c", "ping -n 8 127.0.0.1 >nul"])
+                .spawn()
+                .unwrap(),
+            "ping -n 8 127.0.0.1",
+        );
+        #[cfg(not(windows))]
+        let (mut sh, want) = (
+            std::process::Command::new("sh")
+                .args(["-c", "sleep 7; true"])
+                .spawn()
+                .unwrap(),
+            "sleep 7",
+        );
         let mut got = None;
         for _ in 0..20 {
             got = super::running_in_tabs(&[sh.id()])
@@ -670,9 +678,10 @@ mod running_tests {
         }
         let _ = sh.kill();
         let _ = sh.wait();
-        assert_eq!(got.as_deref(), Some("sleep 7"));
+        assert_eq!(got.as_deref(), Some(want));
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn names_an_npm_script_after_its_command() {
         let d = std::env::temp_dir().join(format!("lo-npm-{}", std::process::id()));

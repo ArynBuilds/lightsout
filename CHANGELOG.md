@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.2-rc.17
+
+A test build (`lightsout update`, or `irm https://lightsout.sh/rc | iex`).
+
+- **Lighter on Windows:** to know what runs in each tab (so agents come back after a switch or a restart), the terminal used to start PowerShell each time a program started or ended in a tab, about 0.7 s of CPU each time. It now asks Windows directly, which costs next to nothing. Linux, Mac and Windows share the same code for it.
+
 ## 0.3.2-rc.16
 
 A test build (`lightsout update`, or `irm https://lightsout.sh/rc | iex`).
