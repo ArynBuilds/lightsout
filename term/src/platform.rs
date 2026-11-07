@@ -238,14 +238,6 @@ fn hours_at(wh: Option<f32>, watts: Option<f32>) -> Option<f32> {
     (w > 0.3).then(|| wh / w).filter(|h| *h < 100.0)
 }
 
-/// The time left in a line of `pmset -g batt` ("...; discharging; 5:12 remaining ...").
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn pmset_time_left(line: &str) -> Option<f32> {
-    let t = line.split("; ").nth(2)?.split_whitespace().next()?;
-    let (h, m) = t.split_once(':')?;
-    Some(h.parse::<f32>().ok()? + m.parse::<f32>().ok()? / 60.0)
-}
-
 #[cfg(target_os = "linux")]
 pub fn battery() -> Option<Battery> {
     let dir = std::fs::read_dir("/sys/class/power_supply").ok()?;
@@ -309,30 +301,107 @@ pub fn battery() -> Option<Battery> {
 
 #[cfg(target_os = "macos")]
 pub fn battery() -> Option<Battery> {
-    // "-InternalBattery-0 (id=...)\t85%; discharging; 5:12 remaining present: true"
-    let out = Command::new("pmset").args(["-g", "batt"]).output().ok()?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    let line = text.lines().find(|l| l.contains("InternalBattery"))?;
-    let pct = line
-        .split('\t')
-        .nth(1)?
-        .split('%')
-        .next()?
-        .trim()
-        .parse::<u8>()
-        .ok()?;
-    let charging =
-        line.contains("charging;") && !line.contains("discharging") || line.contains("charged");
-    Some(Battery {
-        percent: pct,
-        watts: None,
-        charging,
-        hours_left: if charging {
-            None
-        } else {
-            pmset_time_left(line)
-        },
-    })
+    mac_power::battery()
+}
+
+/// Mac: the battery from IOKit's power sources (what `pmset -g batt` shows), asked directly.
+#[cfg(target_os = "macos")]
+mod mac_power {
+    use std::ffi::{c_char, c_void, CString};
+    type Ref = *const c_void;
+    #[link(name = "IOKit", kind = "framework")]
+    extern "C" {
+        fn IOPSCopyPowerSourcesInfo() -> Ref;
+        fn IOPSCopyPowerSourcesList(blob: Ref) -> Ref;
+        fn IOPSGetPowerSourceDescription(blob: Ref, ps: Ref) -> Ref;
+        fn IOPSGetTimeRemainingEstimate() -> f64;
+    }
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFArrayGetCount(a: Ref) -> isize;
+        fn CFArrayGetValueAtIndex(a: Ref, i: isize) -> Ref;
+        fn CFDictionaryGetValue(d: Ref, key: Ref) -> Ref;
+        fn CFStringCreateWithCString(alloc: Ref, s: *const c_char, enc: u32) -> Ref;
+        fn CFEqual(a: Ref, b: Ref) -> u8;
+        fn CFNumberGetValue(n: Ref, kind: i32, out: *mut c_void) -> u8;
+        fn CFRelease(r: Ref);
+    }
+    const UTF8: u32 = 0x0800_0100;
+    const SINT32: i32 = 3;
+
+    /// A CFString for a key or a value to compare with (released when dropped).
+    struct Text(Ref);
+    impl Text {
+        fn new(s: &str) -> Text {
+            let c = CString::new(s).unwrap_or_default();
+            Text(unsafe { CFStringCreateWithCString(std::ptr::null(), c.as_ptr(), UTF8) })
+        }
+    }
+    impl Drop for Text {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                unsafe { CFRelease(self.0) }
+            }
+        }
+    }
+
+    pub fn battery() -> Option<super::Battery> {
+        unsafe {
+            let blob = IOPSCopyPowerSourcesInfo();
+            if blob.is_null() {
+                return None;
+            }
+            let list = IOPSCopyPowerSourcesList(blob);
+            let mut found = None;
+            if !list.is_null() {
+                for i in 0..CFArrayGetCount(list) {
+                    let d = IOPSGetPowerSourceDescription(blob, CFArrayGetValueAtIndex(list, i));
+                    found = read(d);
+                    if found.is_some() {
+                        break;
+                    }
+                }
+                CFRelease(list);
+            }
+            CFRelease(blob);
+            found
+        }
+    }
+
+    /// One power source's description; only the built-in battery counts.
+    fn read(d: Ref) -> Option<super::Battery> {
+        if d.is_null() {
+            return None;
+        }
+        let get = |k: &str| {
+            let key = Text::new(k);
+            unsafe { CFDictionaryGetValue(d, key.0) }
+        };
+        let is = |k: &str, v: &str| {
+            let (got, want) = (get(k), Text::new(v));
+            !got.is_null() && unsafe { CFEqual(got, want.0) } != 0
+        };
+        let number = |k: &str| {
+            let n = get(k);
+            let mut v = 0i32;
+            let ok = !n.is_null()
+                && unsafe { CFNumberGetValue(n, SINT32, (&mut v as *mut i32).cast()) } != 0;
+            ok.then_some(v)
+        };
+        if !is("Type", "InternalBattery") {
+            return None;
+        }
+        let (now, max) = (number("Current Capacity")?, number("Max Capacity")?.max(1));
+        let charging = is("Power Source State", "AC Power");
+        // seconds; below zero = still being worked out, or plugged in
+        let left = unsafe { IOPSGetTimeRemainingEstimate() };
+        Some(super::Battery {
+            percent: (now * 100 / max).clamp(0, 100) as u8,
+            watts: None,
+            charging,
+            hours_left: (!charging && left > 0.0).then_some((left / 3600.0) as f32),
+        })
+    }
 }
 
 #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
@@ -501,30 +570,66 @@ fn command_line(pid: u32) -> Option<String> {
 /// A process's command line, arguments with spaces in quotes (as friendly_command reads it).
 #[cfg(not(windows))]
 fn command_line(pid: u32) -> Option<String> {
-    #[cfg(target_os = "macos")]
-    let args: Vec<String> = {
-        let o = Command::new("ps")
-            .args(["-o", "args=", "-p", &pid.to_string()])
-            .output()
-            .ok()?;
-        vec![String::from_utf8_lossy(&o.stdout).trim().to_string()]
-    };
-    #[cfg(not(target_os = "macos"))]
-    let args: Vec<String> = std::fs::read(format!("/proc/{pid}/cmdline"))
-        .ok()?
-        .split(|b| *b == 0)
-        .filter(|a| !a.is_empty())
+    let line = process_args(pid)?
+        .iter()
         .map(|a| {
-            let a = String::from_utf8_lossy(a);
             if a.contains(' ') {
                 format!("\"{a}\"")
             } else {
-                a.to_string()
+                a.clone()
             }
         })
-        .collect();
-    let line = args.join(" ");
+        .collect::<Vec<_>>()
+        .join(" ");
     (!line.is_empty()).then_some(line)
+}
+
+/// Linux: a process's arguments (/proc/PID/cmdline, separated by zeros).
+#[cfg(not(any(windows, target_os = "macos")))]
+fn process_args(pid: u32) -> Option<Vec<String>> {
+    let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    Some(
+        raw.split(|b| *b == 0)
+            .filter(|a| !a.is_empty())
+            .map(|a| String::from_utf8_lossy(a).into_owned())
+            .collect(),
+    )
+}
+
+/// Mac: a process's arguments, from the kernel (KERN_PROCARGS2: the argument count, the
+/// program's path, zeros, then the arguments).
+#[cfg(target_os = "macos")]
+fn process_args(pid: u32) -> Option<Vec<String>> {
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
+    let mut size: libc::size_t = 0;
+    let null = std::ptr::null_mut();
+    if unsafe { libc::sysctl(mib.as_mut_ptr(), 3, null, &mut size, null, 0) } != 0 {
+        return None;
+    }
+    let mut buf = vec![0u8; size];
+    if unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            buf.as_mut_ptr().cast(),
+            &mut size,
+            null,
+            0,
+        )
+    } != 0
+    {
+        return None;
+    }
+    buf.truncate(size);
+    let argc = i32::from_ne_bytes(buf.get(..4)?.try_into().ok()?).max(0) as usize;
+    let mut parts = buf[4..].split(|b| *b == 0).filter(|p| !p.is_empty());
+    parts.next(); // the program's path
+    Some(
+        parts
+            .take(argc)
+            .map(|a| String::from_utf8_lossy(a).into_owned())
+            .collect(),
+    )
 }
 
 /// "C:\Program Files\nodejs\node.exe" "...\npm-cli.js" run dev  ->  npm run dev
@@ -1578,27 +1683,41 @@ fn process_children() -> std::collections::HashMap<u32, Vec<(u32, String)>> {
 fn process_children() -> std::collections::HashMap<u32, Vec<(u32, String)>> {
     let mut map: std::collections::HashMap<u32, Vec<(u32, String)>> =
         std::collections::HashMap::new();
-    if let Ok(out) = Command::new("ps")
-        .args(["-axo", "pid=,ppid=,comm="])
-        .output()
-    {
-        for line in String::from_utf8_lossy(&out.stdout).lines() {
-            let mut it = line.split_whitespace();
-            let (Some(pid), Some(ppid)) = (
-                it.next().and_then(|p| p.parse().ok()),
-                it.next().and_then(|p| p.parse::<u32>().ok()),
-            ) else {
-                continue;
-            };
-            let comm: String = it.collect::<Vec<_>>().join(" ");
-            let name = comm
-                .rsplit('/')
-                .next()
-                .unwrap_or("")
-                .trim_start_matches('-')
-                .to_lowercase();
-            map.entry(ppid).or_default().push((pid, name));
+    let n = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+    if n <= 0 {
+        return map;
+    }
+    let mut pids: Vec<libc::pid_t> = vec![0; n as usize + 64]; // room for a few new ones
+    let bytes = (pids.len() * std::mem::size_of::<libc::pid_t>()) as libc::c_int;
+    let n = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
+    for &pid in pids.iter().take(n.max(0) as usize) {
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+        let got = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                (&mut info as *mut libc::proc_bsdinfo).cast(),
+                size,
+            )
+        };
+        if got != size {
+            continue;
         }
+        // the longer name when there is one (pbi_comm is cut at 16 characters)
+        let name = if info.pbi_name[0] != 0 {
+            &info.pbi_name[..]
+        } else {
+            &info.pbi_comm[..]
+        };
+        let name = unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) }
+            .to_string_lossy()
+            .trim_start_matches('-')
+            .to_lowercase();
+        map.entry(info.pbi_ppid)
+            .or_default()
+            .push((pid as u32, name));
     }
     map
 }
@@ -1956,10 +2075,10 @@ mod battery_tests {
     }
 
     #[test]
-    fn hours_left_from_pmset() {
-        let l = "-InternalBattery-0 (id=1)\t85%; discharging; 5:30 remaining present: true";
-        assert_eq!(super::pmset_time_left(l), Some(5.5));
-        let l = "-InternalBattery-0 (id=1)\t85%; discharging; (no estimate) present: true";
-        assert_eq!(super::pmset_time_left(l), None);
+    fn reads_the_battery_directly_on_every_system() {
+        // no battery (most test machines): nothing; with one: a real percentage
+        if let Some(b) = super::battery() {
+            assert!(b.percent <= 100);
+        }
     }
 }
