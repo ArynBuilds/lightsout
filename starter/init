@@ -64,17 +64,6 @@ if dmesg | grep -q "FAT-fs (${ESPDEV#/dev/}): Volume was not properly unmounted"
   mount -t vfat -o rw "$ESPDEV" /esp || fail "Lights Out couldn't open its files on this PC."
   say "EFI partition checked (it had not been closed cleanly)"
 fi
-# The last restart hung in the kernel: its last messages, left in a firmware variable by the
-# restart's fallback (see lo-shutdown), go with the records; the variable is removed
-. /etc/restart-vars
-if [ -f "$LOVAR" ]; then
-  mkdir -p "$L/results"; tail -c +5 "$LOVAR" > "$L/results/restart-kernel.log"   # (4 bytes: its flags)
-  say "the last restart hung in the kernel: its last messages are in restart-kernel.log"
-  chattr -i "$LOVAR" 2>/dev/null
-  if out=$(rm -f "$LOVAR" 2>&1 < /dev/null) && [ ! -e "$LOVAR" ]; then say "its firmware variable removed"
-  else say "its firmware variable could not be removed: ${out:-still there} ($(lsattr "$LOVAR" 2>&1))"; fi
-  sync
-fi
 
 # ---- kernel options being tried on this PC (the installer puts them on the list and the
 # boot line; lightsout-started keeps them): a start that uses one

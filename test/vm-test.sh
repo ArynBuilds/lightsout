@@ -106,14 +106,8 @@ try() {   # as the installer does: a kernel option on this PC's trial list, and 
 # a new boot line changes the TPM's measurements, so, as at every switch from Windows,
 # the key is handed over for this start
 try lightsout.works=1
-# boot 3's restart hangs on purpose (as on PCs where a device doesn't let go): the fallback
-# keeps the kernel's last messages and resets; boot 4's start puts them with the records
-for d in lightsout fedora; do
-  mtype -i "$ESP" "::/EFI/$d/grub.cfg" | sed 's|^\(linux .*\)$|\1 lightsout.test-restart-hang|' > "$w/g.cfg"
-  mcopy -o -i "$ESP" "$w/g.cfg" "::/EFI/$d/grub.cfg"
-done
 mcopy -o -i "$ESP" "$w/handoff.key" ::/EFI/lightsout/handoff.key
-echo "=== boot 3 (an option on trial; the key handed over again; its restart hangs)"; boot "$w/serial3.log"; grep -aE "lightsout:|LIGHTSOUT-SELFTEST" "$w/serial3.log" || true
+echo "=== boot 3 (an option on trial; the key handed over again)"; boot "$w/serial3.log"; grep -aE "lightsout:|LIGHTSOUT-SELFTEST" "$w/serial3.log" || true
 try lightsout.fails=1
 sgdisk -d 2 -n 2:${c_start}:+$(( c_s - 131072 )) -t 2:0700 "$w/disk.img" >/dev/null
 echo "=== boot 4 (C: shorter than its file system)"; boot "$w/serial4.log"; grep -a "lightsout:" "$w/serial4.log" || true
@@ -132,7 +126,7 @@ check "$w/serial2.log" "drive key unsealed from the TPM" "boot 2 unsealed the ke
 check "$w/serial1.log" "TPM locked until the next start" "boot 1 locked the TPM after sealing"
 check "$w/serial2.log" "TPM locked until the next start" "boot 2 locked the TPM after unsealing"
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: done" "boot 2 reached the self-test"
-check "$w/serial2.log" "reboot: Restarting system" "Lights On restarts the PC (the last step, after C: is closed)"
+check "$w/serial2.log" "sysrq: Resetting" "Lights On restarts the PC at once (the last step, after C: is closed)"
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: terminal=running" "the Lights Out terminal is on screen"
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: iwd-networks=.*psk" "Wi-Fi network imported from Windows"
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: split=ok" "project got its own Linux node_modules"
@@ -162,18 +156,12 @@ check "$w/serial4.log" "The system file needs a writable drive" "boot 4 stopped 
 check "$w/serial4.log" "on screen: Windows didn.t fully shut down" "boot 4 told you why, in one line"
 check "$w/serial4.log" "shown under the spinner" "the starter's splash shows that line"
 # the records on the EFI partition: every start, and boot 3's restart to its last step
-for f in start restart restart-kernel; do mtype -i "$ESP" "::/EFI/lightsout/results/$f.log" > "$w/$f.log" 2>/dev/null || true; done
-check "$w/serial4.log" "the last restart hung in the kernel" "a restart that hung: the next start notices"
-check "$w/restart-kernel.log" "systemd-shutdown" "the hung restart's last kernel messages are kept with the records"
-echo "--- the hung restart's last kernel messages, as kept:"; tail -n 6 "$w/restart-kernel.log" || true
-if grep -aq "the last restart hung in the kernel" "$w/serial5.log"; then echo "FAIL: the firmware variable was not removed"; ok=0
-else echo "PASS: the firmware variable is removed once kept"; fi
+for f in start restart; do mtype -i "$ESP" "::/EFI/lightsout/results/$f.log" > "$w/$f.log" 2>/dev/null || true; done
 check "$w/start.log" "TPM locked until the next start" "every start leaves its record on the EFI partition"
 check "$w/restart.log" "closing the system" "Lights On starts the restart record first"
-check "$w/restart.log" "power settings put back: every device awake" "the power settings are put back before the devices are stopped"
 check "$w/restart.log" "  kernel: " "the record keeps the kernel's last messages"
 check "$w/restart.log" "programs stopped, systemd closed what it could" "the record marks the end of systemd's part"
-check "$w/restart.log" "now: reboot (a PC still on after 3 s is restarted at once" "a restart records each step on the EFI partition, to the last one (with the 3-second fallback set)"
+check "$w/restart.log" "now: restart" "a restart records each step on the EFI partition, to the last one"
 # kernel options on trial: kept after a start that came up, taken off after one that didn't
 check "$w/serial3.log" "drive key sealed into the TPM" "after a new boot line, the key handed over is sealed anew"
 check "$w/serial3.log" "LIGHTSOUT-SELFTEST: tries: lightsout.works=1 on on-this-start=lightsout.works=1" "an option on trial whose start came up is kept"

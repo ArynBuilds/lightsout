@@ -2,31 +2,15 @@
 # Power settings for agent work. Every knob is optional: whatever this machine
 # lacks is skipped, so the same script runs on any PC.
 # `lightsout-power --restore` puts every changed value back: on a Linux PC when the desktop
-# returns, and at every restart or shut-down of Lights Out (the service stops), so the
-# devices are awake and as the PC set them (a graphics card fully off, or a link in its
-# deepest saving, can hang the restart while the kernel stops the devices).
+# returns. (Lights Out on a Windows PC restarts at once instead, see lo-shutdown: waking every
+# device first only makes the restart wait.)
 SAVED=/run/lightsout/power.saved
 if [ "${1:-}" = --restore ]; then
-  # Lights Out on a Windows PC: in the restart record (see lightsout-closing), with every device
-  # that is slow to wake (named, with the kernel's words about it)
-  R=/boot/efi/EFI/lightsout/results/restart.log
-  [ -f "$R" ] || R=/dev/null
-  cs() { read -r u _ < /proc/uptime; echo "${u%.*}${u#*.}"; }   # uptime in 1/100 s
-  echo "$(cut -d' ' -f1 /proc/uptime) putting power settings back: every device woken" >> "$R"
-  [ -f "$SAVED" ] && while read -r f v; do
-    [ -w "$f" ] || continue
-    t=$(cs); echo "$v" > "$f" 2>/dev/null; t=$(( $(cs) - t ))
-    if [ "$t" -ge 100 ]; then
-      d=${f%/power/control}
-      echo "  slow to wake: ${d##*/} ($(cat "$d/vendor" "$d/device" "$d/class" "$d/product" 2>/dev/null | tr '\n' ' ')), $((t / 100)).$((t % 100 / 10)) s" >> "$R"
-    fi
-  done < "$SAVED"
-  dmesg | grep -iE 'D3cold|not ready|inaccessible|power state|giving up' | tail -n 8 | sed 's/^/  kernel: /' >> "$R"
+  [ -f "$SAVED" ] && while read -r f v; do [ -w "$f" ] && echo "$v" > "$f" 2>/dev/null; done < "$SAVED"
   rm -f "$SAVED"
   for u in user.slice lightsout.slice lightsout-session.service; do
     systemctl set-property --runtime "$u" AllowedCPUs= 2>/dev/null
   done
-  echo "$(cut -d' ' -f1 /proc/uptime) power settings put back: every device awake" >> "$R"
   exit 0
 fi
 mkdir -p /run/lightsout

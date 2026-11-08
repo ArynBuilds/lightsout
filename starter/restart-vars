@@ -1,3 +1,0 @@
-# Shared by the starter (init) and the restart (lo-shutdown): the firmware variable in which a
-# restart that hangs in the kernel leaves the kernel's last messages (no disk needed for it).
-LOVAR=/sys/firmware/efi/efivars/LightsOutRestart-53c4fe07-1c21-4859-8bec-70fecbd7c8a2

@@ -35,23 +35,12 @@ case "$1" in
     umount /esp 2>/dev/null; sync
     poweroff -f ;;
   *)
-    # On some PCs the kernel's restart hangs: a device doesn't answer when told to stop (on an
-    # ASUS G16 a tap on the power button let it go on; otherwise the watchdog resets the PC
-    # after 30 s). Everything is closed and written out by now, so a PC still here after 3 s
-    # is restarted at once, as the reset button does.
-    # Before that, the kernel's last messages (each device it stops is named) go to a firmware
-    # variable: the disks may be stopped by then. The next start keeps them with the records.
-    step "now: reboot (a PC still on after 3 s is restarted at once; after this: the kernel and the PC's firmware)"
+    # Everything is closed and written out: restart at once, as the reset button does. (The
+    # kernel's own restart first wakes and stops every device one by one, and on some PCs one
+    # of them holds it up until the watchdog resets the PC, 30 s later.)
+    step "now: restart"
     umount /esp 2>/dev/null; sync
-    . /etc/restart-vars
-    mount -t efivarfs efivarfs /sys/firmware/efi/efivars 2>/dev/null
-    echo 1 > /sys/module/kernel/parameters/initcall_debug 2>/dev/null
     echo 1 > /proc/sys/kernel/sysrq 2>/dev/null
-    ( sleep 3
-      # (4 bytes of flags: kept, readable at start-up; then the text, in one write)
-      { printf '\007\000\000\000'; dmesg | tail -c 3800; } | dd of="$LOVAR" ibs=512 obs=8192 2>/dev/null
-      echo b > /proc/sysrq-trigger ) &
-    # the VM test makes this restart hang on purpose, to try the fallback
-    grep -q lightsout.test-restart-hang /proc/cmdline && sleep 30
+    echo b > /proc/sysrq-trigger
     reboot -f ;;
 esac
