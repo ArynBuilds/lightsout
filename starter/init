@@ -71,7 +71,7 @@ if [ -f "$LOVAR" ]; then
   mkdir -p "$L/results"; tail -c +5 "$LOVAR" > "$L/results/restart-kernel.log"   # (4 bytes: its flags)
   say "the last restart hung in the kernel: its last messages are in restart-kernel.log"
   chattr -i "$LOVAR" 2>/dev/null
-  if out=$(rm "$LOVAR" 2>&1) && [ ! -e "$LOVAR" ]; then say "its firmware variable removed"
+  if out=$(rm -f "$LOVAR" 2>&1 < /dev/null) && [ ! -e "$LOVAR" ]; then say "its firmware variable removed"
   else say "its firmware variable could not be removed: ${out:-still there} ($(lsattr "$LOVAR" 2>&1))"; fi
   sync
 fi

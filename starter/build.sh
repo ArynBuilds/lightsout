@@ -53,6 +53,10 @@ from_sys() {
 P=/usr/lib/x86_64-linux-gnu/plymouth
 from_sys /usr/sbin/plymouthd /usr/bin/plymouth $P/two-step.so $P/label-freetype.so $P/renderers/drm.so $P/renderers/frame-buffer.so
 from_sys /usr/sbin/fsck.fat   # checks the EFI partition after a forced power-off
+# the system's full chattr/lsattr, not busybox's: firmware variables Linux doesn't know are
+# write-protected, and the one a hung restart leaves is removed at the next start
+from_sys /usr/bin/chattr /usr/bin/lsattr
+rm -f "$root/bin/chattr" "$root/bin/lsattr"
 mkdir -p "$root/usr/share/plymouth/themes" "$root/etc/plymouth" "$root/usr/share/fonts"
 cp -r "$sys/usr/share/plymouth/themes/bgrt" "$sys/usr/share/plymouth/themes/spinner" "$root/usr/share/plymouth/themes/"
 cp "$sys/usr/share/plymouth/plymouthd.defaults" "$root/usr/share/plymouth/"
