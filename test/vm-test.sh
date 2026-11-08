@@ -154,7 +154,7 @@ check "$w/start.log" "TPM locked until the next start" "every start leaves its r
 check "$w/restart.log" "closing the system" "Lights On starts the restart record first"
 check "$w/restart.log" "  kernel: " "the record keeps the kernel's last messages"
 check "$w/restart.log" "programs stopped, systemd closed what it could" "the record marks the end of systemd's part"
-check "$w/restart.log" "now: reboot, cores kept awake" "a restart records each step on the EFI partition, to the last one (cores kept awake for it)"
+check "$w/restart.log" "now: reboot (a PC still on after 3 s is restarted at once" "a restart records each step on the EFI partition, to the last one (with the 3-second fallback set)"
 # kernel options on trial: kept after a start that came up, taken off after one that didn't
 check "$w/serial3.log" "drive key sealed into the TPM" "after a new boot line, the key handed over is sealed anew"
 check "$w/serial3.log" "LIGHTSOUT-SELFTEST: tries: lightsout.works=1 on on-this-start=lightsout.works=1" "an option on trial whose start came up is kept"
