@@ -143,6 +143,8 @@ jobs:
           pgrep -f -- "--session default --server"
           pkill -f -- "--server" || true
           sudo rm -f /usr/local/bin/lightsout
+          # the rooms opened here are saved (as for anyone); the next tests start without them
+          rm -f ~/.local/state/lightsout/session-default.json
           # reopening: known agents (resume.conf) continue, each tab its own session when known;
           # any other command is typed back in, not run
           mkdir -p ~/.config/lightsout ~/.local/state/lightsout
