@@ -75,6 +75,21 @@ mkdir -p "$out/boot"
 cp "$root/boot/vmlinuz-$KVER" "$out/boot/vmlinuz"
 echo "$KVER" > "$out/boot/kernel-version"
 
+# An update replaces the system file only when the system itself changed (its packages,
+# kernel or set-up), not for our own scripts, settings and programs: those come as a small
+# package (system-files.tar.gz) that the starter puts in place at a start where they changed.
+# system-base names the system; the installer compares it with the one installed.
+{ cat "$here/build.sh" "$here/overlay/usr/local/lib/lightsout/setup.sh"; echo "$KVER"
+  chroot "$root" dpkg-query -W -f='${Package}\n' | sort; } | sha256sum | cut -c1-64 > "$out/system-base"
+cp "$out/system-base" "$root/usr/local/share/lightsout/system-base"
+# the package: every file of ours as it is in the system (file modes from the set-up) and the
+# links that switch our services on
+{ (cd "$here/overlay" && find . \( -type f -o -type l \))
+  (cd "$root" && find ./usr/local/bin -name 'lightsout*' && find ./etc/systemd/system -path '*.wants/lightsout-*'); } \
+  | sort -u | while read -r f; do if [ -e "$root/$f" ] || [ -L "$root/$f" ]; then echo "$f"; fi; done > "$out/system-files.list"
+tar -C "$root" --owner=0 --group=0 --numeric-owner -czf "$out/system-files.tar.gz" -T "$out/system-files.list"
+echo "system-base: $(cat "$out/system-base"), our files: $(wc -l < "$out/system-files.list") ($(du -h "$out/system-files.tar.gz" | cut -f1))"
+
 # Pack: used size + 3 GB of room, more than the 1.5 GB at which it grows (later, from inside Lights Out)
 used_mb=$(du -sm "$root" | cut -f1)
 size_mb=$(( used_mb + 3072 ))

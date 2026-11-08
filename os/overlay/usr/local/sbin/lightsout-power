@@ -1,8 +1,10 @@
 #!/bin/sh
 # Power settings for agent work. Every knob is optional: whatever this machine
 # lacks is skipped, so the same script runs on any PC.
-# `lightsout-power --restore` puts every changed value back (Lights Out on a
-# Linux PC, when the desktop returns).
+# `lightsout-power --restore` puts every changed value back: on a Linux PC when the desktop
+# returns, and at every restart or shut-down of Lights Out (the service stops), so the
+# devices are awake and as the PC set them (a graphics card fully off, or a link in its
+# deepest saving, can hang the restart while the kernel stops the devices).
 SAVED=/run/lightsout/power.saved
 if [ "${1:-}" = --restore ]; then
   [ -f "$SAVED" ] && while read -r f v; do [ -w "$f" ] && echo "$v" > "$f" 2>/dev/null; done < "$SAVED"
@@ -10,6 +12,9 @@ if [ "${1:-}" = --restore ]; then
   for u in user.slice lightsout.slice lightsout-session.service; do
     systemctl set-property --runtime "$u" AllowedCPUs= 2>/dev/null
   done
+  # Lights Out on a Windows PC: in the restart record (see lightsout-closing)
+  R=/boot/efi/EFI/lightsout/results/restart.log
+  [ -f "$R" ] && echo "$(cut -d' ' -f1 /proc/uptime) power settings put back: every device awake" >> "$R"
   exit 0
 fi
 mkdir -p /run/lightsout

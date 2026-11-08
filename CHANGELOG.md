@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.2-rc.19
+
+A test build (`lightsout update`, or `irm https://lightsout.sh/rc | iex`).
+
+- **Lights On: devices awake before the restart.** Lights Out puts devices into deep power saving (a graphics card fully off, PCIe links in their deepest saving) and never put them back, so the kernel's restart had to wake them while stopping them, which hangs on some laptops. Every power setting now goes back the moment Lights On begins; the restart record notes each step.
+- **Quit, Lights On and switching keep your rooms and each agent's own conversation.** Quit saved twice, the second time while the agents were closing: tabs then came back to the newest conversation in their folder instead of their own, and the last tab closing could even remove the saved tabs. Now it saves once, before anything closes, and each tab keeps its agent's conversation even after the agent has stopped. `lightsout quit` does the same from a terminal.
+- **Updates no longer download the whole system each time.** The system file (a few GB) is replaced only when the system itself changed; Lights Out's own programs and scripts come as a small package that the next start puts in place.
+- **The installer saves and closes Lights Out** before an update (it used to stop the window without saving), and always runs in its own window.
+
 ## 0.3.2-rc.18
 
 A test build (`lightsout update`, or `irm https://lightsout.sh/rc | iex`).

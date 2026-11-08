@@ -672,6 +672,13 @@ fn friendly_command(cmdline: &str) -> String {
             return friendly_command(&tokens[i + 1..].join(" "));
         }
     }
+    // sh /path/to/tool args  ->  tool args (a program that is a shell script)
+    if tokens.len() > 1
+        && ["sh", "bash", "dash", "zsh"].contains(&base(&tokens[0]).as_str())
+        && tokens[1].contains(['/', '\\'])
+    {
+        return friendly_command(&tokens[1..].join(" "));
+    }
     // node <path>\npm-cli.js args  ->  npm args (same for npx, pnpm, yarn)
     if tokens.len() > 1 && base(&tokens[0]).eq_ignore_ascii_case("node") {
         let script = base(&tokens[1]).to_lowercase();
@@ -844,6 +851,12 @@ mod tests {
             friendly_command(r#"C:\WINDOWS\system32\PING.EXE -n 30 127.0.0.1"#),
             "ping -n 30 127.0.0.1"
         );
+        // a program that is a shell script, and a shell running a command (left as it is)
+        assert_eq!(
+            friendly_command("/bin/sh /home/me/bin/claude --resume abc"),
+            "claude --resume abc"
+        );
+        assert_eq!(friendly_command("sh -c make"), "sh -c make");
     }
 }
 

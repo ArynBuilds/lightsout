@@ -5,4 +5,10 @@
 R=/boot/efi/EFI/lightsout/results/restart.log
 mkdir -p "${R%/*}"
 echo "$(cut -d' ' -f1 /proc/uptime) closing the system" > "$R"
+# PCIe links out of their power saving, as Windows has them, before the devices are stopped
+# (the boot line turns it on; some PCs' devices, such as a card reader, hang the restart in it)
+P=/sys/module/pcie_aspm/parameters/policy
+if [ -w "$P" ] && echo default > "$P" 2>/dev/null; then
+  echo "$(cut -d' ' -f1 /proc/uptime) PCIe link power saving: back to the PC's own" >> "$R"
+fi
 sync

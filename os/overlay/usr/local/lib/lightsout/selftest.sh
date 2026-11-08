@@ -37,6 +37,7 @@ else
 fi
 s "own-space=$(losetup -nO BACK-FILE "$(findmnt -no SOURCE /home/lights)" 2>/dev/null) kept=$kept"
 # kernel options on trial (the test puts them on the list and the boot line, as the installer does)
+s "files=$(cut -c1-12 /usr/local/share/lightsout/files-applied 2>/dev/null)"
 s "tries: $(tr '\n' ' ' < /boot/efi/EFI/lightsout/tries 2>/dev/null)on-this-start=$(grep -o 'lightsout.works=1' /proc/cmdline)"
 s "watchdog=$(systemctl show -p RuntimeWatchdogUSec --value) at-restart=$(systemctl show -p RebootWatchdogUSec --value) kept-on-in-restart=$(cat /sys/module/watchdog/parameters/stop_on_reboot 2>/dev/null)"
 # a crashed or frozen terminal (the emergency key Ctrl+Alt+Backspace kills it): a new one must come

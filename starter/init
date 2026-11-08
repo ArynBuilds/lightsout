@@ -195,6 +195,20 @@ if ! mount -o loop,noatime /mnt/c/LightsOut/system.img /newroot 2>/run/lightsout
 fi
 # the system file keeps its own drivers; an older one may not have them for this starter's kernel
 [ -d "/newroot/lib/modules/$(uname -r)" ] || say "warning: the system file has no drivers for kernel $(uname -r) (it has: $(ls /newroot/lib/modules 2>&1 | tr '\n' ' '))"
+# Our scripts, settings and programs: an update brings them as a small package (the system
+# file is replaced only when the system itself changed); put in place when they changed
+F=/mnt/c/LightsOut/system-files.tar.gz
+A=/newroot/usr/local/share/lightsout/files-applied
+if [ -f "$F" ]; then
+  id=$(sha256sum "$F" | cut -d' ' -f1)
+  if [ "$id" != "$(cat "$A" 2>/dev/null)" ]; then
+    if (umask 022; tar -xzf "$F" -C /newroot) 2>> "$LOG"; then
+      echo "$id" > "$A"; say "Lights Out's files updated ($(echo "$id" | cut -c1-12))"
+    else
+      say "Lights Out's files could not be put in place: the system file's own are used"
+    fi
+  fi
+fi
 # a record of every start on the EFI partition (Windows copies it to C:\LightsOut\logs\boot)
 mkdir -p /esp/EFI/lightsout/results && cp "$LOG" /esp/EFI/lightsout/results/start.log && sync
 mkdir -p /newroot/mnt/c /newroot/boot/efi

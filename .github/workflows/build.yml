@@ -57,6 +57,9 @@ jobs:
             New-Item -ItemType Directory -Force "$lo\update\previous\starter", "$lo\logs", "$esp\EFI\lightsout\results" | Out-Null
             'drive locked again' | Set-Content "$esp\EFI\lightsout\results\restart.log"
             'new' | Set-Content "$lo\system.img"; 'old' | Set-Content "$lo\update\previous\system.img"
+            New-Item -ItemType Directory -Force "$lo\config" | Out-Null
+            'new' | Set-Content "$lo\system-files.tar.gz"; 'old' | Set-Content "$lo\update\previous\system-files.tar.gz"
+            'new' | Set-Content "$lo\config\system-base"; 'old' | Set-Content "$lo\update\previous\system-base"
             'new' | Set-Content "$esp\EFI\lightsout\starter.img"; 'old' | Set-Content "$lo\update\previous\starter\starter.img"
             'secret' | Set-Content "$esp\EFI\lightsout\handoff.key"
             New-Item -ItemType File "$lo\update\trial" | Out-Null
@@ -65,6 +68,7 @@ jobs:
           & $fresh; New-Item -ItemType File "$lo\update\tried" | Out-Null
           & ./installer/cleanup.ps1 -LO $lo -Esp $esp
           if ((Get-Content "$lo\system.img") -ne 'old' -or (Get-Content "$esp\EFI\lightsout\starter.img") -ne 'old') { throw 'the previous version was not put back' }
+          if ((Get-Content "$lo\system-files.tar.gz") -ne 'old' -or (Get-Content "$lo\config\system-base") -ne 'old') { throw 'the previous files and system name were not put back' }
           if ((Test-Path "$lo\update\trial") -or (Test-Path "$lo\update\previous")) { throw 'the update was not closed after putting the previous version back' }
           if (Test-Path "$esp\EFI\lightsout\handoff.key") { throw 'a leftover drive key stayed on the EFI partition' }
           if ((Get-Content "$lo\logs\boot\restart.log") -ne 'drive locked again') { throw 'the restart record was not copied where you can read it' }
@@ -164,6 +168,30 @@ jobs:
           $B/lightsout close "$(pane 3)"; sleep 1          # closing a pane: it is gone from the list
           ! $B/lightsout list | awk 'NR > 1 {print $1}' | grep -qx "$(pane 3)"
           pkill -f -- "--session cireopen --server" || true
+          # Quit keeps each agent's own conversation: two Claudes in one folder each come back to
+          # theirs (a stand-in Claude that, like the real one, records its chat while it runs and
+          # removes the record when it stops)
+          mkdir -p /tmp/fake-claude && install -m755 test/fake-claude /tmp/fake-claude/claude
+          export LIGHTSOUT_SESSION=ciquit PATH=/tmp/fake-claude:$PATH
+          $B/lightsout --session ciquit --server &
+          for i in $(seq 1 30); do $B/lightsout list >/dev/null 2>&1 && break; sleep 1; done
+          first=$($B/lightsout list | awk 'NR == 2 {print $1}')
+          $B/lightsout send "$first" "cd /tmp && claude chat-A"
+          $B/lightsout send "$($B/lightsout new --cwd /tmp)" "claude chat-B"
+          sleep 6
+          $B/lightsout room add Named
+          sleep 3
+          $B/lightsout quit
+          for i in $(seq 1 20); do pgrep -f -- "--session ciquit --server" >/dev/null || break; sleep 0.5; done
+          $B/lightsout --session ciquit --server &
+          for i in $(seq 1 30); do $B/lightsout list > quit.txt 2>/dev/null && break; sleep 1; done
+          sleep 3; cat quit.txt; $B/lightsout room list
+          $B/lightsout room list | grep -q Named
+          for p in $(awk 'NR > 1 {print $1}' quit.txt); do $B/lightsout read "$p" --lines 5; done > quit-screens.txt
+          cat quit-screens.txt
+          grep -q "fake-claude --resume chat-A" quit-screens.txt
+          grep -q "fake-claude --resume chat-B" quit-screens.txt
+          pkill -f -- "--session ciquit --server" || true
           echo "TERMINAL VIEW TEST PASSED"
       - name: Test on this Linux machine (install, Lights Out screen, power restore, uninstall)
         if: ${{ !contains(github.ref, '-rc') }}  # test builds (vX-rc.N) skip the tests: you test them yourself
@@ -368,6 +396,8 @@ jobs:
           path: |
             os/out/system.img.gz
             os/out/system.img.gz.sha256
+            os/out/system-base
+            os/out/system-files.tar.gz
           retention-days: 14
           compression-level: 0
       - name: Free disk space
@@ -402,7 +432,7 @@ jobs:
           mkdir rel
           (cd a/lightsout-term-windows && zip -j ../../rel/lightsout-windows-x64.zip $(find . -type f))
           (cd a/lightsout-starter && zip -r ../../rel/lightsout-starter.zip EFI)
-          cp a/lightsout-system/system.img.gz a/lightsout-system/system.img.gz.sha256 rel/
+          cp a/lightsout-system/system.img.gz a/lightsout-system/system.img.gz.sha256 a/lightsout-system/system-base a/lightsout-system/system-files.tar.gz rel/
           cp a/lightsout-linux-x64/lightsout-linux-x64.tar.gz a/lightsout-macos/lightsout-macos.tar.gz rel/
           ls -la rel
       - name: Release

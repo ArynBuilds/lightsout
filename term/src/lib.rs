@@ -389,6 +389,8 @@ struct App {
     /// The rooms, tabs, folders and programs as last saved (without the screens), and when
     /// that was last compared: any change to them is saved within a couple of seconds.
     saved_shape: String,
+    /// Quit or a switch has begun (see `begin_closing`).
+    closing: bool,
     shape_at: Instant,
     shape_check: bool,
     window_focused: bool,
@@ -497,6 +499,7 @@ impl App {
             status_at: Instant::now(),
             saved_at: Instant::now(),
             saved_shape: String::new(),
+            closing: false,
             shape_at: Instant::now(),
             shape_check: false,
             window_focused: true,
@@ -961,6 +964,9 @@ impl App {
     }
 
     fn close_pane(&mut self, id: u64) {
+        if self.closing {
+            return;
+        }
         // a pane in another room closes there, without switching rooms
         if self.popup != Some(id) {
             if let Some(r) = self.room_of(id).filter(|r| *r != self.room) {
@@ -1068,7 +1074,14 @@ impl App {
                 let found = p
                     .shell_pid
                     .and_then(|pid| running.get(&pid).cloned().flatten());
-                p.running_pid = found.as_ref().map(|(pid, _)| *pid);
+                let pid = found.as_ref().map(|(pid, _)| *pid);
+                if pid != p.running_pid {
+                    p.agent_session = None;
+                }
+                p.running_pid = pid;
+                if p.agent_session.is_none() {
+                    p.agent_session = pid.and_then(platform::agent_session);
+                }
                 let now = found.map(|(_, name)| name);
                 if now != p.running {
                     p.running = now;
@@ -1190,7 +1203,10 @@ impl App {
                             .shell_pid
                             .and_then(|pid| running.get(&pid).cloned().flatten())
                             .or_else(|| p.command.clone()),
-                        session: p.running_pid.and_then(platform::agent_session),
+                        session: p
+                            .agent_session
+                            .clone()
+                            .or_else(|| p.running_pid.and_then(platform::agent_session)),
                         screen: (screen_lines > 0).then(|| p.text(screen_lines)),
                     })
                     .collect();
@@ -1203,7 +1219,19 @@ impl App {
             .collect()
     }
 
+    /// Quit, Lights On, or Windows restarting into Lights Out: the tabs are saved now, once.
+    /// From here nothing saves or closes tabs: the agents are stopping, and as they stop their
+    /// tabs would close (the last one even removes the saved tabs) and a later save would no
+    /// longer know which conversation each tab had.
+    fn begin_closing(&mut self) {
+        self.save_session();
+        self.closing = true;
+    }
+
     fn save_session(&mut self) {
+        if self.closing {
+            return;
+        }
         self.saved_at = Instant::now();
         if !self.cfg.history.keep
             || (self.tabs.is_empty() && self.rooms.iter().all(|r| r.tabs.is_empty()))
@@ -1391,6 +1419,24 @@ impl App {
     }
 
     // ------------------------------------------------------------ switching
+
+    /// Quit: the tabs saved (once), the agents stopped, the app closes.
+    fn quit_saved(&mut self) {
+        self.begin_closing();
+        for p in self.panes.values() {
+            p.shutdown();
+        }
+        self.quit = true;
+    }
+
+    /// Lights On: back to Windows or the desktop. Everywhere but the Mac (where this window
+    /// stays) the system restarts or the Lights Out screen ends, so the tabs are kept now.
+    fn lights_on(&mut self) {
+        if !cfg!(target_os = "macos") {
+            self.begin_closing();
+        }
+        platform::back_to_windows(&self.saved(80));
+    }
 
     fn start_switch(&mut self) {
         let saved = self.saved(80);
@@ -1934,7 +1980,7 @@ impl App {
             if matches!(key, Key::Named(NamedKey::Enter)) {
                 match c {
                     Confirm::BackToWindows => {
-                        platform::back_to_windows(&self.saved(80));
+                        self.lights_on();
                         if cfg!(target_os = "macos") {
                             if let Some(w) = &self.window {
                                 w.set_fullscreen(None);
@@ -1942,13 +1988,7 @@ impl App {
                         }
                     }
                     Confirm::EnterLightsOut => self.start_switch(),
-                    Confirm::Quit => {
-                        self.save_session();
-                        for p in self.panes.values() {
-                            p.shutdown();
-                        }
-                        self.quit = true;
-                    }
+                    Confirm::Quit => self.quit_saved(),
                 }
             }
             return true;
@@ -2750,9 +2790,13 @@ impl App {
                 }
                 None => json!({ "battery": null }),
             },
+            "quit" => {
+                self.quit_saved();
+                json!({ "ok": true })
+            }
             "switch" => {
                 if platform::in_lightsout() {
-                    platform::back_to_windows(&self.saved(80));
+                    self.lights_on();
                 } else {
                     self.start_switch();
                 }
@@ -3896,6 +3940,10 @@ impl App {
             match rx.try_recv() {
                 Ok(Ok(())) => {
                     self.switching = None;
+                    // Windows restarts now (Linux and a Mac logging out close the app below)
+                    if cfg!(windows) {
+                        self.begin_closing();
+                    }
                     if cfg!(target_os = "linux") || platform::mac_logging_out() {
                         // Linux: the desktop is stopping; Mac: the background service takes
                         // over and you're logged out. Either way these tabs reopen there.
@@ -4011,7 +4059,7 @@ Lights Out: the terminal for AI agents.
   lightsout uninstall             remove Lights Out from this computer
 
 Control the running app (also for agents; details: `lightsout skill`):
-  lightsout list | new | send | read | wait | explain | focus | close | notify | screen | power | switch
+  lightsout list | new | send | read | wait | explain | focus | close | notify | screen | power | switch | quit
 ";
 
 /// One word of a command, quoted for the shell that runs it (PowerShell on Windows, sh elsewhere).
@@ -4100,6 +4148,7 @@ fn client(session: &str, args: &[String]) -> i32 {
         "power" => ("power", json!({})),
         "switch" | "windows" => ("switch", json!({})),
         "handback" => ("handback", json!({})),
+        "quit" => ("quit", json!({})),
         _ => {
             eprint!("{HELP}");
             return 2;

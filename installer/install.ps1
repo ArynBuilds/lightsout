@@ -24,15 +24,13 @@ $ProgressPreference = 'SilentlyContinue'
 # stable = the latest release; rc = the newest test build (lightsout.sh/rc sends this installer with 'rc' here)
 $Channel = 'stable'
 $Site = if ($Channel -eq 'rc') { 'https://lightsout.sh/rc' } else { 'https://lightsout.sh' }
-# admin rights: reopen this installer in an admin window
-if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-  Write-Host 'Lights Out needs admin rights to install. Confirm the Windows prompt...'
-  if ($PSCommandPath) {
-    $a = "-NoProfile -ExecutionPolicy Bypass -NoExit -File `"$PSCommandPath`""
-    if ($Source) { $a += " -Source `"$Source`"" }
-  } else {
-    $a = "-NoProfile -ExecutionPolicy Bypass -NoExit -Command `"irm $Site | iex`""
-  }
+# admin rights: reopen this installer in an admin window. Also when it runs inside a Lights Out
+# tab: the update closes Lights Out (your tabs saved) and must not close itself with it.
+$admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $admin -or $env:LIGHTSOUT_PANE) {
+  Write-Host 'Lights Out installs in its own admin window. Confirm the Windows prompt...'
+  $run = if ($PSCommandPath) { "& '$PSCommandPath'" + $(if ($Source) { " -Source '$Source'" } else { '' }) } else { "irm $Site | iex" }
+  $a = "-NoProfile -ExecutionPolicy Bypass -NoExit -Command `"Remove-Item Env:LIGHTSOUT_PANE -ErrorAction SilentlyContinue; $run`""
   Start-Process powershell -Verb RunAs -ArgumentList $a
   return
 }
@@ -73,16 +71,24 @@ if (-not $Source) {
   Download 'lightsout-windows-x64.zip' "$Source\lightsout-windows-x64.zip"
   Download 'lightsout-starter.zip' "$Source\lightsout-starter.zip"
   Download 'system.img.gz.sha256' "$Source\system\system.img.gz.sha256"
+  # (releases before 0.3.2-rc.19 have neither: then the whole system file, as before)
+  foreach ($f in 'system-base', 'system-files.tar.gz') {
+    curl.exe -fsL -o "$Source\system\$f" "$Base/$f"; if ($LASTEXITCODE -ne 0) { Remove-Item "$Source\system\$f" -ErrorAction SilentlyContinue }
+  }
   Expand-Archive "$Source\lightsout-windows-x64.zip" "$Source\term" -Force
   Expand-Archive "$Source\lightsout-starter.zip" "$Source\starter" -Force
 }
-# An update: your own space (user.img: programs, logins, keys) always stays. The system
-# file is replaced only when it changed; the previous one is kept until the new one has
-# started in Lights Out (else Windows puts it back, see cleanup.ps1).
+# An update: your own space (user.img: programs, logins, keys) always stays. The system file
+# (a few GB) is replaced only when the system itself changed (system-base: its packages, kernel
+# and set-up); our own scripts and programs come as a small package every time
+# (system-files.tar.gz, put in place by the starter). The previous ones are kept until the new
+# version has started in Lights Out (else Windows puts them back, see cleanup.ps1).
 $updating = Test-Path "$LO\system.img"
 $gz = Join-Path $Source 'system\system.img.gz'
+$files = Join-Path $Source 'system\system-files.tar.gz'
 $want = (Get-Content "$gz.sha256" -ErrorAction SilentlyContinue | Select-Object -First 1) -split '\s+' | Select-Object -First 1
-$newSystem = -not $updating -or -not $want -or $want -ne (Get-Content "$LO\config\system-sha256" -ErrorAction SilentlyContinue)
+$base = (Get-Content (Join-Path $Source 'system\system-base') -ErrorAction SilentlyContinue | Select-Object -First 1)
+$newSystem = -not $updating -or -not $base -or $base -ne (Get-Content "$LO\config\system-base" -ErrorAction SilentlyContinue | Select-Object -First 1)
 if ($newSystem -and -not (Test-Path $gz)) { Download 'system.img.gz' $gz }
 $need = 'starter\EFI\lightsout\shimx64.efi','starter\EFI\lightsout\starter.img','term\lightsout.exe','term\lightsout-app.exe','term\cleanup.ps1'
 if ($newSystem) { $need += 'system\system.img.gz' }
@@ -97,7 +103,7 @@ $keepPrev = Test-Path "$LO\update\trial"   # an update not started yet: its back
 if ($updating -and -not $keepPrev) {
   Remove-Item $prev -Recurse -Force -ErrorAction SilentlyContinue
   New-Item -ItemType Directory -Force "$prev\starter" | Out-Null
-  Copy-Item "$LO\config\system-sha256" $prev -ErrorAction SilentlyContinue
+  Copy-Item "$LO\config\system-base", "$LO\system-files.tar.gz" $prev -ErrorAction SilentlyContinue
 }
 $freeGB = [math]::Round((Get-PSDrive C).Free / 1GB, 1)
 if ($freeGB -lt 6) { Fail "C: has $freeGB GB free; Lights Out needs about 6 GB" }
@@ -121,8 +127,10 @@ else {
   try { $z.CopyTo($out, 4MB) } finally { $out.Close(); $z.Close(); $in.Close() }
   if ($updating -and -not $keepPrev) { Move-Item "$LO\system.img" "$prev\system.img" -Force }
   Move-Item "$LO\system.img.part" "$LO\system.img" -Force
-  [IO.File]::WriteAllText("$LO\config\system-sha256", "$want")
+  if ($base) { [IO.File]::WriteAllText("$LO\config\system-base", $base) }
+  Remove-Item "$LO\config\system-sha256" -Force -ErrorAction SilentlyContinue   # (what versions before 0.3.2-rc.19 compared)
 }
+if (Test-Path $files) { Copy-Item $files "$LO\system-files.tar.gz" -Force; Write-Host 'Lights Out files: up to date' }
 [IO.File]::WriteAllText("$LO\bin\installer-url", $Site)   # where `lightsout update` gets the next version
 
 # ---------------------------------------------------------------- 3. Wi-Fi, user, PIN
@@ -236,8 +244,19 @@ bcdedit /set '{fwbootmgr}' displayorder $id /addlast | Out-Null   # Windows stay
 
 # ---------------------------------------------------------------- 6. terminal + switch task
 Step 'Installing the Lights Out terminal'
-$wasOpen = Get-Process lightsout-app -ErrorAction SilentlyContinue   # opened again at the end, tabs and agents back
-$wasOpen | Stop-Process -Force
+# Lights Out running (its window, or kept in the background for a terminal): asked to save your
+# tabs and close, as Quit in its actions does (`lightsout quit`); what still runs after 15 s is
+# stopped. The window is opened again at the end (tabs and agents back); in a terminal, type
+# lightsout again. (Not the `lightsout update` that started this installer.)
+$wasOpen = Get-Process lightsout-app -ErrorAction SilentlyContinue
+$inTerminal = Get-CimInstance Win32_Process -Filter "Name='lightsout.exe'" | Where-Object { $_.CommandLine -match '--server' }
+$caller = (Get-CimInstance Win32_Process -Filter "ProcessId=$PID").ParentProcessId
+$ours = { Get-Process lightsout, lightsout-app -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$LO\bin\*" -and $_.Id -ne $caller } }
+if ((& $ours) -and -not $asSystem) {
+  & "$LO\bin\lightsout.exe" quit 2>$null | Out-Null
+  & $ours | Wait-Process -Timeout 15 -ErrorAction SilentlyContinue
+}
+& $ours | Stop-Process -Force -ErrorAction SilentlyContinue
 # a running lightsout.exe (Lights Out kept running in the background for a terminal) can't be
 # overwritten, but it can be moved aside: it keeps running, its agents too; the new one is used next time
 Get-ChildItem "$LO\bin\*.old" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
@@ -303,5 +322,6 @@ Write-Host "`nLights Out is $(if ($updating) {'updated'} else {'installed'})." -
 Write-Host 'Open it with the command  lightsout  (in a new terminal) or from the Start menu.'
 Write-Host 'The Lights Out button (bottom left, or Ctrl+Shift+L) switches over.'
 Write-Host 'Remove it with:  lightsout uninstall'
+if ($inTerminal) { Write-Host 'Lights Out was closed for the update, your tabs saved: type  lightsout  to open it again.' -ForegroundColor Yellow }
 Stop-Transcript | Out-Null
 if ($Source -eq (Join-Path $env:TEMP 'lightsout-setup')) { Remove-Item $Source -Recurse -Force -ErrorAction SilentlyContinue }

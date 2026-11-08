@@ -941,7 +941,7 @@ dependencies = [
 
 [[package]]
 name = "lightsout-term"
-version = "0.3.2-rc.18"
+version = "0.3.2-rc.19"
 dependencies = [
  "alacritty_terminal",
  "arboard",

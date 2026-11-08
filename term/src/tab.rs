@@ -93,6 +93,9 @@ pub struct Pane {
     pub running: Option<String>,
     /// Its process ID (to find the agent's own session, e.g. Claude's chat ID).
     pub running_pid: Option<u32>,
+    /// That agent's own session ID once read (Claude deletes its record when it stops, so a
+    /// save after that still knows which conversation this tab had).
+    pub agent_session: Option<String>,
     /// Fingerprint of the screen without its bottom rows (see `body_changed`).
     body: u64,
 }
@@ -168,6 +171,7 @@ impl Pane {
             size,
             running: None,
             running_pid: None,
+            agent_session: None,
             body: 0,
         })
     }

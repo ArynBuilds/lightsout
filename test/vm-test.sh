@@ -13,7 +13,8 @@
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 A="$here/.."; w="${VMTEST_DIR:-$here/work}"; rm -rf "$w"; mkdir -p "$w"/{tpm,mnt}
-STARTER="$A/starter/out"; SYSIMG="$A/os/out/system.img"
+STARTER="$A/starter/out"; SYSIMG="$A/os/out/system.img"; FILES="$A/os/out/system-files.tar.gz"
+files_id=$(sha256sum "$FILES" | cut -c1-12)   # our scripts and programs, as an update brings them
 
 # ---- ESP (FAT): starter + firmware fallback path + test switches
 truncate -s 200M "$w/esp.img"; mkfs.vfat -F 32 -n EFI "$w/esp.img" >/dev/null
@@ -37,6 +38,7 @@ mkdir -p "$w/mnt/LightsOut/wifi" "$w/mnt/LightsOut/config" "$w/mnt/Users/tester/
 echo "=== system file before boot 1:"; e2fsck -fn "$SYSIMG" 2>&1 | tail -n 2
 # written in full like the Windows installer does (sparse NTFS files are a known weak spot)
 cp --sparse=never "$SYSIMG" "$w/mnt/LightsOut/system.img"
+cp "$FILES" "$w/mnt/LightsOut/system-files.tar.gz"
 printf 'tester' > "$w/mnt/LightsOut/config/windows-user"
 printf "us" > "$w/mnt/LightsOut/config/keyboard"
 mkdir -p "$w/mnt/Users/tester/proj/node_modules/win-only"
@@ -143,6 +145,11 @@ check "$w/serial2.log" "LIGHTSOUT-SELFTEST: watchdog=1min at-restart=30s kept-on
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: splash=success/bgrt" "start-up shows the PC logo with a spinner"
 check "$w/serial1.log" "LIGHTSOUT-SELFTEST: own-space=/mnt/c/LightsOut/user.img kept=new" "boot 1 made your own space (user.img)"
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: own-space=/mnt/c/LightsOut/user.img kept=yes" "an update (a new system file) kept your own space and your packages"
+check "$w/serial1.log" "Lights Out's files updated ($files_id)" "the starter puts our files in place on a system file that lacks them"
+check "$w/serial1.log" "LIGHTSOUT-SELFTEST: files=$files_id" "the system runs with exactly those files"
+check "$w/serial2.log" "Lights Out's files updated ($files_id)" "after a new system file, our files are put in place again"
+if grep -aq "Lights Out's files updated" "$w/serial3.log"; then echo "FAIL: unchanged files were put in place again"; ok=0
+else echo "PASS: unchanged files are left alone (nothing to do at a start)"; fi
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: screen-restart=ok" "the emergency key brings a frozen screen back"
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: program-in-tab-recorded=yes" "a program typed in a tab is recorded right away"
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: tabs-after-restart=all " "after a crash or the emergency key, the tabs come back"
@@ -163,6 +170,7 @@ if grep -aq "the last restart hung in the kernel" "$w/serial5.log"; then echo "F
 else echo "PASS: the firmware variable is removed once kept"; fi
 check "$w/start.log" "TPM locked until the next start" "every start leaves its record on the EFI partition"
 check "$w/restart.log" "closing the system" "Lights On starts the restart record first"
+check "$w/restart.log" "power settings put back: every device awake" "the power settings are put back before the devices are stopped"
 check "$w/restart.log" "  kernel: " "the record keeps the kernel's last messages"
 check "$w/restart.log" "programs stopped, systemd closed what it could" "the record marks the end of systemd's part"
 check "$w/restart.log" "now: reboot (a PC still on after 3 s is restarted at once" "a restart records each step on the EFI partition, to the last one (with the 3-second fallback set)"

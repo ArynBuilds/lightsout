@@ -24,7 +24,8 @@ try {
   if ((Test-Path "$u\trial") -and (Test-Path "$u\tried")) {
     # the updated Lights Out was started but never came up (else it removes trial itself)
     if (Test-Path "$p\system.img") { Move-Item "$p\system.img" "$LO\system.img" -Force }
-    if (Test-Path "$p\system-sha256") { Copy-Item "$p\system-sha256" "$LO\config\system-sha256" -Force }
+    if (Test-Path "$p\system-base") { Copy-Item "$p\system-base" "$LO\config\system-base" -Force }
+    if (Test-Path "$p\system-files.tar.gz") { Copy-Item "$p\system-files.tar.gz" "$LO\system-files.tar.gz" -Force }
     if (Test-Path "$p\starter") {
       Copy-Item "$p\starter\*" "$Esp\EFI\lightsout\" -Force
       if (Test-Path "$Esp\EFI\lightsout\created-fedora-dir") { Copy-Item "$p\starter\grub.cfg" "$Esp\EFI\fedora\grub.cfg" -Force }
