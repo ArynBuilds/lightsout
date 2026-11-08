@@ -7,14 +7,26 @@
 # deepest saving, can hang the restart while the kernel stops the devices).
 SAVED=/run/lightsout/power.saved
 if [ "${1:-}" = --restore ]; then
-  [ -f "$SAVED" ] && while read -r f v; do [ -w "$f" ] && echo "$v" > "$f" 2>/dev/null; done < "$SAVED"
+  # Lights Out on a Windows PC: in the restart record (see lightsout-closing), with every device
+  # that is slow to wake (named, with the kernel's words about it)
+  R=/boot/efi/EFI/lightsout/results/restart.log
+  [ -f "$R" ] || R=/dev/null
+  cs() { read -r u _ < /proc/uptime; echo "${u%.*}${u#*.}"; }   # uptime in 1/100 s
+  echo "$(cut -d' ' -f1 /proc/uptime) putting power settings back: every device woken" >> "$R"
+  [ -f "$SAVED" ] && while read -r f v; do
+    [ -w "$f" ] || continue
+    t=$(cs); echo "$v" > "$f" 2>/dev/null; t=$(( $(cs) - t ))
+    if [ "$t" -ge 100 ]; then
+      d=${f%/power/control}
+      echo "  slow to wake: ${d##*/} ($(cat "$d/vendor" "$d/device" "$d/class" "$d/product" 2>/dev/null | tr '\n' ' ')), $((t / 100)).$((t % 100 / 10)) s" >> "$R"
+    fi
+  done < "$SAVED"
+  dmesg | grep -iE 'D3cold|not ready|inaccessible|power state|giving up' | tail -n 8 | sed 's/^/  kernel: /' >> "$R"
   rm -f "$SAVED"
   for u in user.slice lightsout.slice lightsout-session.service; do
     systemctl set-property --runtime "$u" AllowedCPUs= 2>/dev/null
   done
-  # Lights Out on a Windows PC: in the restart record (see lightsout-closing)
-  R=/boot/efi/EFI/lightsout/results/restart.log
-  [ -f "$R" ] && echo "$(cut -d' ' -f1 /proc/uptime) power settings put back: every device awake" >> "$R"
+  echo "$(cut -d' ' -f1 /proc/uptime) power settings put back: every device awake" >> "$R"
   exit 0
 fi
 mkdir -p /run/lightsout

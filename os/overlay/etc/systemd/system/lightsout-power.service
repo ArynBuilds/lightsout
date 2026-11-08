@@ -11,6 +11,9 @@ ExecStart=/usr/local/sbin/lightsout-power
 ExecStartPost=/bin/sh -c 'sleep 20; /usr/local/sbin/lightsout-power'
 RemainAfterExit=yes
 ExecStop=/usr/local/sbin/lightsout-power --restore
+# waking every device can take long on some PCs; cut short, the kernel would wait for the same
+# device during the restart itself (a black screen instead)
+TimeoutStopSec=90s
 
 [Install]
 WantedBy=multi-user.target
