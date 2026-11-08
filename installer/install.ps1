@@ -87,8 +87,8 @@ $updating = Test-Path "$LO\system.img"
 $gz = Join-Path $Source 'system\system.img.gz'
 $files = Join-Path $Source 'system\system-files.tar.gz'
 $want = (Get-Content "$gz.sha256" -ErrorAction SilentlyContinue | Select-Object -First 1) -split '\s+' | Select-Object -First 1
-$base = (Get-Content (Join-Path $Source 'system\system-base') -ErrorAction SilentlyContinue | Select-Object -First 1)
-$newSystem = -not $updating -or -not $base -or $base -ne (Get-Content "$LO\config\system-base" -ErrorAction SilentlyContinue | Select-Object -First 1)
+$systemBase = (Get-Content (Join-Path $Source 'system\system-base') -ErrorAction SilentlyContinue | Select-Object -First 1)
+$newSystem = -not $updating -or -not $systemBase -or $systemBase -ne (Get-Content "$LO\config\system-base" -ErrorAction SilentlyContinue | Select-Object -First 1)
 if ($newSystem -and -not (Test-Path $gz)) { Download 'system.img.gz' $gz }
 $need = 'starter\EFI\lightsout\shimx64.efi','starter\EFI\lightsout\starter.img','term\lightsout.exe','term\lightsout-app.exe','term\cleanup.ps1'
 if ($newSystem) { $need += 'system\system.img.gz' }
@@ -127,7 +127,7 @@ else {
   try { $z.CopyTo($out, 4MB) } finally { $out.Close(); $z.Close(); $in.Close() }
   if ($updating -and -not $keepPrev) { Move-Item "$LO\system.img" "$prev\system.img" -Force }
   Move-Item "$LO\system.img.part" "$LO\system.img" -Force
-  if ($base) { [IO.File]::WriteAllText("$LO\config\system-base", $base) }
+  if ($systemBase) { [IO.File]::WriteAllText("$LO\config\system-base", $systemBase) }
   Remove-Item "$LO\config\system-sha256" -Force -ErrorAction SilentlyContinue   # (what versions before 0.3.2-rc.19 compared)
 }
 if (Test-Path $files) { Copy-Item $files "$LO\system-files.tar.gz" -Force; Write-Host 'Lights Out files: up to date' }
