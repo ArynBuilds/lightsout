@@ -386,6 +386,11 @@ struct App {
     waiters: Vec<Waiter>,
     status_at: Instant,
     saved_at: Instant,
+    /// The rooms, tabs, folders and programs as last saved (without the screens), and when
+    /// that was last compared: any change to them is saved within a couple of seconds.
+    saved_shape: String,
+    shape_at: Instant,
+    shape_check: bool,
     window_focused: bool,
     hidden: bool,
     sidebar: bool,
@@ -491,6 +496,9 @@ impl App {
             waiters: Vec::new(),
             status_at: Instant::now(),
             saved_at: Instant::now(),
+            saved_shape: String::new(),
+            shape_at: Instant::now(),
+            shape_check: false,
             window_focused: true,
             hidden: false,
             sidebar: load_ui().sidebar,
@@ -1202,8 +1210,14 @@ impl App {
         {
             return;
         }
+        self.saved_shape = self.shape();
         let s = self.saved(200);
         session::save(&session::local_file(&self.session), &s);
+    }
+
+    /// What a restart brings back, without the screens (cheap to compare).
+    fn shape(&self) -> String {
+        serde_json::to_string(&self.saved(0)).unwrap_or_default()
     }
 
     /// Known agents (resume.conf) continue their conversation; any other command is
@@ -3944,7 +3958,22 @@ impl App {
             }
             soon(self.cfg_checked + Duration::from_secs(3));
         }
-        // keep the restore point fresh (only matters after activity)
+        // keep the restore point fresh: a room renamed, a tab opened or closed, a folder or a
+        // program changed is saved within 2 s (a crash, an update or a forced close then
+        // loses nothing); the screens' text once a minute while agents work
+        self.shape_check |= self.dirty;
+        if self.shape_check {
+            let due = self.shape_at + Duration::from_secs(2);
+            if now >= due {
+                self.shape_at = now;
+                self.shape_check = false;
+                if self.shape() != self.saved_shape {
+                    self.save_session();
+                }
+            } else {
+                soon(due);
+            }
+        }
         if busy && self.saved_at.elapsed() >= Duration::from_secs(60) {
             self.save_session();
         }

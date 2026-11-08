@@ -40,7 +40,13 @@ jobs:
           Start-Sleep 8
           $w.WriteLine('{"Resize":[101,30]}')
           if ($s.Read($buf, 0, $buf.Length) -le 0) { throw 'the quiet view was dropped' }
+          # a change (here a room added and named) is saved within seconds: a copy killed
+          # right after, without a chance to save, still brings it back
+          & $B room add Named | Out-Null
+          Start-Sleep 5
           Get-Process lightsout | Stop-Process -Force
+          $saved = Get-Content "$env:LOCALAPPDATA\lightsout\session-ciwin.json" -Raw
+          if (-not ($saved -match '"name":"Named"')) { throw 'a room named just before a crash was lost' }
           # signing in without coming back from Lights Out: the app stays closed
           $p = Start-Process "$PWD/term/target/release/lightsout-app.exe" -ArgumentList '--if-returning' -PassThru
           if (-not $p.WaitForExit(10000)) { $p.Kill(); throw 'the app opened at sign-in without coming back from Lights Out' }

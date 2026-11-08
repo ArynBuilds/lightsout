@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.2-rc.18
+
+A test build (`lightsout update`, or `irm https://lightsout.sh/rc | iex`).
+
+- **Nothing you set up is lost any more:** a room you rename or add, a tab you open or close, a folder or a program that changes is saved within 2 seconds. Before, some of these waited for the next agent activity or for Quit, so a crash, an update or a forced close could bring back an older set of rooms and tabs.
+
 ## 0.3.2-rc.17
 
 A test build (`lightsout update`, or `irm https://lightsout.sh/rc | iex`).
