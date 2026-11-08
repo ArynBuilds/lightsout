@@ -158,6 +158,7 @@ check "$w/serial4.log" "shown under the spinner" "the starter's splash shows tha
 for f in start restart restart-kernel; do mtype -i "$ESP" "::/EFI/lightsout/results/$f.log" > "$w/$f.log" 2>/dev/null || true; done
 check "$w/serial4.log" "the last restart hung in the kernel" "a restart that hung: the next start notices"
 check "$w/restart-kernel.log" "systemd-shutdown" "the hung restart's last kernel messages are kept with the records"
+echo "--- the hung restart's last kernel messages, as kept:"; tail -n 6 "$w/restart-kernel.log" || true
 if grep -aq "the last restart hung in the kernel" "$w/serial5.log"; then echo "FAIL: the firmware variable was not removed"; ok=0
 else echo "PASS: the firmware variable is removed once kept"; fi
 check "$w/start.log" "TPM locked until the next start" "every start leaves its record on the EFI partition"
