@@ -1,9 +1,19 @@
 #!/bin/sh
 # systemd runs this once every program has stopped and it has closed what it can, right before
-# the last steps (lo-shutdown): marks that point in the restart record, with the kernel's last
-# messages (what systemd couldn't close shows there).
+# the last steps (lo-shutdown): marks that point in the restart record, with what was slow to
+# stop (from the journal, still in RAM here) and the kernel's last messages (what systemd
+# couldn't close shows there).
 mkdir -p /run/lo-esp && mount -t vfat "$(cat /run/initramfs/esp-dev)" /run/lo-esp 2>/dev/null || exit 0
 R=/run/lo-esp/EFI/lightsout/results/restart.log
 echo "$(cut -d' ' -f1 /proc/uptime) programs stopped, systemd closed what it could" >> "$R"
+from=$(head -n 1 "$R" | cut -d' ' -f1)
+journalctl -q -D /run/log/journal -o short-monotonic --no-pager _COMM=systemd 2>/dev/null | awk -v from="${from:-0}" '
+  { if (!match($0, /[0-9]+\.[0-9]+/)) next
+    s = substr($0, RSTART, RLENGTH) + 0; if (s < from) next
+    m = $0; sub(/^[^:]*: /, "", m); split(m, w, " ") }
+  m ~ /^Stopping / { at[w[2]] = s; next }
+  m ~ /^Stopped / { if ((w[2] in at) && s - at[w[2]] >= 2) printf "  slow to stop: %s, %.1f s\n", w[2], s - at[w[2]]; delete at[w[2]]; next }
+  m ~ /timed out|Killing|SIGKILL/ { printf "  %.2f %s\n", s, m }
+  END { for (u in at) printf "  never stopped: %s (since %.1f)\n", u, at[u] }' >> "$R"
 dmesg | tail -n 15 | sed 's/^/  kernel: /' >> "$R"
 umount /run/lo-esp; sync
