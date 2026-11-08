@@ -104,8 +104,14 @@ try() {   # as the installer does: a kernel option on this PC's trial list, and 
 # a new boot line changes the TPM's measurements, so, as at every switch from Windows,
 # the key is handed over for this start
 try lightsout.works=1
+# boot 3's restart hangs on purpose (as on PCs where a device doesn't let go): the fallback
+# keeps the kernel's last messages and resets; boot 4's start puts them with the records
+for d in lightsout fedora; do
+  mtype -i "$ESP" "::/EFI/$d/grub.cfg" | sed 's|^\(linux .*\)$|\1 lightsout.test-restart-hang|' > "$w/g.cfg"
+  mcopy -o -i "$ESP" "$w/g.cfg" "::/EFI/$d/grub.cfg"
+done
 mcopy -o -i "$ESP" "$w/handoff.key" ::/EFI/lightsout/handoff.key
-echo "=== boot 3 (an option on trial; the key handed over again)"; boot "$w/serial3.log"; grep -aE "lightsout:|LIGHTSOUT-SELFTEST" "$w/serial3.log" || true
+echo "=== boot 3 (an option on trial; the key handed over again; its restart hangs)"; boot "$w/serial3.log"; grep -aE "lightsout:|LIGHTSOUT-SELFTEST" "$w/serial3.log" || true
 try lightsout.fails=1
 sgdisk -d 2 -n 2:${c_start}:+$(( c_s - 131072 )) -t 2:0700 "$w/disk.img" >/dev/null
 echo "=== boot 4 (C: shorter than its file system)"; boot "$w/serial4.log"; grep -a "lightsout:" "$w/serial4.log" || true
@@ -149,7 +155,11 @@ check "$w/serial4.log" "The system file needs a writable drive" "boot 4 stopped 
 check "$w/serial4.log" "on screen: Windows didn.t fully shut down" "boot 4 told you why, in one line"
 check "$w/serial4.log" "shown under the spinner" "the starter's splash shows that line"
 # the records on the EFI partition: every start, and boot 3's restart to its last step
-for f in start restart; do mtype -i "$ESP" "::/EFI/lightsout/results/$f.log" > "$w/$f.log" 2>/dev/null || true; done
+for f in start restart restart-kernel; do mtype -i "$ESP" "::/EFI/lightsout/results/$f.log" > "$w/$f.log" 2>/dev/null || true; done
+check "$w/serial4.log" "the last restart hung in the kernel" "a restart that hung: the next start notices"
+check "$w/restart-kernel.log" "systemd-shutdown" "the hung restart's last kernel messages are kept with the records"
+if grep -aq "the last restart hung in the kernel" "$w/serial5.log"; then echo "FAIL: the firmware variable was not removed"; ok=0
+else echo "PASS: the firmware variable is removed once kept"; fi
 check "$w/start.log" "TPM locked until the next start" "every start leaves its record on the EFI partition"
 check "$w/restart.log" "closing the system" "Lights On starts the restart record first"
 check "$w/restart.log" "  kernel: " "the record keeps the kernel's last messages"

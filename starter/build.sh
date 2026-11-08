@@ -60,6 +60,7 @@ cp "$sys/etc/plymouth/plymouthd.conf" "$root/etc/plymouth/"
 cp "$sys/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf" "$root/usr/share/fonts/Plymouth.ttf"   # the label's font
 install -m755 "$here/init" "$root/init"
 install -m755 "$here/lo-shutdown" "$root/bin/lo-shutdown"
+install -m644 "$here/restart-vars" "$root/etc/restart-vars"
 
 # ---- modules: storage, encryption, file systems, TPM, keyboards (no Wi-Fi, no GPU)
 M="$sys/lib/modules/$KVER/kernel"

@@ -6,6 +6,7 @@ A test build (`lightsout update`, or `irm https://lightsout.sh/rc | iex`).
 
 - **Nothing you set up is lost any more:** a room you rename or add, a tab you open or close, a folder or a program that changes is saved within 2 seconds. Before, some of these waited for the next agent activity or for Quit, so a crash, an update or a forced close could bring back an older set of rooms and tabs.
 - **Lights On no longer leaves a 30-second black screen** on PCs where the kernel's restart hangs (a device that doesn't answer when told to stop). Everything is closed, written out and locked by then, so a PC still on 3 seconds later is restarted at once, as the reset button does. Before, the watchdog did that after 30 seconds.
+- **A restart that hangs tells why:** the kernel names each device as it stops it, and if the restart hangs, its last messages are kept in the PC's firmware memory (the disks may be stopped by then). The next Lights Out start saves them with the records (`restart-kernel.log`) and removes them from the firmware memory.
 
 ## 0.3.2-rc.17
 
