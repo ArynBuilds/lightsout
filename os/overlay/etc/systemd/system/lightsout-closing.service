@@ -1,7 +1,8 @@
 [Unit]
 Description=Lights Out: a restart or shut-down starts its record
-# stopped first at a restart (after the screen's target), while the EFI partition is still open
-After=graphical.target
+# started with the terminal, so it is stopped before it at any restart, even one right after
+# the start (the screen's whole target is reached only later); the EFI partition is still open
+After=lightsout-session.service
 RequiresMountsFor=/boot/efi
 
 [Service]

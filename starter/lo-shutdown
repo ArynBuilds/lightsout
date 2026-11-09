@@ -14,7 +14,7 @@ step() { echo "$(cut -d' ' -f1 /proc/uptime) $*" >> "$R" 2>/dev/null; sync; }
 step "closing, then: ${1:-reboot}"
 umount /oldroot/home/lights 2>/dev/null
 umount -l /oldroot/mnt/c 2>/dev/null
-umount /oldroot 2>/dev/null || umount -l /oldroot
+umount /oldroot 2>/dev/null || umount -l /oldroot 2>/dev/null
 step "your space and the system file closed"
 for l in /dev/loop*; do losetup -d "$l" 2>/dev/null; done
 sleep 1
@@ -43,7 +43,7 @@ case "$1" in
     echo 1 > /proc/sys/kernel/sysrq 2>/dev/null
     # (the kernel always prints a line for this restart: its text screen is let go first, so
     # the screen stays as it is)
-    for v in /sys/class/vtconsole/vtcon*; do grep -q "frame buffer" "$v/name" 2>/dev/null && echo 0 > "$v/bind"; done
+    for v in /sys/class/vtconsole/vtcon*; do grep -q "frame buffer" "$v/name" 2>/dev/null && echo 0 > "$v/bind" 2>/dev/null; done
     echo b > /proc/sysrq-trigger
     reboot -f ;;
 esac
