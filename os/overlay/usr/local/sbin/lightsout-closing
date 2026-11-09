@@ -6,3 +6,8 @@ R=/boot/efi/EFI/lightsout/results/restart.log
 mkdir -p "${R%/*}"
 echo "$(cut -d' ' -f1 /proc/uptime) closing the system" > "$R"
 sync
+# No text on the screen while closing: the text screen behind the terminal (shown for a moment
+# once the terminal is gone, before the PC's logo) is cleared, and the kernel's messages go to
+# the log only
+printf '\033[2J\033[3J\033[H' > /dev/tty1 2>/dev/null
+dmesg -n 1 2>/dev/null

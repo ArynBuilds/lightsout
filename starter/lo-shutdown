@@ -41,6 +41,9 @@ case "$1" in
     step "now: restart"
     umount /esp 2>/dev/null; sync
     echo 1 > /proc/sys/kernel/sysrq 2>/dev/null
+    # (the kernel always prints a line for this restart: its text screen is let go first, so
+    # the screen stays as it is)
+    for v in /sys/class/vtconsole/vtcon*; do grep -q "frame buffer" "$v/name" 2>/dev/null && echo 0 > "$v/bind"; done
     echo b > /proc/sysrq-trigger
     reboot -f ;;
 esac
