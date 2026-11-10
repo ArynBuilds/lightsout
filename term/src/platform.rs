@@ -495,25 +495,16 @@ pub fn resume_command(command: &str, id: Option<&str>) -> Option<String> {
     exact.or(plain)
 }
 
-/// What an agent records about itself while it runs (Claude Code: ~/.claude/sessions/<pid>.json):
-/// its own session ID (that exact conversation) and the folder it works in.
-#[derive(Clone)]
-pub struct AgentRecord {
-    pub session: String,
-    pub cwd: Option<String>,
+/// The session ID of the agent running as `pid`, when it records one
+/// (Claude Code: ~/.claude/sessions/<pid>.json).
+pub fn agent_session(pid: u32) -> Option<String> {
+    agent_session_in(&home().join(".claude").join("sessions"), pid)
 }
 
-pub fn agent_record(pid: u32) -> Option<AgentRecord> {
-    agent_record_in(&home().join(".claude").join("sessions"), pid)
-}
-
-fn agent_record_in(dir: &std::path::Path, pid: u32) -> Option<AgentRecord> {
+fn agent_session_in(dir: &std::path::Path, pid: u32) -> Option<String> {
     let text = std::fs::read_to_string(dir.join(format!("{pid}.json"))).ok()?;
     let v: serde_json::Value = serde_json::from_str(&text).ok()?;
-    Some(AgentRecord {
-        session: v["sessionId"].as_str()?.to_string(),
-        cwd: v["cwd"].as_str().map(str::to_string),
-    })
+    v["sessionId"].as_str().map(str::to_string)
 }
 
 /// The full command line of the program each tab's shell runs (any program, e.g. "claude",
@@ -574,6 +565,95 @@ fn command_line(pid: u32) -> Option<String> {
         let text = std::slice::from_raw_parts(us.Buffer, us.Length as usize / 2);
         Some(String::from_utf16_lossy(text))
     }
+}
+
+/// The folder a process works in now (any program, also after a `cd`). Windows keeps it in the
+/// process's own parameters (x64: the PEB points to them at +0x20, the folder is at +0x38 there).
+/// (A PowerShell keeps its process folder where it started; the programs it runs get its own.)
+#[cfg(windows)]
+pub fn process_cwd(pid: u32) -> Option<PathBuf> {
+    use windows_sys::Wdk::System::Threading::{NtQueryInformationProcess, ProcessBasicInformation};
+    use windows_sys::Win32::Foundation::{CloseHandle, UNICODE_STRING};
+    use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_BASIC_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ,
+    };
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, 0, pid);
+        if h.is_null() {
+            return None;
+        }
+        let read = |at: usize, to: *mut std::ffi::c_void, n: usize| {
+            ReadProcessMemory(h, at as *const _, to, n, std::ptr::null_mut()) != 0
+        };
+        let mut info: PROCESS_BASIC_INFORMATION = std::mem::zeroed();
+        let mut len = 0u32;
+        let (mut params, mut dir): (usize, UNICODE_STRING) = (0, std::mem::zeroed());
+        let mut text = Vec::new();
+        let ok = NtQueryInformationProcess(
+            h,
+            ProcessBasicInformation,
+            (&mut info as *mut PROCESS_BASIC_INFORMATION).cast(),
+            std::mem::size_of::<PROCESS_BASIC_INFORMATION>() as u32,
+            &mut len,
+        ) >= 0
+            && read(
+                info.PebBaseAddress as usize + 0x20,
+                (&mut params as *mut usize).cast(),
+                8,
+            )
+            && read(
+                params + 0x38,
+                (&mut dir as *mut UNICODE_STRING).cast(),
+                std::mem::size_of::<UNICODE_STRING>(),
+            )
+            && dir.Length > 0
+            && {
+                text = vec![0u16; dir.Length as usize / 2];
+                read(
+                    dir.Buffer as usize,
+                    text.as_mut_ptr().cast(),
+                    dir.Length as usize,
+                )
+            };
+        CloseHandle(h);
+        if !ok {
+            return None;
+        }
+        let dir = String::from_utf16_lossy(&text);
+        // "C:\DEV\" -> "C:\DEV" (a drive's root keeps its backslash)
+        let dir = match dir.strip_suffix('\\') {
+            Some(d) if d.len() > 2 => d.to_string(),
+            _ => dir,
+        };
+        Some(PathBuf::from(dir))
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn process_cwd(pid: u32) -> Option<PathBuf> {
+    let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_vnodepathinfo>() as libc::c_int;
+    let got = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDVNODEPATHINFO,
+            0,
+            (&mut info as *mut libc::proc_vnodepathinfo).cast(),
+            size,
+        )
+    };
+    if got != size {
+        return None;
+    }
+    let path = unsafe { std::ffi::CStr::from_ptr(info.pvi_cdir.vip_path.as_ptr().cast()) };
+    let path = path.to_string_lossy();
+    (!path.is_empty()).then(|| PathBuf::from(path.as_ref()))
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+pub fn process_cwd(pid: u32) -> Option<PathBuf> {
+    std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
 }
 
 /// A process's command line, arguments with spaces in quotes (as friendly_command reads it).
@@ -800,6 +880,37 @@ mod running_tests {
         let _ = sh.kill();
         let _ = sh.wait();
         assert_eq!(got.as_deref(), Some(want));
+    }
+
+    #[test]
+    fn knows_the_folder_a_program_works_in() {
+        // a program started in another folder than this one (as after a `cd` in a tab)
+        let dir = std::env::temp_dir().canonicalize().unwrap();
+        #[cfg(windows)]
+        let mut p = std::process::Command::new("cmd")
+            .args(["/c", "ping -n 6 127.0.0.1 >nul"])
+            .current_dir(&dir)
+            .spawn()
+            .unwrap();
+        #[cfg(not(windows))]
+        let mut p = std::process::Command::new("sleep")
+            .arg("5")
+            .current_dir(&dir)
+            .spawn()
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let got = super::process_cwd(p.id());
+        let _ = p.kill();
+        let _ = p.wait();
+        let same = |a: &std::path::Path, b: &std::path::Path| {
+            a.to_string_lossy()
+                .trim_start_matches(r"\\?\")
+                .to_lowercase()
+                == b.to_string_lossy()
+                    .trim_start_matches(r"\\?\")
+                    .to_lowercase()
+        };
+        assert!(same(&got.clone().unwrap(), &dir), "{got:?} vs {dir:?}");
     }
 
     #[cfg(not(windows))]
@@ -2056,13 +2167,14 @@ mod switch_tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("4242.json"),
-            r#"{"pid":4242,"sessionId":"abc-123","cwd":"C:\\DEV\\app"}"#,
+            r#"{"pid":4242,"sessionId":"abc-123"}"#,
         )
         .unwrap();
-        let r = super::agent_record_in(&dir, 4242).unwrap();
-        assert_eq!(r.session, "abc-123");
-        assert_eq!(r.cwd.as_deref(), Some(r"C:\DEV\app"));
-        assert!(super::agent_record_in(&dir, 4243).is_none());
+        assert_eq!(
+            super::agent_session_in(&dir, 4242).as_deref(),
+            Some("abc-123")
+        );
+        assert_eq!(super::agent_session_in(&dir, 4243), None);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

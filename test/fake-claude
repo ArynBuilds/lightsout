@@ -1,13 +1,13 @@
 #!/bin/sh
 # A stand-in for Claude Code in the tests: says how and where it was started and, like the real
-# one, records its conversation and folder in ~/.claude/sessions/<pid>.json while it runs and
-# removes the record when it stops. "claude NAME" starts conversation NAME, "claude --resume
+# one, records its conversation in ~/.claude/sessions/<pid>.json while it runs and removes
+# the record when it stops. "claude NAME" starts conversation NAME, "claude --resume
 # NAME" continues it; "claude NAME then OTHER" opens OTHER a moment later (as /resume does).
 echo "fake-claude $* in $PWD"
 id=$1
 [ "$1" = --resume ] && id=$2
 mkdir -p ~/.claude/sessions
-record() { echo "{\"sessionId\":\"$1\",\"cwd\":\"$PWD\"}" > ~/.claude/sessions/$$.json; }
+record() { echo "{\"sessionId\":\"$1\"}" > ~/.claude/sessions/$$.json; }
 record "$id"
 trap 'rm -f ~/.claude/sessions/$$.json; exit 0' TERM HUP INT
 [ "$2" = then ] && { sleep 3; record "$3"; }

@@ -1076,14 +1076,14 @@ impl App {
                     .and_then(|pid| running.get(&pid).cloned().flatten());
                 let pid = found.as_ref().map(|(pid, _)| *pid);
                 if pid != p.running_pid {
-                    p.agent = None;
+                    p.agent_session = None;
                 }
                 p.running_pid = pid;
                 // read again every time: the agent can open another conversation (Claude's
                 // /resume), and a leftover record of an earlier process with the same number
                 // is replaced once this one writes its own
-                if let Some(r) = pid.and_then(platform::agent_record) {
-                    p.agent = Some(r);
+                if let Some(id) = pid.and_then(platform::agent_session) {
+                    p.agent_session = Some(id);
                 }
                 let now = found.map(|(_, name)| name);
                 if now != p.running {
@@ -1200,26 +1200,26 @@ impl App {
                 let panes = ids
                     .iter()
                     .filter_map(|id| self.panes.get(id))
-                    .map(|p| {
-                        // the agent's own record as it is now (it may have opened another
-                        // conversation, in another folder), or as last read (it removes its
-                        // record when it stops)
-                        let agent = p
+                    // everything as it is now, asked of the system: the folder the tab's
+                    // program (or its shell) works in, the program, the agent's conversation
+                    // (or as last read: Claude removes its record when it stops)
+                    .map(|p| SavedPane {
+                        cwd: p
                             .running_pid
-                            .and_then(platform::agent_record)
-                            .or_else(|| p.agent.clone());
-                        SavedPane {
-                            cwd: agent
-                                .as_ref()
-                                .and_then(|a| a.cwd.clone())
-                                .unwrap_or_else(|| p.cwd.to_string_lossy().to_string()),
-                            command: p
-                                .shell_pid
-                                .and_then(|pid| running.get(&pid).cloned().flatten())
-                                .or_else(|| p.command.clone()),
-                            session: agent.map(|a| a.session),
-                            screen: (screen_lines > 0).then(|| p.text(screen_lines)),
-                        }
+                            .or(p.shell_pid)
+                            .and_then(platform::process_cwd)
+                            .unwrap_or_else(|| p.cwd.clone())
+                            .to_string_lossy()
+                            .to_string(),
+                        command: p
+                            .shell_pid
+                            .and_then(|pid| running.get(&pid).cloned().flatten())
+                            .or_else(|| p.command.clone()),
+                        session: p
+                            .running_pid
+                            .and_then(platform::agent_session)
+                            .or_else(|| p.agent_session.clone()),
+                        screen: (screen_lines > 0).then(|| p.text(screen_lines)),
                     })
                     .collect();
                 SavedTab {
