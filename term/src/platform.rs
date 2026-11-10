@@ -495,16 +495,25 @@ pub fn resume_command(command: &str, id: Option<&str>) -> Option<String> {
     exact.or(plain)
 }
 
-/// The session ID of the agent running as `pid`, when it records one
-/// (Claude Code: ~/.claude/sessions/<pid>.json).
-pub fn agent_session(pid: u32) -> Option<String> {
-    agent_session_in(&home().join(".claude").join("sessions"), pid)
+/// What an agent records about itself while it runs (Claude Code: ~/.claude/sessions/<pid>.json):
+/// its own session ID (that exact conversation) and the folder it works in.
+#[derive(Clone)]
+pub struct AgentRecord {
+    pub session: String,
+    pub cwd: Option<String>,
 }
 
-fn agent_session_in(dir: &std::path::Path, pid: u32) -> Option<String> {
+pub fn agent_record(pid: u32) -> Option<AgentRecord> {
+    agent_record_in(&home().join(".claude").join("sessions"), pid)
+}
+
+fn agent_record_in(dir: &std::path::Path, pid: u32) -> Option<AgentRecord> {
     let text = std::fs::read_to_string(dir.join(format!("{pid}.json"))).ok()?;
     let v: serde_json::Value = serde_json::from_str(&text).ok()?;
-    v["sessionId"].as_str().map(str::to_string)
+    Some(AgentRecord {
+        session: v["sessionId"].as_str()?.to_string(),
+        cwd: v["cwd"].as_str().map(str::to_string),
+    })
 }
 
 /// The full command line of the program each tab's shell runs (any program, e.g. "claude",
@@ -1908,7 +1917,7 @@ pub fn attach_console() {
 }
 
 /// Claude Code keys its history by folder path. Point the Linux path's key at
-/// the Windows one, so `claude --continue` picks up the same conversation.
+/// the Windows one, so `claude --resume <id>` finds the same conversation.
 pub fn link_claude_history(win_cwd: &str, linux_cwd: &Path) {
     if cfg!(windows) {
         return; // only Lights Out links its folder names to the Windows ones
@@ -2008,10 +2017,9 @@ mod switch_tests {
 
     #[test]
     fn known_agents_continue() {
-        assert_eq!(
-            super::resume_command("claude", None).as_deref(),
-            Some("claude --continue")
-        );
+        // Claude without its chat ID known: no guess ("the latest chat in this folder" may be
+        // another tab's), its command is typed back in instead
+        assert_eq!(super::resume_command("claude", None), None);
         assert_eq!(
             super::resume_command("codex.cmd", None).as_deref(),
             Some("codex resume --last")
@@ -2048,14 +2056,13 @@ mod switch_tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("4242.json"),
-            r#"{"pid":4242,"sessionId":"abc-123"}"#,
+            r#"{"pid":4242,"sessionId":"abc-123","cwd":"C:\\DEV\\app"}"#,
         )
         .unwrap();
-        assert_eq!(
-            super::agent_session_in(&dir, 4242).as_deref(),
-            Some("abc-123")
-        );
-        assert_eq!(super::agent_session_in(&dir, 4243), None);
+        let r = super::agent_record_in(&dir, 4242).unwrap();
+        assert_eq!(r.session, "abc-123");
+        assert_eq!(r.cwd.as_deref(), Some(r"C:\DEV\app"));
+        assert!(super::agent_record_in(&dir, 4243).is_none());
         let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -169,15 +169,16 @@ jobs:
           ! $B/lightsout list | awk 'NR > 1 {print $1}' | grep -qx "$(pane 3)"
           pkill -f -- "--session cireopen --server" || true
           # Quit keeps each agent's own conversation: two Claudes in one folder each come back to
-          # theirs (a stand-in Claude that, like the real one, records its chat while it runs and
-          # removes the record when it stops)
+          # theirs, in the folder they work in (a stand-in Claude that, like the real one, records
+          # its chat and folder while it runs and removes the record when it stops). The second
+          # opens another conversation while it runs (as /resume does): that one comes back
           mkdir -p /tmp/fake-claude && install -m755 test/fake-claude /tmp/fake-claude/claude
           export LIGHTSOUT_SESSION=ciquit PATH=/tmp/fake-claude:$PATH
           $B/lightsout --session ciquit --server &
           for i in $(seq 1 30); do $B/lightsout list >/dev/null 2>&1 && break; sleep 1; done
           first=$($B/lightsout list | awk 'NR == 2 {print $1}')
           $B/lightsout send "$first" "cd /tmp && claude chat-A"
-          $B/lightsout send "$($B/lightsout new --cwd /tmp)" "claude chat-B"
+          $B/lightsout send "$($B/lightsout new --cwd /tmp)" "claude chat-B then chat-C"
           sleep 6
           $B/lightsout room add Named
           sleep 3
@@ -189,8 +190,9 @@ jobs:
           $B/lightsout room list | grep -q Named
           for p in $(awk 'NR > 1 {print $1}' quit.txt); do $B/lightsout read "$p" --lines 5; done > quit-screens.txt
           cat quit-screens.txt
-          grep -q "fake-claude --resume chat-A" quit-screens.txt
-          grep -q "fake-claude --resume chat-B" quit-screens.txt
+          grep -q "fake-claude --resume chat-A in /tmp" quit-screens.txt
+          grep -q "fake-claude --resume chat-C" quit-screens.txt
+          ! grep -q "fake-claude --resume chat-B" quit-screens.txt
           pkill -f -- "--session ciquit --server" || true
           echo "TERMINAL VIEW TEST PASSED"
       - name: Test on this Linux machine (install, Lights Out screen, power restore, uninstall)
