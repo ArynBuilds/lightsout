@@ -448,63 +448,212 @@ pub fn screen(on: bool) {
 
 // ---------------------------------------------------------------- switching
 
-/// How a program continues its session, from plain data files:
-/// /usr/local/share/lightsout/resume.conf, then ~/.config/lightsout/resume.conf
-/// (lines "program = command"; the later file wins). A command with {id} is used when the
-/// agent's own session ID is known (that exact chat), the other one otherwise. None = not known.
-pub fn resume_command(command: &str, id: Option<&str>) -> Option<String> {
-    let program = command
+/// An agent Lights Out continues, as described in resume.conf (see that file for each line).
+#[derive(Default)]
+pub struct Agent {
+    pub program: String,
+    /// continues one exact conversation: {id} its ID, {args} the options it was started with
+    resume: Option<String>,
+    /// continues without an ID (an agent with one history per folder)
+    plain: Option<String>,
+    /// where it writes its conversation ID while it runs ({pid}), and the key holding it
+    record: Option<(String, String)>,
+    /// its hooks file, where `lightsout report-session` is added
+    hook: Option<String>,
+    /// its own conversation options, never given again
+    skip: Vec<String>,
+}
+
+/// Every agent Lights Out continues: resume.conf as shipped (in this program, and in the
+/// system on a Lights Out PC), then ~/.config/lightsout/resume.conf, whose lines win.
+/// Read once.
+pub fn agents() -> &'static [Agent] {
+    static AGENTS: std::sync::OnceLock<Vec<Agent>> = std::sync::OnceLock::new();
+    AGENTS.get_or_init(|| {
+        let shipped = include_str!("../../os/overlay/usr/local/share/lightsout/resume.conf");
+        let files = [
+            PathBuf::from("/usr/local/share/lightsout/resume.conf"),
+            home().join(".config/lightsout/resume.conf"),
+        ]
+        .into_iter()
+        .filter_map(|f| std::fs::read_to_string(f).ok());
+        parse_agents(std::iter::once(shipped.to_string()).chain(files))
+    })
+}
+
+fn parse_agents(texts: impl Iterator<Item = String>) -> Vec<Agent> {
+    let mut list: Vec<Agent> = Vec::new();
+    for text in texts {
+        for line in text.lines().map(str::trim) {
+            let Some((key, value)) = line.split_once('=').filter(|_| !line.starts_with('#')) else {
+                continue;
+            };
+            let (mut key, value) = (key.split_whitespace(), value.trim().to_string());
+            let (Some(program), what) = (key.next(), key.next()) else {
+                continue;
+            };
+            if value.is_empty() {
+                continue;
+            }
+            let program = program.to_lowercase();
+            let i = match list.iter().position(|a| a.program == program) {
+                Some(i) => i,
+                None => {
+                    list.push(Agent {
+                        program,
+                        ..Default::default()
+                    });
+                    list.len() - 1
+                }
+            };
+            let a = &mut list[i];
+            match what {
+                None if value.contains("{id}") => a.resume = Some(value),
+                None => a.plain = Some(value),
+                Some("record") => {
+                    a.record = value
+                        .rsplit_once(' ')
+                        .map(|(f, k)| (f.trim().to_string(), k.to_string()))
+                }
+                Some("hook") => a.hook = Some(value),
+                Some("skip") => a.skip = value.split_whitespace().map(str::to_string).collect(),
+                _ => {}
+            }
+        }
+    }
+    list
+}
+
+/// "C:\Program Files\x\claude.exe --model a" -> "claude"
+fn program_of(command: &str) -> Option<String> {
+    let p = command
         .split_whitespace()
         .next()?
         .rsplit(['/', '\\'])
         .next()?
         .to_lowercase();
-    let program = program
-        .strip_suffix(".exe")
-        .or(program.strip_suffix(".cmd"))
-        .unwrap_or(&program)
-        .to_string();
-    let (mut plain, mut exact) = (None, None);
-    let builtin =
-        include_str!("../../os/overlay/usr/local/share/lightsout/resume.conf").to_string();
-    let texts = [
-        PathBuf::from("/usr/local/share/lightsout/resume.conf"),
-        home().join(".config/lightsout/resume.conf"),
-    ]
-    .into_iter()
-    .filter_map(|f| std::fs::read_to_string(f).ok());
-    for text in std::iter::once(builtin).chain(texts) {
-        for line in text.lines() {
-            let line = line.trim();
-            if line.starts_with('#') {
-                continue;
-            }
-            if let Some((p, c)) = line.split_once('=') {
-                let c = c.trim();
-                if !p.trim().eq_ignore_ascii_case(&program) || c.is_empty() {
-                    continue;
-                }
-                match (c.contains("{id}"), id) {
-                    (true, Some(id)) => exact = Some(c.replace("{id}", id)),
-                    (true, None) => {}
-                    (false, _) => plain = Some(c.to_string()),
-                }
-            }
+    Some(
+        p.strip_suffix(".exe")
+            .or(p.strip_suffix(".cmd"))
+            .unwrap_or(&p)
+            .to_string(),
+    )
+}
+
+/// How the program in `command` continues its conversation: that exact one when its ID is
+/// known (with the options it was started with), or the plain way of an agent with one
+/// history per folder. None = typed back in instead: nothing is guessed.
+pub fn resume_command(command: &str, id: Option<&str>) -> Option<String> {
+    let program = program_of(command)?;
+    let a = agents().iter().find(|a| a.program == program)?;
+    match (id, &a.resume) {
+        (Some(id), Some(r)) => Some(
+            r.replace("{args}", &kept_options(command, &a.skip))
+                .replace("{id}", id)
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" "),
+        ),
+        _ => a.plain.clone(),
+    }
+}
+
+/// The options a command was started with that are safe to give again: `--flag` and
+/// `--flag=value`. A flag followed by a plain word is left out with it (the word may be its
+/// value, or a prompt that must not be sent again), as are plain words and the agent's own
+/// conversation options.
+fn kept_options(command: &str, skip: &[String]) -> String {
+    let words: Vec<&str> = command.split_whitespace().skip(1).collect();
+    let mut kept = Vec::new();
+    for (i, w) in words.iter().enumerate() {
+        let name = w.split('=').next().unwrap_or(w);
+        let value_after = !w.contains('=') && words.get(i + 1).is_some_and(|n| !n.starts_with('-'));
+        if w.starts_with('-') && !value_after && !skip.iter().any(|s| s == name) {
+            kept.push(*w);
         }
     }
-    exact.or(plain)
+    kept.join(" ")
 }
 
-/// The session ID of the agent running as `pid`, when it records one
-/// (Claude Code: ~/.claude/sessions/<pid>.json).
+/// "~/x" -> the home folder's x
+fn expand_home(p: &str) -> PathBuf {
+    match p.strip_prefix("~/") {
+        Some(rest) => home().join(rest),
+        None => PathBuf::from(p),
+    }
+}
+
+/// The conversation ID the agent running as `pid` writes while it runs (the agents with a
+/// "record" line, e.g. Claude Code's ~/.claude/sessions/<pid>.json).
 pub fn agent_session(pid: u32) -> Option<String> {
-    agent_session_in(&home().join(".claude").join("sessions"), pid)
+    agents()
+        .iter()
+        .filter_map(|a| a.record.as_ref())
+        .find_map(|(file, key)| {
+            record_value(&expand_home(&file.replace("{pid}", &pid.to_string())), key)
+        })
 }
 
-fn agent_session_in(dir: &std::path::Path, pid: u32) -> Option<String> {
-    let text = std::fs::read_to_string(dir.join(format!("{pid}.json"))).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
-    v["sessionId"].as_str().map(str::to_string)
+fn record_value(file: &Path, key: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(file).ok()?).ok()?;
+    v[key].as_str().map(str::to_string)
+}
+
+/// What Lights Out adds to an agent's hooks file: the agent runs it when a conversation
+/// starts (or is resumed or cleared) and hands it the conversation's details; it tells the
+/// tab, and prints nothing (an agent gives what a hook prints to its model).
+const REPORT_HOOK: &str = "lightsout report-session";
+
+/// Adds Lights Out's hook to the hooks file of each agent installed here (one with a "hook"
+/// line whose folder exists), or takes it out again (`add` false: uninstalling).
+pub fn agent_hooks(add: bool) {
+    for a in agents() {
+        let Some(file) = a.hook.as_deref().map(expand_home) else {
+            continue;
+        };
+        if !file.parent().is_some_and(Path::is_dir) {
+            continue; // that agent isn't installed here
+        }
+        let text = std::fs::read_to_string(&file).unwrap_or_else(|_| "{}".into());
+        let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue; // not plain JSON: left as it is
+        };
+        if set_report_hook(&mut v, add) {
+            let _ = std::fs::write(&file, serde_json::to_string_pretty(&v).unwrap_or_default());
+        }
+    }
+}
+
+/// Adds or takes out Lights Out's SessionStart hook in an agent's hook settings; true when
+/// something changed (settings in another shape are left alone).
+fn set_report_hook(v: &mut serde_json::Value, add: bool) -> bool {
+    fn starts(v: &mut serde_json::Value) -> Option<&mut Vec<serde_json::Value>> {
+        v.as_object_mut()?
+            .entry("hooks")
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()?
+            .entry("SessionStart")
+            .or_insert_with(|| serde_json::json!([]))
+            .as_array_mut()
+    }
+    let ours = |g: &serde_json::Value| {
+        g["hooks"]
+            .as_array()
+            .is_some_and(|h| h.iter().any(|x| x["command"] == REPORT_HOOK))
+    };
+    let Some(starts) = starts(v) else {
+        return false;
+    };
+    if starts.iter().any(ours) == add {
+        return false;
+    }
+    if add {
+        starts
+            .push(serde_json::json!({ "hooks": [{ "type": "command", "command": REPORT_HOOK }] }));
+    } else {
+        starts.retain(|g| !ours(g));
+    }
+    true
 }
 
 /// The full command line of the program each tab's shell runs (any program, e.g. "claude",
@@ -2027,26 +2176,6 @@ pub fn attach_console() {
     }
 }
 
-/// Claude Code keys its history by folder path. Point the Linux path's key at
-/// the Windows one, so `claude --resume <id>` finds the same conversation.
-pub fn link_claude_history(win_cwd: &str, linux_cwd: &Path) {
-    if cfg!(windows) {
-        return; // only Lights Out links its folder names to the Windows ones
-    }
-    let key = |p: &str| {
-        p.chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-            .collect::<String>()
-    };
-    let projects = home().join(".claude").join("projects");
-    let win = projects.join(key(win_cwd));
-    let lin = projects.join(key(&linux_cwd.to_string_lossy()));
-    if win.is_dir() && !lin.exists() {
-        #[cfg(unix)]
-        let _ = std::os::unix::fs::symlink(&win, &lin);
-    }
-}
-
 // ---------------------------------------------------------------- lock screen
 
 pub enum Lock {
@@ -2127,18 +2256,6 @@ mod switch_tests {
     }
 
     #[test]
-    fn known_agents_continue() {
-        // Claude without its chat ID known: no guess ("the latest chat in this folder" may be
-        // another tab's), its command is typed back in instead
-        assert_eq!(super::resume_command("claude", None), None);
-        assert_eq!(
-            super::resume_command("codex.cmd", None).as_deref(),
-            Some("codex resume --last")
-        );
-        assert_eq!(super::resume_command("npm run dev", None), None);
-    }
-
-    #[test]
     fn switch_held_back_by_windows() {
         let mut states = ["Queued", "Running"].into_iter().map(String::from);
         assert!(
@@ -2151,31 +2268,95 @@ mod switch_tests {
         );
         assert!(!super::held_back(|| Some("Ready".into())), "it already ran");
     }
+}
+
+#[cfg(test)]
+mod agents_tests {
+    use serde_json::json;
 
     #[test]
-    fn each_tab_continues_its_own_chat() {
-        // with the chat ID known, that exact chat; codex has no ID form, so it stays --last
+    fn each_tab_continues_its_own_conversation() {
+        // that exact conversation, with the options it was started with
         assert_eq!(
-            super::resume_command("claude", Some("abc-123")).as_deref(),
-            Some("claude --resume abc-123")
+            super::resume_command("claude --dangerously-skip-permissions", Some("abc")).as_deref(),
+            Some("claude --dangerously-skip-permissions --resume abc")
         );
         assert_eq!(
-            super::resume_command("codex", Some("abc-123")).as_deref(),
-            Some("codex resume --last")
+            super::resume_command("codex.cmd --yolo", Some("abc")).as_deref(),
+            Some("codex --yolo resume abc")
         );
-        let dir = std::env::temp_dir().join(format!("lo-sessions-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("4242.json"),
-            r#"{"pid":4242,"sessionId":"abc-123"}"#,
-        )
-        .unwrap();
+        // never its own conversation options, nor a word that may be a prompt (sent again)
         assert_eq!(
-            super::agent_session_in(&dir, 4242).as_deref(),
+            super::resume_command(
+                "claude --resume old --continue --model opus fix it",
+                Some("abc")
+            )
+            .as_deref(),
+            Some("claude --resume abc")
+        );
+        assert_eq!(
+            super::resume_command("claude --model=opus -c", Some("abc")).as_deref(),
+            Some("claude --model=opus --resume abc")
+        );
+        // without the ID nothing is guessed (typed back in); one history per folder continues
+        assert_eq!(super::resume_command("claude", None), None);
+        assert_eq!(super::resume_command("codex", None), None);
+        assert_eq!(
+            super::resume_command("aider", None).as_deref(),
+            Some("aider --restore-chat-history")
+        );
+        assert_eq!(super::resume_command("npm run dev", Some("abc")), None);
+    }
+
+    #[test]
+    fn one_description_of_every_agent() {
+        let text = "x = x --resume {id}\nx record = ~/r/{pid}.json id\nx skip = -c --new\n\
+                    # y = not this\ny = y --again\nx = x {args} -r {id}\n";
+        let a = super::parse_agents(std::iter::once(text.to_string()));
+        assert_eq!(
+            a.iter().map(|a| a.program.as_str()).collect::<Vec<_>>(),
+            ["x", "y"]
+        );
+        assert_eq!(
+            a[0].resume.as_deref(),
+            Some("x {args} -r {id}"),
+            "the later line wins"
+        );
+        assert_eq!(a[0].record, Some(("~/r/{pid}.json".into(), "id".into())));
+        assert_eq!(a[0].skip, ["-c", "--new"]);
+        assert_eq!(a[1].plain.as_deref(), Some("y --again"));
+    }
+
+    #[test]
+    fn reads_the_conversation_an_agent_records() {
+        let f = std::env::temp_dir().join(format!("lo-record-{}.json", std::process::id()));
+        std::fs::write(&f, r#"{"pid":4242,"sessionId":"abc-123"}"#).unwrap();
+        assert_eq!(
+            super::record_value(&f, "sessionId").as_deref(),
             Some("abc-123")
         );
-        assert_eq!(super::agent_session_in(&dir, 4243), None);
-        let _ = std::fs::remove_dir_all(dir);
+        assert_eq!(super::record_value(&f, "other"), None);
+        let _ = std::fs::remove_file(&f);
+        assert_eq!(super::record_value(&f, "sessionId"), None);
+    }
+
+    #[test]
+    fn adds_and_takes_out_only_its_own_hook() {
+        let theirs = json!({ "hooks": { "SessionStart": [{ "hooks": [{ "type": "command", "command": "theirs" }] }] }, "other": 1 });
+        let mut v = theirs.clone();
+        assert!(super::set_report_hook(&mut v, true));
+        assert!(!super::set_report_hook(&mut v, true), "added once");
+        assert_eq!(v["hooks"]["SessionStart"].as_array().unwrap().len(), 2);
+        assert!(super::set_report_hook(&mut v, false));
+        assert_eq!(v, theirs, "theirs stays as it was");
+        let mut empty = json!({});
+        assert!(super::set_report_hook(&mut empty, true));
+        assert_eq!(
+            empty["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+            super::REPORT_HOOK
+        );
+        let mut odd = json!(["not", "settings"]);
+        assert!(!super::set_report_hook(&mut odd, true), "left alone");
     }
 }
 

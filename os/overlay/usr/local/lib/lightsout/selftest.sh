@@ -10,7 +10,7 @@ s "session=$(systemctl is-active lightsout-session.service) wifi-import=$(system
 if pgrep -x lightsout-app >/dev/null; then s "terminal=running"; elif pgrep -x foot >/dev/null; then s "terminal=foot-fallback"; else s "terminal=NOT-RUNNING"; fi
 if mountpoint -q /mnt/c/Users/tester/proj/node_modules && [ ! -e /mnt/c/Users/tester/proj/node_modules/win-only ]; then s "split=ok"; else s "split=FAILED"; fi
 s "home=$(getent passwd lights | cut -d: -f6) per-system-local=$(mountpoint -q /mnt/c/Users/tester/.local && echo yes || echo no)"
-s "resume-claude=$(grep -E '^claude' /usr/local/share/lightsout/resume.conf | tr -s ' ')"
+s "resume-claude=$(grep -E '^claude +=' /usr/local/share/lightsout/resume.conf | tr -s ' ')"
 api=$(runuser -u lights -- env XDG_RUNTIME_DIR=/run/user/1000 /usr/local/bin/lightsout list 2>&1 | tr '
 ' ' ' | cut -c1-160)
 s "api: $api"

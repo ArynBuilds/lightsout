@@ -170,15 +170,19 @@ jobs:
           pkill -f -- "--session cireopen --server" || true
           # Quit keeps each agent's own conversation: two Claudes in one folder each come back to
           # theirs, in the folder they work in (a stand-in Claude that, like the real one, records
-          # its chat and folder while it runs and removes the record when it stops). The second
-          # opens another conversation while it runs (as /resume does): that one comes back
+          # its chat while it runs and removes the record when it stops). The second opens another
+          # conversation while it runs (as /resume does): that one comes back. A stand-in Codex
+          # tells its conversation through the hook (`lightsout report-session`), and comes back
+          # with the option it was started with
           mkdir -p /tmp/fake-claude && install -m755 test/fake-claude /tmp/fake-claude/claude
-          export LIGHTSOUT_SESSION=ciquit PATH=/tmp/fake-claude:$PATH
+          install -m755 test/fake-codex /tmp/fake-claude/codex
+          export LIGHTSOUT_SESSION=ciquit PATH=/tmp/fake-claude:$B:$PATH
           $B/lightsout --session ciquit --server &
           for i in $(seq 1 30); do $B/lightsout list >/dev/null 2>&1 && break; sleep 1; done
           first=$($B/lightsout list | awk 'NR == 2 {print $1}')
           $B/lightsout send "$first" "cd /tmp && claude chat-A"
           $B/lightsout send "$($B/lightsout new --cwd /tmp)" "claude chat-B then chat-C"
+          $B/lightsout send "$($B/lightsout new --cwd /tmp)" "codex --yolo"
           sleep 6
           $B/lightsout room add Named
           sleep 3
@@ -193,6 +197,7 @@ jobs:
           grep -q "fake-claude --resume chat-A in /tmp" quit-screens.txt
           grep -q "fake-claude --resume chat-C" quit-screens.txt
           ! grep -q "fake-claude --resume chat-B" quit-screens.txt
+          grep -q "fake-codex --yolo resume cx-1 in /tmp" quit-screens.txt
           pkill -f -- "--session ciquit --server" || true
           echo "TERMINAL VIEW TEST PASSED"
       - name: Test on this Linux machine (install, Lights Out screen, power restore, uninstall)

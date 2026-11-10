@@ -1,0 +1,10 @@
+#!/bin/sh
+# A stand-in for Codex in the tests: says how and where it was started and, as Codex does with
+# Lights Out's hook when a conversation starts, hands the conversation's details to
+# `lightsout report-session` on stdin. "codex [OPTIONS]" starts conversation cx-1, "codex
+# [OPTIONS] resume NAME" continues NAME.
+echo "fake-codex $* in $PWD"
+id=cx-1
+for a; do case $a in -*) ;; *) id=$a ;; esac; done
+echo "{\"session_id\":\"$id\",\"hook_event_name\":\"SessionStart\"}" | lightsout report-session
+while :; do sleep 1; done

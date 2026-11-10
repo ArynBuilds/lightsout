@@ -1075,13 +1075,15 @@ impl App {
                     .shell_pid
                     .and_then(|pid| running.get(&pid).cloned().flatten());
                 let pid = found.as_ref().map(|(pid, _)| *pid);
-                if pid != p.running_pid {
+                // the program ended or another one runs: its conversation is gone with it (a
+                // program just started keeps what its hook has already reported)
+                if p.running_pid.is_some() && pid != p.running_pid {
                     p.agent_session = None;
                 }
                 p.running_pid = pid;
-                // read again every time: the agent can open another conversation (Claude's
-                // /resume), and a leftover record of an earlier process with the same number
-                // is replaced once this one writes its own
+                // its record read again every time: the agent can open another conversation
+                // (Claude's /resume), and a leftover record of an earlier process with the same
+                // number is replaced once this one writes its own
                 if let Some(id) = pid.and_then(platform::agent_session) {
                     p.agent_session = Some(id);
                 }
@@ -1319,10 +1321,8 @@ impl App {
                 } else {
                     PathBuf::from(&p.cwd)
                 };
-                if from_windows {
-                    platform::link_claude_history(&p.cwd, &cwd);
-                }
-                // a known way to continue (resume.conf) runs; any other command is typed back in
+                // an agent's own conversation continues (resume.conf); any other command, or an
+                // agent whose conversation isn't known, is typed back in
                 let resume = p
                     .command
                     .as_deref()
@@ -1380,6 +1380,8 @@ impl App {
         if platform::drive_read_only() {
             self.toast("C: is read-only: Windows was hibernated. Shut Windows down fully (or restart) before Lights Out to save files.".into(), ALERT);
         }
+        // agents that tell their conversation through a hook get it (an agent installed since)
+        platform::agent_hooks(true);
         if self.tabs.is_empty() {
             let start = std::env::current_dir()
                 .ok()
@@ -1569,34 +1571,13 @@ impl App {
     }
 
     fn agent_items(&self) -> Vec<Item> {
-        // the programs listed in resume.conf (data), plus "any command"
-        let mut names: Vec<String> = Vec::new();
-        for f in [
-            PathBuf::from("/usr/local/share/lightsout/resume.conf"),
-            platform::home().join(".config/lightsout/resume.conf"),
-        ] {
-            for line in std::fs::read_to_string(f).unwrap_or_default().lines() {
-                let line = line.trim();
-                if line.starts_with('#') {
-                    continue;
-                }
-                if let Some((p, _)) = line.split_once('=') {
-                    let p = p.trim().to_string();
-                    if !p.is_empty() && !names.contains(&p) {
-                        names.push(p);
-                    }
-                }
-            }
-        }
-        if names.is_empty() {
-            names = vec!["claude".into(), "codex".into()];
-        }
-        let mut v: Vec<Item> = names
-            .into_iter()
-            .map(|n| Item {
-                label: n.clone(),
+        // the agents in resume.conf (data), plus "any command"
+        let mut v: Vec<Item> = platform::agents()
+            .iter()
+            .map(|a| Item {
+                label: a.program.clone(),
                 hint: "new tab".into(),
-                action: Action::Agent(n),
+                action: Action::Agent(a.program.clone()),
             })
             .collect();
         v.push(Item {
@@ -2790,6 +2771,14 @@ impl App {
                 self.toast(t, self.theme.accent);
                 json!({ "ok": true })
             }
+            // an agent's hook: the conversation running in this tab (`lightsout report-session`)
+            "report-session" => match pane_arg(&a).and_then(|id| self.panes.get_mut(&id)) {
+                Some(p) => {
+                    p.agent_session = a["id"].as_str().map(str::to_string);
+                    json!({ "ok": true })
+                }
+                None => json!({ "error": "no such pane" }),
+            },
             "screen" => {
                 let on = a["on"].as_bool().unwrap_or(true);
                 platform::screen(on);
@@ -4072,6 +4061,7 @@ Lights Out: the terminal for AI agents.
 
 Control the running app (also for agents; details: `lightsout skill`):
   lightsout list | new | send | read | wait | explain | focus | close | notify | screen | power | switch | quit
+  lightsout report-session ID     (for an agent's hook: the conversation in its tab)
 ";
 
 /// One word of a command, quoted for the shell that runs it (PowerShell on Windows, sh elsewhere).
@@ -4376,6 +4366,7 @@ fn run_command(session: &str, rest: &[String]) {
             "-h" | "--help" | "help" => print!("{HELP}"),
             "-V" | "--version" | "version" => println!("lightsout {}", env!("CARGO_PKG_VERSION")),
             "uninstall" => std::process::exit(uninstall()),
+            "report-session" => std::process::exit(report_session(session, &rest[1..])),
             "update" => std::process::exit(update(session)),
             "room" | "rooms" => std::process::exit(room_cmd(session, &rest[1..])),
             _ => std::process::exit(client(session, rest)),
@@ -4493,8 +4484,37 @@ fn room_cmd(session: &str, args: &[String]) -> i32 {
     }
 }
 
+/// `lightsout report-session [ID]`: an agent's hook (see platform::agent_hooks) tells its tab
+/// which conversation it has: the ID, or the hook's details on stdin (`session_id`). It prints
+/// nothing and always succeeds: the agent gives what a hook prints to its model, and runs on
+/// outside Lights Out just the same.
+fn report_session(session: &str, args: &[String]) -> i32 {
+    use std::io::{IsTerminal, Read};
+    let Ok(pane) = std::env::var("LIGHTSOUT_PANE") else {
+        return 0;
+    };
+    let id = args.first().cloned().or_else(|| {
+        let mut text = String::new();
+        let stdin = std::io::stdin();
+        if stdin.is_terminal() || stdin.lock().read_to_string(&mut text).is_err() {
+            return None;
+        }
+        let v: Value = serde_json::from_str(&text).ok()?;
+        ["session_id", "sessionId", "conversation_id", "thread_id"]
+            .iter()
+            .find_map(|k| v[*k].as_str().map(str::to_string))
+    });
+    if let Some(id) = id.filter(|id| !id.is_empty()) {
+        let _ = api::call(session, "report-session", json!({ "pane": pane, "id": id }));
+    }
+    0
+}
+
 /// Removes Lights Out from this computer (asks for admin rights).
 fn uninstall() -> i32 {
+    // the agents' hooks first: they live in your own settings, which the uninstaller (as
+    // admin or root) doesn't touch
+    platform::agent_hooks(false);
     let status = if cfg!(windows) {
         let script = platform::lightsout_dir().join("bin").join("uninstall.ps1");
         let cmd = format!(

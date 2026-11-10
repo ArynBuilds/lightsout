@@ -48,6 +48,8 @@ lightsout room remove NAME                  a room here: closes it (stops its ag
 lightsout notify TEXT...                    a popup for the user
 lightsout screen off|on                     the screen off (saves battery) or back on
 lightsout power                             battery and current power draw
+lightsout report-session ID                 your own conversation's ID, so your tab comes back to it
+                                            (also reads a hook's JSON on stdin; prints nothing)
 lightsout skill                             prints this file
 ```
 

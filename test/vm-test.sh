@@ -131,7 +131,7 @@ check "$w/serial2.log" "LIGHTSOUT-SELFTEST: terminal=running" "the Lights Out te
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: iwd-networks=.*psk" "Wi-Fi network imported from Windows"
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: split=ok" "project got its own Linux node_modules"
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: home=/mnt/c/Users/tester per-system-local=yes" "home is the Windows user folder, programs kept per system"
-check "$w/serial2.log" "LIGHTSOUT-SELFTEST: resume-claude=claude = claude --resume {id}" "resume list shipped as data"
+check "$w/serial2.log" "LIGHTSOUT-SELFTEST: resume-claude=claude = claude {args} --resume {id}" "resume list shipped as data"
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: failed-units=[[:space:]]*$" "every system service started (Wi-Fi included)"
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: cd-windows-path=/mnt/c/users" "cd takes Windows paths"
 check "$w/serial2.log" "LIGHTSOUT-SELFTEST: windows-commands=0 0 ok.exe 3" "Windows programs in shared settings are skipped quietly"
