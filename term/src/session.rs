@@ -1,7 +1,7 @@
 //! Saving and restoring tabs, splits, commands and screens. The same format is
 //! used for app restarts and for switching between Windows and Lights Out.
 
-use crate::layout::Node;
+use crate::layout::{Float, Node};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -87,6 +87,9 @@ pub struct SavedTab {
     pub panes: Vec<SavedPane>,
     #[serde(default)]
     pub focus: usize,
+    /// Panes floating over the tab (`id` = an index into `panes`), in stacking order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub floats: Vec<Float>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]

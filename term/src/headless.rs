@@ -29,6 +29,8 @@ struct Tab {
     layout: Node,
     slots: Vec<Slot>,
     focus: usize,
+    /// Floating panes, as saved (indexes into `slots`): kept as they are.
+    floats: Vec<crate::layout::Float>,
 }
 
 struct Room {
@@ -70,6 +72,7 @@ pub fn run(session: &str) {
                 layout: t.layout,
                 slots,
                 focus: t.focus,
+                floats: t.floats,
             });
         }
         rooms.push(Room {
@@ -92,6 +95,7 @@ pub fn run(session: &str) {
                 layout: Node::Leaf(0),
                 slots: vec![Slot { pane, saved: p }],
                 focus: 0,
+                floats: Vec::new(),
             }],
             active: 0,
         });
@@ -181,6 +185,7 @@ pub fn run(session: &str) {
                             layout: Node::Leaf(0),
                             slots: vec![Slot { pane, saved: p }],
                             focus: 0,
+                            floats: Vec::new(),
                         });
                         match pane {
                             Some(id) => json!({ "id": id }),
@@ -319,6 +324,7 @@ fn handback(rooms: &[Room], panes: &HashMap<u64, Pane>) -> Saved {
                 .map(|t| SavedTab {
                     layout: t.layout.clone(),
                     focus: t.focus,
+                    floats: t.floats.clone(),
                     panes: t
                         .slots
                         .iter()

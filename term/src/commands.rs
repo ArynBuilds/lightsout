@@ -14,6 +14,25 @@ pub enum Action {
     SplitDown,
     Focus(i32, i32),
     ClosePane,
+    /// A pane floats (the focused one, or this one).
+    FloatPane(Option<u64>),
+    /// A floating pane goes back into the layout.
+    TilePane(Option<u64>),
+    /// A pane floats at this place (% of the area, from the top left).
+    MovePane {
+        x: u16,
+        y: u16,
+        pane: Option<u64>,
+    },
+    /// A pane floats at this size (% of the area).
+    ResizePane {
+        w: u16,
+        h: u16,
+        pane: Option<u64>,
+    },
+    MinimizePane(Option<u64>),
+    /// A pane comes to the front (and back from minimised).
+    RaisePane(Option<u64>),
     Jump,
     NextTab,
     PrevTab,
@@ -105,6 +124,33 @@ pub const COMMANDS: &[Command] = &[
     hidden("pane.focus-up", "", "Move to the pane above"),
     hidden("pane.focus-down", "", "Move to the pane below"),
     c("pane.close", "Close pane"),
+    Command {
+        arg: "[PANE]",
+        ..c("pane.float", "Float this pane (move it freely)")
+    },
+    Command {
+        arg: "[PANE]",
+        ..c("pane.tile", "Put this pane back in the layout")
+    },
+    Command {
+        arg: "[PANE]",
+        ..c("pane.minimize", "Minimize this pane")
+    },
+    hidden(
+        "pane.move",
+        "X Y [PANE]",
+        "Float a pane at X, Y (% of the area)",
+    ),
+    hidden(
+        "pane.resize",
+        "W H [PANE]",
+        "Float a pane at this size (% of the area)",
+    ),
+    hidden(
+        "pane.raise",
+        "[PANE]",
+        "Bring a pane to the front (and back from minimized)",
+    ),
     c("agent.jump", "Jump to the agent that needs you"),
     c("tab.next", "Next tab"),
     c("tab.previous", "Previous tab"),
@@ -189,6 +235,32 @@ fn place(arg: &str) -> Option<usize> {
     arg.parse::<usize>().ok().filter(|n| *n > 0).map(|n| n - 1)
 }
 
+/// An optional pane number at this place: none written (the focused pane), or a number;
+/// anything else isn't understood.
+fn pane(words: &[&str], i: usize) -> Option<Option<u64>> {
+    match words.get(i) {
+        None => Some(None),
+        Some(w) => w.parse().ok().map(Some),
+    }
+}
+
+/// A share of the area in %, from `min` to 100.
+fn percent(words: &[&str], i: usize, min: u16) -> Option<u16> {
+    words
+        .get(i)?
+        .parse()
+        .ok()
+        .filter(|n| (min..=100).contains(n))
+}
+
+/// A command's name with the pane it names, when it names one.
+fn with_pane(name: &str, pane: &Option<u64>) -> String {
+    match pane {
+        Some(p) => format!("{name} {p}"),
+        None => name.to_string(),
+    }
+}
+
 impl Action {
     /// `tab.new`, `room.go 2`, `run.tab npm test`... None for a name Lights Out doesn't know
     /// or a missing argument.
@@ -198,6 +270,7 @@ impl Action {
             .split_once(char::is_whitespace)
             .map(|(i, a)| (i, a.trim()))
             .unwrap_or((command, ""));
+        let nums: Vec<&str> = arg.split_whitespace().collect();
         let run = |mode: &'static str| {
             (!arg.is_empty()).then(|| Action::Run {
                 mode,
@@ -216,6 +289,20 @@ impl Action {
             "pane.focus-up" => Action::Focus(0, -1),
             "pane.focus-down" => Action::Focus(0, 1),
             "pane.close" => Action::ClosePane,
+            "pane.float" => Action::FloatPane(pane(&nums, 0)?),
+            "pane.tile" => Action::TilePane(pane(&nums, 0)?),
+            "pane.minimize" => Action::MinimizePane(pane(&nums, 0)?),
+            "pane.raise" => Action::RaisePane(pane(&nums, 0)?),
+            "pane.move" => Action::MovePane {
+                x: percent(&nums, 0, 0)?,
+                y: percent(&nums, 1, 0)?,
+                pane: pane(&nums, 2)?,
+            },
+            "pane.resize" => Action::ResizePane {
+                w: percent(&nums, 0, 5)?,
+                h: percent(&nums, 1, 5)?,
+                pane: pane(&nums, 2)?,
+            },
             "agent.jump" => Action::Jump,
             "tab.next" => Action::NextTab,
             "tab.previous" => Action::PrevTab,
@@ -263,6 +350,12 @@ impl Action {
             Action::Focus(_, -1) => s("pane.focus-up"),
             Action::Focus(..) => s("pane.focus-down"),
             Action::ClosePane => s("pane.close"),
+            Action::FloatPane(p) => with_pane("pane.float", p),
+            Action::TilePane(p) => with_pane("pane.tile", p),
+            Action::MinimizePane(p) => with_pane("pane.minimize", p),
+            Action::RaisePane(p) => with_pane("pane.raise", p),
+            Action::MovePane { x, y, pane } => with_pane(&format!("pane.move {x} {y}"), pane),
+            Action::ResizePane { w, h, pane } => with_pane(&format!("pane.resize {w} {h}"), pane),
             Action::Jump => s("agent.jump"),
             Action::NextTab => s("tab.next"),
             Action::PrevTab => s("tab.previous"),
@@ -400,6 +493,8 @@ mod tests {
         match c.arg {
             "" => c.id.to_string(),
             "NUMBER" => format!("{} 2", c.id),
+            "[PANE]" => format!("{} 7", c.id),
+            "X Y [PANE]" | "W H [PANE]" => format!("{} 30 40 7", c.id),
             _ => format!("{} npm test", c.id),
         }
     }

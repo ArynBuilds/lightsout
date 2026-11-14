@@ -1170,7 +1170,17 @@ fn draw(app: &mut App, prefix: bool) -> (Grid, Option<(u16, u16, CursorShape)>) 
 
     // ---- panes
     let focused = app.focused();
-    let rects = app.active_rects();
+    // the tree's panes; the floating ones (frame, where their program shows) on top
+    let floats: Vec<(u64, Rect, Rect)> = app
+        .float_frames()
+        .into_iter()
+        .map(|(id, frame)| (id, frame, app.float_body(frame)))
+        .collect();
+    let rects: Vec<(u64, Rect)> = app
+        .active_rects()
+        .into_iter()
+        .filter(|(id, _)| !floats.iter().any(|f| f.0 == *id))
+        .collect();
     let dividers = app
         .tabs
         .get(app.active)
@@ -1195,6 +1205,76 @@ fn draw(app: &mut App, prefix: bool) -> (Grid, Option<(u16, u16, CursorShape)>) 
         } else {
             g.hline(d.area.x, d.at, d.area.w, LINE);
         }
+    }
+    // floating panes, bottom to top: a title row (state, title; minimise, back into the
+    // layout, close), then the program; the bottom right corner resizes
+    for (id, frame, body) in &floats {
+        let Some(p) = app.panes.get(id) else {
+            continue;
+        };
+        let on = focused == Some(*id);
+        g.fill(*frame, t.bg);
+        g.fill(
+            Rect { h: 1, ..*frame },
+            if on { 0x26262c } else { 0x141418 },
+        );
+        let (mark, mark_color) = state_mark(p.det.state);
+        g.put(frame.x + 1, frame.y, mark, mark_color, false);
+        let buttons = [
+            ("–", Hit::FloatMin(*id)),
+            ("▢", Hit::FloatTile(*id)),
+            ("×", Hit::FloatClose(*id)),
+        ];
+        let bx0 = frame.x + frame.w - buttons.len() as i32 * 3;
+        g.text(
+            frame.x + 3,
+            frame.y,
+            &p.title,
+            if on { t.fg } else { DIMTEXT },
+            on,
+            bx0 - 1,
+        );
+        app.hits
+            .push((Rect { h: 1, ..*frame }, Hit::FloatTitle(*id)));
+        for (n, (label, hit)) in buttons.into_iter().enumerate() {
+            let bx = bx0 + n as i32 * 3;
+            g.text(
+                bx + 1,
+                frame.y,
+                label,
+                if on { t.fg } else { DIMTEXT },
+                false,
+                bx + 3,
+            );
+            app.hits.push((
+                Rect {
+                    x: bx,
+                    y: frame.y,
+                    w: 3,
+                    h: 1,
+                },
+                hit,
+            ));
+        }
+        if let Some(c) = draw_pane(&mut g, p, *body, t, on) {
+            cursor = Some(c);
+        }
+        g.put(
+            frame.x + frame.w - 1,
+            frame.y + frame.h - 1,
+            '◢',
+            LINE,
+            false,
+        );
+        app.hits.push((
+            Rect {
+                x: frame.x + frame.w - 1,
+                y: frame.y + frame.h - 1,
+                w: 1,
+                h: 1,
+            },
+            Hit::FloatCorner(*id),
+        ));
     }
     if let Some(pid) = app.popup {
         let r = app.popup_rect();

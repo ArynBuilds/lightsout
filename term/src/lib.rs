@@ -152,9 +152,110 @@ fn urgency(s: State) -> u8 {
 
 // ---------------------------------------------------------------- app state
 
+/// A tab: panes in a tree of splits, and panes floating over it (last = on top).
 struct TabView {
     layout: Node,
     focus: u64,
+    floats: Vec<layout::Float>,
+}
+
+impl TabView {
+    fn new(id: u64) -> Self {
+        TabView {
+            layout: Node::Leaf(id),
+            focus: id,
+            floats: Vec::new(),
+        }
+    }
+
+    /// Every pane in the tab: the tree's, then the floating ones.
+    fn panes(&self) -> Vec<u64> {
+        let mut v = self.layout.leaves();
+        v.extend(self.floats.iter().map(|f| f.id));
+        v
+    }
+
+    fn contains(&self, id: u64) -> bool {
+        self.panes().contains(&id)
+    }
+
+    fn float(&mut self, id: u64) -> Option<&mut layout::Float> {
+        self.floats.iter_mut().find(|f| f.id == id)
+    }
+
+    /// Takes a pane out (the others keep their places); true when the tab is now empty. The
+    /// focus moves to the top floating pane that shows, else the tree's first.
+    fn remove(&mut self, id: u64) -> bool {
+        self.floats.retain(|f| f.id != id);
+        self.layout.remove(id);
+        self.focus_away_from(id);
+        self.panes().is_empty()
+    }
+
+    /// The focus leaves pane `id` (gone or minimised): to the top floating pane that shows,
+    /// else the tree's first, else any (all minimised).
+    fn focus_away_from(&mut self, id: u64) {
+        if self.focus != id {
+            return;
+        }
+        let shown = self
+            .floats
+            .iter()
+            .rev()
+            .find(|f| !f.min && f.id != id)
+            .map(|f| f.id);
+        let any = self.floats.iter().rev().find(|f| f.id != id).map(|f| f.id);
+        if let Some(f) = shown
+            .or_else(|| self.layout.leaves().first().copied())
+            .or(any)
+        {
+            self.focus = f;
+        }
+    }
+
+    /// A pane floats and is minimised (out of sight until it is focused or raised).
+    fn minimize(&mut self, id: u64) {
+        self.float_pane(id);
+        if let Some(f) = self.float(id) {
+            f.min = true;
+        }
+        self.focus_away_from(id);
+    }
+
+    /// A pane floats: out of the tree, over the others (a little lower and to the right of
+    /// the one before, so none hides another).
+    fn float_pane(&mut self, id: u64) {
+        if !self.contains(id) || self.floats.iter().any(|f| f.id == id) {
+            return;
+        }
+        self.layout.remove(id);
+        let n = self.floats.len() as f32;
+        self.floats.push(layout::Float {
+            id,
+            x: (0.12 + 0.04 * n) % 0.4,
+            y: (0.08 + 0.05 * n) % 0.4,
+            w: 0.6,
+            h: 0.6,
+            min: false,
+        });
+    }
+
+    /// A floating pane goes back into the tree (next to the last one there).
+    fn tile_pane(&mut self, id: u64) {
+        if self.floats.iter().any(|f| f.id == id) {
+            self.floats.retain(|f| f.id != id);
+            self.layout.add(id);
+        }
+    }
+
+    /// A floating pane comes up on top (and out of the minimised ones).
+    fn raise(&mut self, id: u64) {
+        if let Some(i) = self.floats.iter().position(|f| f.id == id) {
+            let mut f = self.floats.remove(i);
+            f.min = false;
+            self.floats.push(f);
+        }
+    }
 }
 
 /// A room has its own set of tabs. The current room's tabs live in App.tabs;
@@ -256,6 +357,16 @@ enum Drag {
         pane: u64,
         origin: Rect,
     },
+    /// A floating pane's title bar is dragged (where the mouse took it, from its corner).
+    Float {
+        pane: u64,
+        dx: i32,
+        dy: i32,
+    },
+    /// A floating pane's corner is dragged.
+    FloatSize {
+        pane: u64,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -273,6 +384,12 @@ enum Hit {
     Pane(u64),
     Room(usize),
     NewRoom,
+    /// A floating pane's title bar (drag to move), its buttons, its resize corner.
+    FloatTitle(u64),
+    FloatMin(u64),
+    FloatTile(u64),
+    FloatClose(u64),
+    FloatCorner(u64),
 }
 
 struct App {
@@ -582,11 +699,70 @@ impl App {
         (self.fonts.cell_w, self.fonts.cell_h)
     }
 
-    fn active_rects(&self) -> Vec<(u64, Rect)> {
+    /// A floating pane's title bar: one row of cells inside a terminal, a little taller in the
+    /// window.
+    fn title_h(&self) -> i32 {
+        if self.tui {
+            1
+        } else {
+            self.fonts.cell_h as i32 + 6
+        }
+    }
+
+    /// Where a floating pane is on screen, title bar included (never smaller than a short
+    /// line of text and a few rows).
+    fn float_frame(&self, f: &layout::Float) -> Rect {
+        let (cw, ch) = if self.tui {
+            (1, 1)
+        } else {
+            (self.fonts.cell_w as i32, self.fonts.cell_h as i32)
+        };
+        f.frame(self.content(), 24 * cw, self.title_h() + 4 * ch)
+    }
+
+    /// The part of a floating pane's frame its program shows in (below the title bar; in the
+    /// window, inside a thin border).
+    fn float_body(&self, frame: Rect) -> Rect {
+        let (b, t) = if self.tui {
+            (0, 1)
+        } else {
+            (1, self.title_h())
+        };
+        Rect {
+            x: frame.x + b,
+            y: frame.y + t,
+            w: frame.w - 2 * b,
+            h: frame.h - t - b,
+        }
+    }
+
+    /// The floating panes of the tab you see that aren't minimised, bottom to top, with their
+    /// frames.
+    fn float_frames(&self) -> Vec<(u64, Rect)> {
         self.tabs
             .get(self.active)
-            .map(|t| t.layout.layout(self.content()).0)
+            .map(|t| {
+                t.floats
+                    .iter()
+                    .filter(|f| !f.min)
+                    .map(|f| (f.id, self.float_frame(f)))
+                    .collect()
+            })
             .unwrap_or_default()
+    }
+
+    /// Every pane you see and where its program shows: the tree's, then the floating ones
+    /// from bottom to top (so the last one that contains a point is the one on top).
+    fn active_rects(&self) -> Vec<(u64, Rect)> {
+        let mut v = self
+            .tabs
+            .get(self.active)
+            .map(|t| t.layout.layout(self.content()).0)
+            .unwrap_or_default();
+        for (id, frame) in self.float_frames() {
+            v.push((id, self.float_body(frame)));
+        }
+        v
     }
 
     fn resize_all(&mut self) {
@@ -600,6 +776,11 @@ impl App {
         {
             for (id, r) in t.layout.layout(content).0 {
                 sizes.push((id, self.grid_size(r)));
+            }
+            // minimised ones keep their size for when they come back
+            for f in &t.floats {
+                let body = self.float_body(self.float_frame(f));
+                sizes.push((f.id, self.grid_size(body)));
             }
         }
         if let Some(p) = self.popup {
@@ -670,10 +851,7 @@ impl App {
     ) -> Option<u64> {
         let size = self.grid_size(self.content());
         let id = self.spawn(cwd, command, env, size)?;
-        self.tabs.push(TabView {
-            layout: Node::Leaf(id),
-            focus: id,
-        });
+        self.tabs.push(TabView::new(id));
         self.active = self.tabs.len() - 1;
         Some(id)
     }
@@ -694,17 +872,46 @@ impl App {
             .unwrap_or_else(platform::home);
         let size = self.grid_size(self.content());
         let id = self.spawn(cwd, command, env, size)?;
-        self.tabs[ti].layout.split(target, id, side_by_side);
-        self.tabs[ti].focus = id;
+        let tab = &mut self.tabs[ti];
+        if !tab.layout.split(target, id, side_by_side) {
+            // a floating pane split: the new one floats too, next to it
+            let next = tab.floats.iter().find(|f| f.id == target).map(|f| {
+                let (dx, dy) = if side_by_side {
+                    (0.05, 0.0)
+                } else {
+                    (0.0, 0.05)
+                };
+                layout::Float {
+                    id,
+                    x: (f.x + dx).min(0.9),
+                    y: (f.y + dy).min(0.9),
+                    min: false,
+                    ..f.clone()
+                }
+            });
+            match next {
+                Some(f) => tab.floats.push(f),
+                None => tab.layout.add(id),
+            }
+        }
+        tab.focus = id;
         self.active = ti;
         self.resize_all();
         Some(id)
     }
 
     fn tab_of(&self, pane: u64) -> Option<usize> {
-        self.tabs
-            .iter()
-            .position(|t| t.layout.leaves().contains(&pane))
+        self.tabs.iter().position(|t| t.contains(pane))
+    }
+
+    /// The pane a pane command is for (the one named, else the one you're in; a popup is
+    /// never one) and its tab, in the room you see (a pane in another room brings you there).
+    fn target_pane(&mut self, pane: Option<u64>) -> Option<(usize, u64)> {
+        let id = pane.or_else(|| self.tabs.get(self.active).map(|t| t.focus))?;
+        if let Some(r) = self.room_of(id) {
+            self.switch_room(r);
+        }
+        Some((self.tab_of(id)?, id))
     }
 
     fn focused(&self) -> Option<u64> {
@@ -726,7 +933,7 @@ impl App {
         }
         self.rooms
             .iter()
-            .position(|r| r.tabs.iter().any(|t| t.layout.leaves().contains(&pane)))
+            .position(|r| r.tabs.iter().any(|t| t.contains(pane)))
     }
 
     fn switch_room(&mut self, i: usize) {
@@ -786,7 +993,7 @@ impl App {
                     if i == self.room {
                         keep_current = false;
                     } else {
-                        for id in self.rooms[i].tabs.iter().flat_map(|t| t.layout.leaves()) {
+                        for id in self.rooms[i].tabs.iter().flat_map(|t| t.panes()) {
                             if let Some(p) = self.panes.remove(&id) {
                                 p.shutdown();
                             }
@@ -869,10 +1076,7 @@ impl App {
             if let Some(p) = self.panes.get_mut(&id) {
                 p.title = remote.server.clone();
             }
-            self.tabs.push(TabView {
-                layout: layout::Node::Leaf(id),
-                focus: id,
-            });
+            self.tabs.push(TabView::new(id));
             self.active = self.tabs.len() - 1;
         }
     }
@@ -921,7 +1125,7 @@ impl App {
             all.retain(|x| x.name != m);
             let _ = session::save_server_rooms(&all);
         }
-        let ids: Vec<u64> = self.tabs.iter().flat_map(|t| t.layout.leaves()).collect();
+        let ids: Vec<u64> = self.tabs.iter().flat_map(|t| t.panes()).collect();
         for id in ids {
             if let Some(p) = self.panes.remove(&id) {
                 p.shutdown();
@@ -939,6 +1143,8 @@ impl App {
         if let Some(ti) = self.tab_of(pane) {
             self.active = ti;
             self.tabs[ti].focus = pane;
+            // a floating one comes up on top (and back if it was minimised)
+            self.tabs[ti].raise(pane);
         }
         if let Some(p) = self.panes.get_mut(&pane) {
             p.det.seen();
@@ -957,14 +1163,9 @@ impl App {
         if self.popup != Some(id) {
             if let Some(r) = self.room_of(id).filter(|r| *r != self.room) {
                 let tabs = &mut self.rooms[r].tabs;
-                if let Some(ti) = tabs.iter().position(|t| t.layout.leaves().contains(&id)) {
-                    if matches!(tabs[ti].layout, Node::Leaf(_)) {
+                if let Some(ti) = tabs.iter().position(|t| t.contains(id)) {
+                    if tabs[ti].remove(id) {
                         tabs.remove(ti);
-                    } else {
-                        tabs[ti].layout.remove(id);
-                        if tabs[ti].focus == id {
-                            tabs[ti].focus = tabs[ti].layout.leaves()[0];
-                        }
                     }
                 }
                 if self.rooms[r].tabs.is_empty() {
@@ -983,14 +1184,9 @@ impl App {
         if self.popup == Some(id) {
             self.popup = None;
         } else if let Some(ti) = self.tab_of(id) {
-            if matches!(self.tabs[ti].layout, Node::Leaf(_)) {
+            if self.tabs[ti].remove(id) {
                 self.tabs.remove(ti);
                 self.active = self.active.min(self.tabs.len().saturating_sub(1));
-            } else {
-                self.tabs[ti].layout.remove(id);
-                if self.tabs[ti].focus == id {
-                    self.tabs[ti].focus = self.tabs[ti].layout.leaves()[0];
-                }
             }
         }
         if let Some(p) = self.panes.remove(&id) {
@@ -1201,7 +1397,7 @@ impl App {
     ) -> Vec<SavedTab> {
         tabs.iter()
             .map(|t| {
-                let ids = t.layout.leaves();
+                let ids = t.panes();
                 let index = |id: u64| ids.iter().position(|x| *x == id).unwrap_or(0) as u64;
                 let panes = ids
                     .iter()
@@ -1232,6 +1428,14 @@ impl App {
                     layout: t.layout.remap(&index),
                     panes,
                     focus: index(t.focus) as usize,
+                    floats: t
+                        .floats
+                        .iter()
+                        .map(|f| layout::Float {
+                            id: index(f.id),
+                            ..f.clone()
+                        })
+                        .collect(),
                 }
             })
             .collect()
@@ -1362,7 +1566,20 @@ impl App {
             let map = |i: u64| ids.get(i as usize).copied().flatten().unwrap_or(first);
             let layout = t.layout.remap(&map);
             let focus = ids.get(t.focus).copied().flatten().unwrap_or(first);
-            self.tabs.push(TabView { layout, focus });
+            // floating panes come back where they were (one that didn't start is left out)
+            let floats = t
+                .floats
+                .iter()
+                .filter_map(|f| {
+                    let id = ids.get(f.id as usize).copied().flatten()?;
+                    Some(layout::Float { id, ..f.clone() })
+                })
+                .collect();
+            self.tabs.push(TabView {
+                layout,
+                focus,
+                floats,
+            });
         }
     }
 
@@ -1791,6 +2008,50 @@ impl App {
             Action::ClosePane => {
                 if let Some(id) = self.focused() {
                     self.close_pane(id);
+                }
+            }
+            // floating panes (a window manager plugin uses these with a pane number)
+            Action::FloatPane(p) => {
+                if let Some((ti, id)) = self.target_pane(p) {
+                    self.tabs[ti].float_pane(id);
+                    self.tabs[ti].focus = id;
+                    self.resize_all();
+                }
+            }
+            Action::TilePane(p) => {
+                if let Some((ti, id)) = self.target_pane(p) {
+                    self.tabs[ti].tile_pane(id);
+                    self.resize_all();
+                }
+            }
+            Action::MovePane { x, y, pane } => {
+                if let Some((ti, id)) = self.target_pane(pane) {
+                    self.tabs[ti].float_pane(id);
+                    if let Some(f) = self.tabs[ti].float(id) {
+                        (f.x, f.y) = (x as f32 / 100.0, y as f32 / 100.0);
+                    }
+                    self.resize_all();
+                }
+            }
+            Action::ResizePane { w, h, pane } => {
+                if let Some((ti, id)) = self.target_pane(pane) {
+                    self.tabs[ti].float_pane(id);
+                    if let Some(f) = self.tabs[ti].float(id) {
+                        (f.w, f.h) = (w as f32 / 100.0, h as f32 / 100.0);
+                    }
+                    self.resize_all();
+                }
+            }
+            Action::MinimizePane(p) => {
+                if let Some((ti, id)) = self.target_pane(p) {
+                    self.tabs[ti].minimize(id);
+                    self.resize_all();
+                }
+            }
+            Action::RaisePane(p) => {
+                if let Some((ti, id)) = self.target_pane(p) {
+                    self.tabs[ti].raise(id);
+                    self.focus(id);
                 }
             }
             Action::Focus(dx, dy) => {
@@ -2330,6 +2591,13 @@ impl App {
                 return Some((p, r));
             }
         }
+        // the floating panes first, top one first (its title bar belongs to no pane)
+        for (id, frame) in self.float_frames().into_iter().rev() {
+            if frame.contains(x, y) {
+                let body = self.float_body(frame);
+                return body.contains(x, y).then_some((id, body));
+            }
+        }
         self.active_rects()
             .into_iter()
             .find(|(_, r)| r.contains(x, y))
@@ -2476,8 +2744,47 @@ impl App {
             }
             return;
         }
-        // dragging the line between two panes?
-        if button == MouseButton::Left && self.popup.is_none() {
+        // a floating pane's title bar, buttons or corner (the top one's first)
+        let float_hit = self
+            .hits
+            .iter()
+            .rev()
+            .find(|(r, h)| {
+                r.contains(x, y)
+                    && matches!(
+                        h,
+                        Hit::FloatTitle(_)
+                            | Hit::FloatMin(_)
+                            | Hit::FloatTile(_)
+                            | Hit::FloatClose(_)
+                            | Hit::FloatCorner(_)
+                    )
+            })
+            .map(|h| (h.0, h.1));
+        if let (Some((r, hit)), true, None) = (float_hit, button == MouseButton::Left, self.popup) {
+            match hit {
+                Hit::FloatTitle(id) => {
+                    self.focus(id);
+                    self.drag = Some(Drag::Float {
+                        pane: id,
+                        dx: x - r.x,
+                        dy: y - r.y,
+                    });
+                }
+                Hit::FloatCorner(id) => {
+                    self.focus(id);
+                    self.drag = Some(Drag::FloatSize { pane: id });
+                }
+                Hit::FloatMin(id) => self.run(Action::MinimizePane(Some(id))),
+                Hit::FloatTile(id) => self.run(Action::TilePane(Some(id))),
+                Hit::FloatClose(id) => self.close_pane(id),
+                _ => {}
+            }
+            return;
+        }
+        let in_float = self.float_frames().iter().any(|(_, f)| f.contains(x, y));
+        // dragging the line between two panes? (not through a floating one)
+        if button == MouseButton::Left && self.popup.is_none() && !in_float {
             if let Some(t) = self.tabs.get(self.active) {
                 let reach = if self.tui { 0 } else { 4 };
                 for d in t.layout.layout(self.content()).1 {
@@ -2741,6 +3048,42 @@ impl App {
                     self.dirty = true;
                 }
             }
+            // a floating pane follows the mouse (kept inside the area)
+            Some(Drag::Float { pane, dx, dy }) => {
+                let (pane, dx, dy) = (*pane, *dx, *dy);
+                let area = self.content();
+                if let Some(f) = self.tabs.get_mut(self.active).and_then(|t| t.float(pane)) {
+                    // (min then max: never a panic, whatever its size)
+                    f.x = ((x - dx - area.x) as f32 / area.w.max(1) as f32)
+                        .min(1.0 - f.w)
+                        .max(0.0);
+                    f.y = ((y - dy - area.y) as f32 / area.h.max(1) as f32)
+                        .min(1.0 - f.h)
+                        .max(0.0);
+                    self.dirty = true;
+                }
+            }
+            Some(Drag::FloatSize { pane }) => {
+                let pane = *pane;
+                let area = self.content();
+                let frame = self
+                    .tabs
+                    .get(self.active)
+                    .and_then(|t| t.floats.iter().find(|f| f.id == pane))
+                    .map(|f| self.float_frame(f));
+                if let (Some(frame), Some(f)) = (
+                    frame,
+                    self.tabs.get_mut(self.active).and_then(|t| t.float(pane)),
+                ) {
+                    // from where it shows now (it may have been pushed in from the edge)
+                    let (aw, ah) = (area.w.max(1) as f32, area.h.max(1) as f32);
+                    f.x = (frame.x - area.x) as f32 / aw;
+                    f.y = (frame.y - area.y) as f32 / ah;
+                    f.w = ((x - frame.x + 1) as f32 / aw).min(1.0 - f.x).max(0.1);
+                    f.h = ((y - frame.y + 1) as f32 / ah).min(1.0 - f.y).max(0.1);
+                    self.resize_all();
+                }
+            }
             None => {}
         }
     }
@@ -2774,7 +3117,7 @@ impl App {
                 }
                 self.dirty = true;
             }
-            Some(Drag::Divider { .. }) | None => {}
+            Some(Drag::Divider { .. } | Drag::Float { .. } | Drag::FloatSize { .. }) | None => {}
         }
     }
 
@@ -2894,9 +3237,11 @@ impl App {
                         &room.tabs
                     };
                     for (ti, t) in tabs.iter().enumerate() {
-                        for id in t.layout.leaves() {
+                        for id in t.panes() {
                             if let Some(p) = self.panes.get(&id) {
-                                v.push(json!({ "id": id, "room": room.name, "tab": ti + 1, "title": p.title, "cwd": p.cwd.to_string_lossy(), "state": p.det.state.name(), "command": p.command, "running": p.running }));
+                                // a floating one: where it is, in % of the area (for window managers)
+                                let float = t.floats.iter().find(|f| f.id == id).map(|f| json!({ "x": (f.x * 100.0).round(), "y": (f.y * 100.0).round(), "w": (f.w * 100.0).round(), "h": (f.h * 100.0).round(), "minimized": f.min }));
+                                v.push(json!({ "id": id, "room": room.name, "tab": ti + 1, "title": p.title, "cwd": p.cwd.to_string_lossy(), "state": p.det.state.name(), "command": p.command, "running": p.running, "float": float }));
                             }
                         }
                     }
@@ -3094,7 +3439,7 @@ impl App {
             .tabs
             .iter()
             .map(|tv| {
-                let leaves = tv.layout.leaves();
+                let leaves = tv.panes();
                 let title = self
                     .panes
                     .get(&tv.focus)
@@ -3159,7 +3504,7 @@ impl App {
                 (
                     r.name.clone(),
                     tabs.iter()
-                        .flat_map(|tv| tv.layout.leaves())
+                        .flat_map(|tv| tv.panes())
                         .filter_map(agent_of)
                         .collect(),
                 )
@@ -3173,7 +3518,17 @@ impl App {
         let (w, h) = self.size;
         let bar = self.bar_h();
         let content = self.content();
-        let active_rects = self.active_rects();
+        // the tree's panes; the floating ones (frame, where their program shows) on top
+        let floats: Vec<(u64, Rect, Rect)> = self
+            .float_frames()
+            .into_iter()
+            .map(|(id, frame)| (id, frame, self.float_body(frame)))
+            .collect();
+        let active_rects: Vec<(u64, Rect)> = self
+            .active_rects()
+            .into_iter()
+            .filter(|(id, _)| !floats.iter().any(|f| f.0 == *id))
+            .collect();
         let dividers = self
             .tabs
             .get(self.active)
@@ -3184,6 +3539,7 @@ impl App {
         let popup = self.popup.map(|p| (p, self.popup_rect()));
         let sel = self.sel();
         let sw = self.sidebar_w();
+        let title_h = self.title_h();
 
         let Some(surface) = self.surface.as_mut() else {
             return;
@@ -3648,6 +4004,80 @@ impl App {
             } else {
                 cv.rect(d.area.x, d.at, d.area.w as u32, layout::GAP as u32, BORDER);
             }
+        }
+        // floating panes, bottom to top: a thin border, a title bar (state, title; minimise,
+        // back into the layout, close), the program; the bottom right corner resizes
+        for (id, frame, body) in &floats {
+            let Some(p) = self.panes.get(id) else {
+                continue;
+            };
+            let on = focused == Some(*id);
+            cv.rect(frame.x, frame.y, frame.w as u32, frame.h as u32, BORDER);
+            let bar_bg = if on { 0x26262c } else { 0x141418 };
+            cv.rect(
+                frame.x + 1,
+                frame.y + 1,
+                (frame.w - 2).max(0) as u32,
+                (title_h - 1).max(0) as u32,
+                bar_bg,
+            );
+            cv.rect(body.x, body.y, body.w as u32, body.h as u32, t.bg);
+            let ty = frame.y + (title_h - ch) / 2;
+            let (mark, mark_color) = state_mark(p.det.state);
+            cv.ch(f, frame.x + cw / 2 + 2, ty, mark, false, mark_color);
+            let buttons = [
+                ("–", Hit::FloatMin(*id)),
+                ("▢", Hit::FloatTile(*id)),
+                ("×", Hit::FloatClose(*id)),
+            ];
+            let bx0 = frame.x + frame.w - (buttons.len() as i32 * 3) * cw;
+            let room_for_title = ((bx0 - frame.x) / cw - 4).max(0) as usize;
+            let title: String = p.title.chars().take(room_for_title).collect();
+            cv.text(
+                f,
+                frame.x + 2 * cw,
+                ty,
+                &title,
+                on,
+                if on { t.fg } else { DIMTEXT },
+            );
+            self.hits.push((
+                Rect {
+                    h: title_h,
+                    ..*frame
+                },
+                Hit::FloatTitle(*id),
+            ));
+            for (n, (label, hit)) in buttons.into_iter().enumerate() {
+                let bx = bx0 + n as i32 * 3 * cw;
+                cv.text(
+                    f,
+                    bx + cw,
+                    ty,
+                    label,
+                    false,
+                    if on { t.fg } else { DIMTEXT },
+                );
+                self.hits.push((
+                    Rect {
+                        x: bx,
+                        y: frame.y,
+                        w: 3 * cw,
+                        h: title_h,
+                    },
+                    hit,
+                ));
+            }
+            draw_pane(&mut cv, f, p, *body);
+            self.hits.push((
+                Rect {
+                    x: frame.x + frame.w - cw,
+                    y: frame.y + frame.h - ch,
+                    w: cw,
+                    h: ch,
+                },
+                Hit::FloatCorner(*id),
+            ));
         }
         if let Some((id, r)) = popup {
             cv.rect(r.x - 1, r.y - 1, (r.w + 2) as u32, (r.h + 2) as u32, BORDER);
@@ -4416,6 +4846,8 @@ fn client(session: &str, args: &[String]) -> i32 {
                         );
                     }
                 }
+                // everything about each pane (a floating one's place and size too), for programs
+                "list" if flag("--json").is_some() => println!("{}", v["panes"]),
                 "list" => {
                     println!(
                         "{:<5} {:<12} {:<4} {:<10} {:<20} FOLDER",

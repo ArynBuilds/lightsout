@@ -53,6 +53,12 @@ lightsout do COMMAND [ARG]                  do one, as its key or the menu does
                                             `lightsout do run.split npm test`)
 ```
 
+Panes can float like windows (their own place and size, over the others):
+`lightsout do pane.float [PANE]`, `pane.move X Y [PANE]` and `pane.resize W H [PANE]` (in % of
+the area), `pane.minimize [PANE]`, `pane.raise [PANE]`, `pane.tile [PANE]` (back into the
+layout). `lightsout list --json` shows every pane with its details, a floating one's place and
+size too.
+
 ## Plugins
 
 A plugin is a folder with `lightsout-plugin.toml` and programs in any language. It adds
