@@ -156,7 +156,7 @@ jobs:
           tab() { echo "{\"focus\":0,\"layout\":{\"Leaf\":0},\"panes\":[{\"cwd\":\"/tmp\",$1}]}"; }
           echo "{\"rooms\":[{\"name\":\"Reopen\",\"active\":0,\"tabs\":[$(tab '"command":"myagent","session":"chat-7"'),$(tab '"command":"myagent"'),$(tab '"command":"echo typed-back"')]}],\"room\":0}" \
             > ~/.local/state/lightsout/session-cireopen.json
-          export LIGHTSOUT_SESSION=cireopen
+          export LIGHTSOUT_SESSION=cireopen PATH=$B:$PATH   # plugins call `lightsout`
           $B/lightsout --session cireopen --server &
           for i in $(seq 1 30); do $B/lightsout list > reopen.txt 2>/dev/null && break; sleep 1; done
           sleep 3; cat reopen.txt
@@ -188,6 +188,10 @@ jobs:
           sleep 2; cat $P/out.txt $P/events.txt
           grep -q "hello world from test-plugin.hello" $P/out.txt
           grep -q 'room.opened {"room":"Room 3"}' $P/events.txt
+          # its part at the bottom, filled by its own program
+          $B/lightsout part list | tee parts.txt
+          grep -qE '^test-plugin\.status +bottom .* 1 row' parts.txt
+          grep -qE '^sidebar +left' parts.txt
           # a command shown on screen: its program in a split, in your folder
           $B/lightsout do test-plugin.show here
           sleep 2

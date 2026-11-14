@@ -27,6 +27,11 @@ needs_you = []
 [history]
 keep = true              # bring tabs, splits and screen history back after a restart
 
+[parts]
+sidebar = "left"         # left, right or off (Ctrl+Shift+B shows and hides it)
+tabs = "top"             # top, bottom or off
+# plugins can add parts on any side, or replace these two
+
 [bar]
 # extra items on the right of the top bar, e.g.
 # items = [ { text = "my laptop" }, { command = "git branch --show-current", every = 30 } ]
@@ -50,7 +55,24 @@ pub struct Config {
     pub status: Status,
     pub history: History,
     pub bar: Bar,
+    pub parts: Parts,
     pub keys: HashMap<String, KeyBinding>,
+}
+
+/// Where the built-in parts are: the sidebar left, right or off; the tab bar top, bottom or off.
+#[derive(Deserialize, Clone)]
+#[serde(default)]
+pub struct Parts {
+    pub sidebar: String,
+    pub tabs: String,
+}
+impl Default for Parts {
+    fn default() -> Self {
+        Parts {
+            sidebar: "left".into(),
+            tabs: "top".into(),
+        }
+    }
 }
 
 #[derive(Deserialize, Clone)]

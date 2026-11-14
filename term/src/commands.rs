@@ -64,6 +64,8 @@ pub enum Action {
     /// Close this terminal's view; the agents keep running in the background.
     Detach,
     Quit,
+    /// Plugins off, or on again: the way back when a plugin broke the screen.
+    Plain,
     /// A command line in a popup ("popup"), a new tab ("tab") or a split ("split").
     Run {
         mode: &'static str,
@@ -183,6 +185,10 @@ pub const COMMANDS: &[Command] = &[
         "Detach (close this view, agents keep running)",
     ),
     c("app.quit", "Quit (stops all agents)"),
+    c(
+        "app.plain",
+        "Plugins off / on (the way back if one breaks the screen)",
+    ),
     hidden("run.popup", "COMMAND", "Run a command line in a popup"),
     hidden("run.tab", "COMMAND", "Run a command line in a new tab"),
     hidden("run.split", "COMMAND", "Run a command line in a split"),
@@ -204,6 +210,7 @@ pub const DEFAULT_KEYS: &[(&str, &str)] = &[
     ("ctrl+shift+l", "lights.switch"),
     ("ctrl+shift+o", "screen.off"),
     ("ctrl+shift+q", "app.quit"),
+    ("ctrl+shift+f12", "app.plain"),
     ("ctrl+shift+arrowright", "pane.split-right"),
     ("ctrl+shift+arrowdown", "pane.split-down"),
     ("ctrl+shift+tab", "tab.previous"),
@@ -328,6 +335,7 @@ impl Action {
             "lights.switch" => Action::Lights,
             "app.detach" => Action::Detach,
             "app.quit" => Action::Quit,
+            "app.plain" => Action::Plain,
             "run.popup" => run("popup")?,
             "run.tab" => run("tab")?,
             "run.split" => run("split")?,
@@ -381,6 +389,7 @@ impl Action {
             Action::Lights => s("lights.switch"),
             Action::Detach => s("app.detach"),
             Action::Quit => s("app.quit"),
+            Action::Plain => s("app.plain"),
             Action::Run { mode, command } => format!("run.{mode} {command}"),
             Action::Plugin {
                 plugin,
@@ -465,6 +474,10 @@ fn word_case(w: &str) -> String {
     }
 }
 
+/// Plugins off and on again (`app.plain`): checked before every other key, and nobody can
+/// take it, so a plugin that broke the screen can always be switched off.
+pub const SAFE_KEY: &str = "ctrl+shift+f12";
+
 /// Who a key belongs to.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Owner {
@@ -509,10 +522,18 @@ pub fn bindings(
     own: &[(String, String)],
     plugins: &[(String, String, String)],
 ) -> (Vec<Bound>, Vec<Skipped>) {
-    let mut v: Vec<Bound> = Vec::new();
+    // the way back when a plugin broke the screen: always Lights Out's, first
+    let mut v: Vec<Bound> = vec![Bound {
+        key: SAFE_KEY.into(),
+        command: "app.plain".into(),
+        owner: Owner::LightsOut,
+    }];
     let mut freed: Vec<String> = Vec::new();
     for (k, cmd) in own {
         let (key, command) = (key_name(k), cmd.trim().to_string());
+        if key == SAFE_KEY {
+            continue;
+        }
         if command.is_empty() {
             freed.push(key);
         } else if !v.iter().any(|b| b.key == key) {
@@ -584,6 +605,12 @@ pub fn clashes(
             continue;
         }
         if let Some(b) = bound.iter().find(|b| b.key == key) {
+            if key == SAFE_KEY {
+                out.push(format!(
+                    "{key} is Lights Out's way back when a plugin breaks the screen (app.plain): nobody can take it. Change the key in {plugin}."
+                ));
+                continue;
+            }
             let fix = match &b.owner {
                 Owner::You => "or change it in your settings".to_string(),
                 Owner::Plugin(id) => format!("or switch {id} off (lightsout plugin off {id})"),
@@ -732,5 +759,12 @@ mod tests {
             c[2].contains("by Lights Out (tab.new)") && c[2].contains("\"ctrl+shift+t\" = \"\"")
         );
         assert_eq!(c[3], "ctrl+alt+x is in mine twice");
+        // the way back can't be taken, not even after freeing it
+        let own = vec![s("ctrl+shift+f12", "")];
+        let c = clashes(&own, &[], "mine", &[s("Ctrl+Shift+F12", "mine.a")]);
+        assert!(c[0].contains("nobody can take it"), "{c:?}");
+        let (bound, _) = bindings(&[s("ctrl+shift+f12", "room.new")], &[]);
+        let safe: Vec<_> = bound.iter().filter(|b| b.key == SAFE_KEY).collect();
+        assert_eq!((safe.len(), safe[0].command.as_str()), (1, "app.plain"));
     }
 }

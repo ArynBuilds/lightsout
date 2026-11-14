@@ -9,6 +9,7 @@ mod config;
 mod headless;
 mod keys;
 mod layout;
+mod parts;
 mod platform;
 mod plugins;
 mod render;
@@ -151,6 +152,18 @@ fn urgency(s: State) -> u8 {
 }
 
 // ---------------------------------------------------------------- app state
+
+/// Where the parts of the screen are (see `screen_layout`).
+#[derive(Default, Clone)]
+struct ScreenLayout {
+    sidebar: Option<Rect>,
+    sidebar_right: bool,
+    bar: Option<Rect>,
+    bar_bottom: bool,
+    /// Plugins' parts: their name (PLUGIN.PART), where, and their side.
+    parts: Vec<(String, Rect, String)>,
+    content: Rect,
+}
 
 /// A tab: panes in a tree of splits, and panes floating over it (last = on top).
 struct TabView {
@@ -384,6 +397,8 @@ enum Hit {
     Pane(u64),
     Room(usize),
     NewRoom,
+    /// A piece of a plugin's part that runs a command (its place in `part_clicks`).
+    Part(usize),
     /// A floating pane's title bar (drag to move), its buttons, its resize corner.
     FloatTitle(u64),
     FloatMin(u64),
@@ -488,6 +503,17 @@ struct App {
     plugins_stamp: Vec<Option<std::time::SystemTime>>,
     /// Plugin keys already said to do nothing (each said once).
     keys_warned: Vec<String>,
+    /// What each plugin part shows (PLUGIN.PART), as its program last sent it.
+    part_content: HashMap<String, parts::Content>,
+    /// The commands of the pieces of parts on screen (a click finds them by `Hit::Part`).
+    part_clicks: Vec<String>,
+    /// Parts whose program has been started (once each).
+    parts_started: Vec<String>,
+    /// `start` has run: the control port answers, so part programs can be started.
+    started: bool,
+    /// Plugins off (`lightsout --plain`, or Ctrl+Shift+F12 until pressed again): the way
+    /// back when a plugin broke the screen.
+    plain: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -605,6 +631,11 @@ impl App {
             plugins: Vec::new(),
             plugins_stamp: Vec::new(),
             keys_warned: Vec::new(),
+            part_content: HashMap::new(),
+            part_clicks: Vec::new(),
+            parts_started: Vec::new(),
+            started: false,
+            plain: std::env::var("LIGHTSOUT_PLAIN").is_ok_and(|v| v == "1"),
         };
         if let Some(e) = loaded.error {
             app.toast(e, ALERT);
@@ -648,14 +679,158 @@ impl App {
         }
     }
 
+    /// Where the panes are: what the parts around them leave.
     fn content(&self) -> Rect {
-        let bh = self.bar_h();
+        self.screen_layout().content
+    }
+
+    /// Where everything is: the sidebar (left, right or off), plugins' parts on the left and
+    /// right, all full height; then the tab bar (top, bottom or off) and plugins' parts at the
+    /// top and bottom, across what is left; the panes in the rest. A plugin part that replaces
+    /// the sidebar or the tab bar takes its place. Parts that would leave the panes too little
+    /// room are left out.
+    fn screen_layout(&self) -> ScreenLayout {
+        let mut area = Rect {
+            x: 0,
+            y: 0,
+            w: self.size.0 as i32,
+            h: self.size.1 as i32,
+        };
+        let (cw, ch) = if self.tui {
+            (1, 1)
+        } else {
+            (self.fonts.cell_w as i32, self.fonts.cell_h as i32)
+        };
+        let (min_w, min_h) = (20 * cw, 5 * ch);
+        let plugin_parts: Vec<(String, plugins::PluginPart)> = if self.embedded {
+            Vec::new()
+        } else {
+            self.plugins
+                .iter()
+                .flat_map(|p| {
+                    p.m.parts
+                        .iter()
+                        .filter(|x| plugins::runs_here(&x.platforms))
+                        .map(|x| (format!("{}.{}", p.m.id, x.id), x.clone()))
+                })
+                .collect()
+        };
+        let replaced = |what: &str| plugin_parts.iter().any(|(_, x)| x.replaces == what);
+        let mut out = ScreenLayout::default();
+        // left and right, full height
+        let side = if replaced("sidebar") {
+            "off"
+        } else {
+            self.cfg.parts.sidebar.as_str()
+        };
         let sw = self.sidebar_w();
-        Rect {
-            x: sw,
-            y: bh,
-            w: self.size.0 as i32 - sw,
-            h: self.size.1 as i32 - bh,
+        if sw > 0 && side != "off" && area.w - sw >= min_w {
+            let right = side == "right";
+            out.sidebar = Some(Rect {
+                x: if right { area.x + area.w - sw } else { area.x },
+                w: sw,
+                ..area
+            });
+            out.sidebar_right = right;
+            if !right {
+                area.x += sw;
+            }
+            area.w -= sw;
+        }
+        for (id, p) in plugin_parts
+            .iter()
+            .filter(|(_, p)| p.side == "left" || p.side == "right")
+        {
+            let pw = p.size as i32 * cw + if self.tui { 0 } else { 2 * PADX };
+            if area.w - pw < min_w {
+                continue;
+            }
+            let right = p.side == "right";
+            out.parts.push((
+                id.clone(),
+                Rect {
+                    x: if right { area.x + area.w - pw } else { area.x },
+                    w: pw,
+                    ..area
+                },
+                p.side.clone(),
+            ));
+            if !right {
+                area.x += pw;
+            }
+            area.w -= pw;
+        }
+        // top and bottom, across what is left
+        let tabs = if replaced("tabs") {
+            "off"
+        } else {
+            self.cfg.parts.tabs.as_str()
+        };
+        let bh = self.bar_h();
+        if tabs != "off" && area.h - bh >= min_h {
+            let bottom = tabs == "bottom";
+            out.bar = Some(Rect {
+                y: if bottom { area.y + area.h - bh } else { area.y },
+                h: bh,
+                ..area
+            });
+            out.bar_bottom = bottom;
+            if !bottom {
+                area.y += bh;
+            }
+            area.h -= bh;
+        }
+        for (id, p) in plugin_parts
+            .iter()
+            .filter(|(_, p)| p.side == "top" || p.side == "bottom")
+        {
+            let ph = p.size as i32 * ch + if self.tui { 0 } else { 8 };
+            if area.h - ph < min_h {
+                continue;
+            }
+            let bottom = p.side == "bottom";
+            out.parts.push((
+                id.clone(),
+                Rect {
+                    y: if bottom { area.y + area.h - ph } else { area.y },
+                    h: ph,
+                    ..area
+                },
+                p.side.clone(),
+            ));
+            if !bottom {
+                area.y += ph;
+            }
+            area.h -= ph;
+        }
+        out.content = area;
+        out
+    }
+
+    /// Your colours, for plugins (LIGHTSOUT_THEME): from the settings, so plugins from
+    /// different people match.
+    fn theme_json(&self) -> Value {
+        let hex = |c: u32| format!("#{c:06x}");
+        json!({
+            "background": hex(self.theme.bg),
+            "foreground": hex(self.theme.fg),
+            "accent": hex(self.theme.accent),
+            "dim": hex(DIMTEXT),
+            "alert": hex(ALERT),
+            "done": hex(DONE),
+            "font_size": self.cfg.theme.font_size,
+        })
+    }
+
+    /// The colours a plugin's part can name (from the settings).
+    fn palette(&self) -> parts::Palette {
+        parts::Palette {
+            fg: self.theme.fg,
+            bg: self.theme.bg,
+            accent: self.theme.accent,
+            dim: DIMTEXT,
+            alert: ALERT,
+            done: DONE,
         }
     }
 
@@ -1615,6 +1790,8 @@ impl App {
         }
         self.sync_server_rooms();
         self.start_bar_items();
+        self.started = true;
+        self.start_parts();
         self.emit("app.started", json!({}));
     }
 
@@ -1757,13 +1934,71 @@ impl App {
     /// description changes).
     fn load_plugins(&mut self) {
         self.plugins_stamp = plugins::stamp();
+        if self.plain {
+            self.plugins.clear();
+            self.part_content.clear();
+            self.parts_started.clear();
+            self.resize_all();
+            return;
+        }
         let (list, problems) = plugins::load();
         self.plugins = list;
         for p in problems {
             self.toast(p, ALERT);
         }
         self.warn_skipped_keys();
+        if self.started {
+            self.start_parts();
+        }
+        self.resize_all();
         self.dirty = true;
+    }
+
+    /// The programs of plugin parts that just appeared (each once), with the part's size;
+    /// what parts that went away showed is forgotten.
+    fn start_parts(&mut self) {
+        let layout = self.screen_layout();
+        let present: Vec<String> = self
+            .plugins
+            .iter()
+            .flat_map(|p| p.m.parts.iter().map(|x| format!("{}.{}", p.m.id, x.id)))
+            .collect();
+        self.parts_started.retain(|id| present.contains(id));
+        self.part_content.retain(|id, _| present.contains(id));
+        let (cw, ch) = if self.tui {
+            (1, 1)
+        } else {
+            (
+                self.fonts.cell_w.max(1) as i32,
+                self.fonts.cell_h.max(1) as i32,
+            )
+        };
+        let due: Vec<(plugins::Plugin, String, Vec<String>)> = self
+            .plugins
+            .iter()
+            .flat_map(|p| {
+                p.m.parts
+                    .iter()
+                    .filter(|x| !x.run.is_empty() && plugins::runs_here(&x.platforms))
+                    .map(|x| (p.clone(), format!("{}.{}", p.m.id, x.id), x.run.clone()))
+            })
+            .filter(|(_, id, _)| !self.parts_started.contains(id))
+            .collect();
+        for (p, id, run) in due {
+            self.parts_started.push(id.clone());
+            let r = layout
+                .parts
+                .iter()
+                .find(|(x, _, _)| *x == id)
+                .map(|(_, r, _)| *r)
+                .unwrap_or_default();
+            let extra = vec![
+                ("LIGHTSOUT_PART", id),
+                ("LIGHTSOUT_PART_COLS", (r.w / cw).to_string()),
+                ("LIGHTSOUT_PART_ROWS", (r.h / ch).to_string()),
+            ];
+            self.start_plugin(&p, &run, extra);
+        }
     }
 
     /// Plugins changed on disk (installed, switched on or off, a description edited) are read
@@ -1771,7 +2006,7 @@ impl App {
     /// change applies at once, also in Lights Out with the screen off, and nothing has to
     /// keep checking (a few file dates, no timer).
     fn fresh_plugins(&mut self) {
-        if plugins::stamp() != self.plugins_stamp {
+        if !self.plain && plugins::stamp() != self.plugins_stamp {
             self.load_plugins();
         }
     }
@@ -1813,6 +2048,7 @@ impl App {
         let mut env = vec![
             ("LIGHTSOUT_SESSION", self.session.clone()),
             ("LIGHTSOUT_PLUGIN_CONTEXT", self.context().to_string()),
+            ("LIGHTSOUT_THEME", self.theme_json().to_string()),
         ];
         // `lightsout read self` and the like reach the pane you are in
         if let Some(id) = self.focused() {
@@ -2181,6 +2417,19 @@ impl App {
                 self.overlay = Overlay::Confirm(Confirm::BackToWindows)
             }
             Action::Quit => self.overlay = Overlay::Confirm(Confirm::Quit),
+            Action::Plain => {
+                self.plain = !self.plain;
+                self.load_plugins();
+                self.toast(
+                    if self.plain {
+                        "Plugins off (Ctrl+Shift+F12 switches them back on)"
+                    } else {
+                        "Plugins on"
+                    }
+                    .into(),
+                    ALERT,
+                );
+            }
             Action::Settings => {
                 let _ = config::load(); // creates the file with explanations the first time
                 if let Some(cmd) = platform::editor_command(&config::path()) {
@@ -2234,6 +2483,7 @@ impl App {
                             "LIGHTSOUT_PLUGIN_CONTEXT".into(),
                             self.context().to_string(),
                         ));
+                        env.push(("LIGHTSOUT_THEME".into(), self.theme_json().to_string()));
                         env.push(("LIGHTSOUT_COMMAND".into(), name));
                         env.push(("LIGHTSOUT_ARG".into(), arg));
                         self.open_in(&place, line, env);
@@ -2369,6 +2619,11 @@ impl App {
         let Some(name) = self.key_name(key) else {
             return false;
         };
+        // the way back, before any key you or a plugin may have set: plugins off, or on again
+        if name == commands::SAFE_KEY {
+            self.run(Action::Plain);
+            return true;
+        }
         self.fresh_plugins();
         let Some((_, cmd)) = self.keymap().into_iter().find(|(k, _)| *k == name) else {
             return false;
@@ -2749,7 +3004,25 @@ impl App {
         if !matches!(self.overlay, Overlay::None) {
             return;
         }
-        if x < self.sidebar_w() {
+        let layout = self.screen_layout();
+        // a plugin part: the piece clicked runs its command
+        if let Some((_, r, _)) = layout.parts.iter().find(|(_, r, _)| r.contains(x, y)) {
+            let piece = self.hits.iter().find(|(h, k)| {
+                r.contains(h.x, h.y) && h.contains(x, y) && matches!(k, Hit::Part(_))
+            });
+            if let Some((_, Hit::Part(k))) = piece {
+                let cmd = self.part_clicks.get(*k).cloned().unwrap_or_default();
+                match self.parse_command(&cmd) {
+                    Some(a) if self.usable(&a) => self.run(a),
+                    _ => self.toast(
+                        format!("unknown command `{cmd}` (lightsout commands)"),
+                        ALERT,
+                    ),
+                }
+            }
+            return;
+        }
+        if layout.sidebar.is_some_and(|r| r.contains(x, y)) {
             let hit = self
                 .hits
                 .iter()
@@ -2765,7 +3038,7 @@ impl App {
             }
             return;
         }
-        if y < self.bar_h() {
+        if layout.bar.is_some_and(|r| r.contains(x, y)) {
             let hit = self
                 .hits
                 .iter()
@@ -3231,6 +3504,51 @@ impl App {
                     .collect();
                 json!({ "commands": list })
             }
+            // where every part is (the sidebar, the tab bar, plugins' parts, the panes), in
+            // cells, and how many rows each plugin part shows
+            "parts" => {
+                let lay = self.screen_layout();
+                let (cw, ch) = if self.tui {
+                    (1, 1)
+                } else {
+                    (
+                        self.fonts.cell_w.max(1) as i32,
+                        self.fonts.cell_h.max(1) as i32,
+                    )
+                };
+                let cells = |r: Rect| json!({ "x": r.x / cw, "y": r.y / ch, "cols": r.w / cw, "rows": r.h / ch });
+                let mut v = Vec::new();
+                if let Some(r) = lay.sidebar {
+                    v.push(json!({ "id": "sidebar", "side": if lay.sidebar_right { "right" } else { "left" }, "at": cells(r) }));
+                }
+                if let Some(r) = lay.bar {
+                    v.push(json!({ "id": "tabs", "side": if lay.bar_bottom { "bottom" } else { "top" }, "at": cells(r) }));
+                }
+                for (id, r, side) in &lay.parts {
+                    let rows = self.part_content.get(id).map(|c| c.rows.len()).unwrap_or(0);
+                    v.push(json!({ "id": id, "side": side, "at": cells(*r), "showing": rows }));
+                }
+                json!({ "parts": v, "panes": cells(lay.content) })
+            }
+            // a plugin's part: what it shows now (`lightsout part set`), or nothing
+            "part-set" | "part-clear" => {
+                let id = a["id"].as_str().unwrap_or("").to_string();
+                let known = self.plugins.iter().any(|p| {
+                    p.m.parts
+                        .iter()
+                        .any(|x| format!("{}.{}", p.m.id, x.id) == id)
+                });
+                if !known {
+                    json!({ "error": format!("no part `{id}` (a plugin's [[parts]], named PLUGIN.PART)") })
+                } else {
+                    if req.cmd == "part-set" {
+                        self.part_content.insert(id, parts::parse(&a["content"]));
+                    } else {
+                        self.part_content.remove(&id);
+                    }
+                    json!({ "ok": true })
+                }
+            }
             // `lightsout plugin ...` changed something: read the plugins again
             "plugins-reload" => {
                 self.load_plugins();
@@ -3582,7 +3900,8 @@ impl App {
         let (tab_states, rooms) = self.summary();
         let popup = self.popup.map(|p| (p, self.popup_rect()));
         let sel = self.sel();
-        let sw = self.sidebar_w();
+        let layout = self.screen_layout();
+        let palette = self.palette();
         let title_h = self.title_h();
 
         let Some(surface) = self.surface.as_mut() else {
@@ -3601,6 +3920,8 @@ impl App {
             buf: &mut buffer,
             w,
             h,
+            ox: 0,
+            oy: 0,
         };
         cv.fill(t.bg);
         let f = &mut self.fonts;
@@ -3630,179 +3951,201 @@ impl App {
             return;
         }
 
-        // ---- top bar: tabs left; your items, battery and buttons right
-        cv.rect(sw, 0, w - sw as u32, bar as u32, BAR);
-        cv.rect(sw, bar - 1, w - sw as u32, 1, BORDER);
         self.hits.clear();
         self.scroll_areas.clear();
-        let ty = 5;
+        self.part_clicks.clear();
         let lo = platform::in_lightsout();
-        let mut right: Vec<(String, Option<Hit>)> = self
-            .bar_texts
-            .iter()
-            .filter(|s| !s.is_empty())
-            .map(|s| (s.clone(), None))
-            .collect();
-        if sw == 0 {
-            // no sidebar: its battery and buttons come up here
-            right.push((self.battery_text.clone(), None));
-            right.push((
-                if lo { "Lights On" } else { "Lights Out" }.into(),
-                Some(Hit::Switch),
-            ));
-            right.push(("actions".into(), Some(Hit::Palette)));
-        }
-        let right_w: i32 = right
-            .iter()
-            .filter(|(s, _)| !s.is_empty())
-            .map(|(s, _)| (s.chars().count() as i32 + 1) * cw)
-            .sum();
-        // tabs: as many as fit; the rest scroll (wheel, or ‹ ›)
-        let labels: Vec<(String, i32)> = tab_states
-            .iter()
-            .enumerate()
-            .map(|(i, (title, _))| {
-                let title: String = title.chars().take(24).collect();
-                let label = format!("  {} {}  ", i + 1, title);
-                let wpx = (label.chars().count() as i32 + 1) * cw;
-                (label, wpx)
-            })
-            .collect();
-        let x0 = sw + PADX;
-        let limit = w as i32 - PADX - right_w - 6 * cw;
-        if self.active != self.seen_tab {
-            self.seen_tab = self.active;
-            if self.active < self.tabs_first {
-                self.tabs_first = self.active;
+        // ---- the tab bar (top or bottom): tabs left; your items, battery and buttons right.
+        // Drawn as if at the top left, then moved where it is (with its click areas).
+        if let Some(br) = layout.bar {
+            let (hits0, scroll0) = (self.hits.len(), self.scroll_areas.len());
+            (cv.ox, cv.oy) = (br.x, br.y);
+            let (sw, w, bar) = (0, br.w as u32, br.h);
+            cv.rect(sw, 0, w - sw as u32, bar as u32, BAR);
+            let line_y = if layout.bar_bottom { 0 } else { bar - 1 };
+            cv.rect(sw, line_y, w - sw as u32, 1, BORDER);
+            let ty = 5;
+            let mut right: Vec<(String, Option<Hit>)> = self
+                .bar_texts
+                .iter()
+                .filter(|s| !s.is_empty())
+                .map(|s| (s.clone(), None))
+                .collect();
+            if layout.sidebar.is_none() {
+                // no sidebar: its battery and buttons come up here
+                right.push((self.battery_text.clone(), None));
+                right.push((
+                    if lo { "Lights On" } else { "Lights Out" }.into(),
+                    Some(Hit::Switch),
+                ));
+                right.push(("actions".into(), Some(Hit::Palette)));
             }
-            while self.tabs_first < self.active {
-                let used: i32 = labels[self.tabs_first..=self.active]
-                    .iter()
-                    .map(|l| l.1 + 2)
-                    .sum::<i32>()
-                    + 2 * cw;
-                if x0 + used <= limit {
-                    break;
+            let right_w: i32 = right
+                .iter()
+                .filter(|(s, _)| !s.is_empty())
+                .map(|(s, _)| (s.chars().count() as i32 + 1) * cw)
+                .sum();
+            // tabs: as many as fit; the rest scroll (wheel, or ‹ ›)
+            let labels: Vec<(String, i32)> = tab_states
+                .iter()
+                .enumerate()
+                .map(|(i, (title, _))| {
+                    let title: String = title.chars().take(24).collect();
+                    let label = format!("  {} {}  ", i + 1, title);
+                    let wpx = (label.chars().count() as i32 + 1) * cw;
+                    (label, wpx)
+                })
+                .collect();
+            let x0 = sw + PADX;
+            let limit = w as i32 - PADX - right_w - 6 * cw;
+            if self.active != self.seen_tab {
+                self.seen_tab = self.active;
+                if self.active < self.tabs_first {
+                    self.tabs_first = self.active;
                 }
-                self.tabs_first += 1;
+                while self.tabs_first < self.active {
+                    let used: i32 = labels[self.tabs_first..=self.active]
+                        .iter()
+                        .map(|l| l.1 + 2)
+                        .sum::<i32>()
+                        + 2 * cw;
+                    if x0 + used <= limit {
+                        break;
+                    }
+                    self.tabs_first += 1;
+                }
             }
-        }
-        self.tabs_first = self.tabs_first.min(labels.len().saturating_sub(1));
-        let mut x = x0;
-        if self.tabs_first > 0 {
-            cv.text(f, x, ty, "‹", false, t.fg);
-            self.hits.push((
-                Rect {
-                    x,
-                    y: 0,
-                    w: 2 * cw,
-                    h: bar,
-                },
-                Hit::TabsLeft,
-            ));
-            x += 2 * cw;
-        }
-        let mut more_right = false;
-        for (i, (label, wpx)) in labels.iter().enumerate().skip(self.tabs_first) {
-            if x + wpx > limit {
-                more_right = true;
-                break;
-            }
-            let (mark, mark_color) = state_mark(tab_states[i].1);
-            cv.ch(f, x + cw / 2, ty, mark, false, mark_color);
-            cv.text(
-                f,
-                x + cw,
-                ty,
-                label,
-                i == self.active,
-                if i == self.active { t.fg } else { DIMTEXT },
-            );
-            self.hits.push((
-                Rect {
-                    x,
-                    y: 0,
-                    w: *wpx,
-                    h: bar,
-                },
-                Hit::Tab(i),
-            ));
-            x += wpx + 2;
-        }
-        if more_right {
-            cv.text(f, x, ty, "›", false, t.fg);
-            self.hits.push((
-                Rect {
-                    x,
-                    y: 0,
-                    w: 2 * cw,
-                    h: bar,
-                },
-                Hit::TabsRight,
-            ));
-            x += 2 * cw;
-        }
-        cv.text(f, x, ty, " + ", false, DIMTEXT);
-        self.hits.push((
-            Rect {
-                x,
-                y: 0,
-                w: 3 * cw,
-                h: bar,
-            },
-            Hit::NewTab,
-        ));
-        x += 3 * cw;
-        self.scroll_areas.push((
-            Rect {
-                x: sw,
-                y: 0,
-                w: w as i32 - sw,
-                h: bar,
-            },
-            Scroll::Tabs,
-        ));
-        let mut rx = w as i32 - PADX;
-        for (s, hit) in right.into_iter().rev() {
-            if s.is_empty() {
-                continue;
-            }
-            let wpx = s.chars().count() as i32 * cw;
-            rx -= wpx;
-            if rx < x + 4 * cw {
-                break;
-            }
-            cv.text(
-                f,
-                rx,
-                ty,
-                &s,
-                false,
-                if hit.is_some() { t.fg } else { DIMTEXT },
-            );
-            if let Some(hh) = hit {
+            self.tabs_first = self.tabs_first.min(labels.len().saturating_sub(1));
+            let mut x = x0;
+            if self.tabs_first > 0 {
+                cv.text(f, x, ty, "‹", false, t.fg);
                 self.hits.push((
                     Rect {
-                        x: rx,
+                        x,
                         y: 0,
-                        w: wpx,
+                        w: 2 * cw,
                         h: bar,
                     },
-                    hh,
+                    Hit::TabsLeft,
                 ));
+                x += 2 * cw;
             }
-            rx -= cw;
+            let mut more_right = false;
+            for (i, (label, wpx)) in labels.iter().enumerate().skip(self.tabs_first) {
+                if x + wpx > limit {
+                    more_right = true;
+                    break;
+                }
+                let (mark, mark_color) = state_mark(tab_states[i].1);
+                cv.ch(f, x + cw / 2, ty, mark, false, mark_color);
+                cv.text(
+                    f,
+                    x + cw,
+                    ty,
+                    label,
+                    i == self.active,
+                    if i == self.active { t.fg } else { DIMTEXT },
+                );
+                self.hits.push((
+                    Rect {
+                        x,
+                        y: 0,
+                        w: *wpx,
+                        h: bar,
+                    },
+                    Hit::Tab(i),
+                ));
+                x += wpx + 2;
+            }
+            if more_right {
+                cv.text(f, x, ty, "›", false, t.fg);
+                self.hits.push((
+                    Rect {
+                        x,
+                        y: 0,
+                        w: 2 * cw,
+                        h: bar,
+                    },
+                    Hit::TabsRight,
+                ));
+                x += 2 * cw;
+            }
+            cv.text(f, x, ty, " + ", false, DIMTEXT);
+            self.hits.push((
+                Rect {
+                    x,
+                    y: 0,
+                    w: 3 * cw,
+                    h: bar,
+                },
+                Hit::NewTab,
+            ));
+            x += 3 * cw;
+            self.scroll_areas.push((
+                Rect {
+                    x: sw,
+                    y: 0,
+                    w: w as i32 - sw,
+                    h: bar,
+                },
+                Scroll::Tabs,
+            ));
+            let mut rx = w as i32 - PADX;
+            for (s, hit) in right.into_iter().rev() {
+                if s.is_empty() {
+                    continue;
+                }
+                let wpx = s.chars().count() as i32 * cw;
+                rx -= wpx;
+                if rx < x + 4 * cw {
+                    break;
+                }
+                cv.text(
+                    f,
+                    rx,
+                    ty,
+                    &s,
+                    false,
+                    if hit.is_some() { t.fg } else { DIMTEXT },
+                );
+                if let Some(hh) = hit {
+                    self.hits.push((
+                        Rect {
+                            x: rx,
+                            y: 0,
+                            w: wpx,
+                            h: bar,
+                        },
+                        hh,
+                    ));
+                }
+                rx -= cw;
+            }
+
+            (cv.ox, cv.oy) = (0, 0);
+            for hit in &mut self.hits[hits0..] {
+                (hit.0.x, hit.0.y) = (hit.0.x + br.x, hit.0.y + br.y);
+            }
+            for a in &mut self.scroll_areas[scroll0..] {
+                (a.0.x, a.0.y) = (a.0.x + br.x, a.0.y + br.y);
+            }
         }
 
-        // ---- sidebar: top half = rooms; bottom half = what runs in this room, one line each
-        if sw > 0 {
+        // ---- sidebar (left or right): top half = rooms; bottom half = what runs in this room,
+        // one line each. Drawn as if at the top left, then moved where it is.
+        if let Some(sr) = layout.sidebar {
+            let (hits0, scroll0) = (self.hits.len(), self.scroll_areas.len());
+            (cv.ox, cv.oy) = (sr.x, sr.y);
+            let (sw, h) = (sr.w, sr.h as u32);
             let side = Rect {
                 x: 0,
                 y: 0,
                 w: sw,
                 h: h as i32,
             };
-            cv.rect(side.x + side.w - 1, side.y, 1, side.h as u32, BORDER);
+            // its line on the side of the panes
+            let line_x = if layout.sidebar_right { 0 } else { side.w - 1 };
+            cv.rect(line_x, side.y, 1, side.h as u32, BORDER);
             let max_chars = (sw / cw - 3).max(4) as usize;
             let bottom = side.h - 3 * ch - 12;
             let mid = bottom / 2;
@@ -3964,6 +4307,61 @@ impl App {
                 },
                 Hit::Palette,
             ));
+            (cv.ox, cv.oy) = (0, 0);
+            for hit in &mut self.hits[hits0..] {
+                (hit.0.x, hit.0.y) = (hit.0.x + sr.x, hit.0.y + sr.y);
+            }
+            for a in &mut self.scroll_areas[scroll0..] {
+                (a.0.x, a.0.y) = (a.0.x + sr.x, a.0.y + sr.y);
+            }
+        }
+
+        // ---- plugins' parts: their rows of pieces; a piece with a command can be clicked
+        for (id, r, side) in &layout.parts {
+            let content = self.part_content.get(id);
+            let pal = palette;
+            let bg = parts::color(content.and_then(|c| c.bg.as_deref()), pal, BAR);
+            cv.rect(r.x, r.y, r.w as u32, r.h as u32, bg);
+            // a line on the side of the panes
+            match side.as_str() {
+                "left" => cv.rect(r.x + r.w - 1, r.y, 1, r.h as u32, BORDER),
+                "right" => cv.rect(r.x, r.y, 1, r.h as u32, BORDER),
+                "top" => cv.rect(r.x, r.y + r.h - 1, r.w as u32, 1, BORDER),
+                _ => cv.rect(r.x, r.y, r.w as u32, 1, BORDER),
+            }
+            let Some(content) = content else {
+                continue;
+            };
+            let max_x = r.x + r.w - PADX;
+            for (n, row) in content.rows.iter().enumerate() {
+                let y = r.y + 4 + n as i32 * ch;
+                if y + ch > r.y + r.h {
+                    break;
+                }
+                let mut x = r.x + PADX;
+                for sp in row {
+                    let room_left = ((max_x - x) / cw).max(0) as usize;
+                    let text: String = sp.text.chars().take(room_left).collect();
+                    if text.is_empty() {
+                        continue;
+                    }
+                    let color = parts::color(sp.color.as_deref(), pal, t.fg);
+                    let end = cv.text(f, x, y, &text, sp.bold, color);
+                    if let Some(cmd) = &sp.command {
+                        self.hits.push((
+                            Rect {
+                                x,
+                                y,
+                                w: end - x,
+                                h: ch,
+                            },
+                            Hit::Part(self.part_clicks.len()),
+                        ));
+                        self.part_clicks.push(cmd.clone());
+                    }
+                    x = end;
+                }
+            }
         }
 
         // ---- panes
@@ -4756,6 +5154,7 @@ Lights Out: the terminal for AI agents.
   lightsout room add USER@HOST [NAME]   a room that lives on that server
   lightsout room list | remove NAME
   lightsout --session NAME        a separate, named set of tabs
+  lightsout --plain               start with plugins off (also Ctrl+Shift+F12 at any time)
   lightsout plugin install OWNER/REPO | link FOLDER | list | update | remove ID | on ID | off ID
                                   plugins: new commands, keys and programs that run on events
   lightsout update                the newest version (your settings, logins and programs stay)
@@ -5086,6 +5485,10 @@ fn parse_args() -> (String, Vec<String>) {
             if let Some(s) = it.next() {
                 session = s;
             }
+        } else if a == "--plain" {
+            // plugins off (the way back when a plugin broke the screen); the app or the
+            // background copy started from here inherits it
+            std::env::set_var("LIGHTSOUT_PLAIN", "1");
         } else {
             rest.push(a);
         }
@@ -5105,7 +5508,85 @@ fn run_command(session: &str, rest: &[String]) {
             "update" => std::process::exit(update(session)),
             "room" | "rooms" => std::process::exit(room_cmd(session, &rest[1..])),
             "plugin" | "plugins" => std::process::exit(plugins::cli(session, &rest[1..])),
+            "part" => std::process::exit(part_cmd(session, &rest[1..])),
             _ => std::process::exit(client(session, rest)),
+        }
+    }
+}
+
+/// `lightsout part set ID [CONTENT]` / `lightsout part clear ID`: what a plugin's part
+/// shows. CONTENT is JSON (see parts.rs) or plain text, after the ID or on stdin. Inside a
+/// plugin's program, ID may be the part's own name (the plugin's is added).
+fn part_cmd(session: &str, args: &[String]) -> i32 {
+    use std::io::{IsTerminal, Read};
+    if args.first().map(String::as_str) == Some("list") {
+        return match api::call(session, "parts", json!({})) {
+            Ok(v) => {
+                println!(
+                    "{:<24} {:<7} {:>4} {:>4} {:>5} {:>5}  SHOWING",
+                    "PART", "SIDE", "X", "Y", "COLS", "ROWS"
+                );
+                let n = |v: &Value| v.as_i64().unwrap_or(0);
+                let line = |id: &str, side: &str, at: &Value, showing: String| {
+                    println!(
+                        "{id:<24} {side:<7} {:>4} {:>4} {:>5} {:>5}  {showing}",
+                        n(&at["x"]),
+                        n(&at["y"]),
+                        n(&at["cols"]),
+                        n(&at["rows"])
+                    )
+                };
+                for p in v["parts"].as_array().cloned().unwrap_or_default() {
+                    let showing = match p["showing"].as_i64() {
+                        Some(1) => "1 row".into(),
+                        Some(r) => format!("{r} rows"),
+                        None => "built in".into(),
+                    };
+                    line(
+                        p["id"].as_str().unwrap_or(""),
+                        p["side"].as_str().unwrap_or(""),
+                        &p["at"],
+                        showing,
+                    );
+                }
+                line("(panes)", "", &v["panes"], String::new());
+                0
+            }
+            Err(e) => {
+                eprintln!("lightsout: {e}");
+                1
+            }
+        };
+    }
+    let (Some(what), Some(id)) = (args.first(), args.get(1)) else {
+        eprintln!("lightsout part list | set PLUGIN.PART [JSON or text] | clear PLUGIN.PART");
+        return 2;
+    };
+    let id = match std::env::var("LIGHTSOUT_PLUGIN_ID") {
+        Ok(p) if !id.contains('.') => format!("{p}.{id}"),
+        _ => id.clone(),
+    };
+    let (cmd, args) = match what.as_str() {
+        "set" => {
+            let mut text = args[2..].join(" ");
+            if text.is_empty() && !std::io::stdin().is_terminal() {
+                let _ = std::io::stdin().read_to_string(&mut text);
+            }
+            let content = serde_json::from_str::<Value>(text.trim())
+                .unwrap_or_else(|_| Value::String(text.trim_end().to_string()));
+            ("part-set", json!({ "id": id, "content": content }))
+        }
+        "clear" => ("part-clear", json!({ "id": id })),
+        _ => {
+            eprintln!("lightsout part set PLUGIN.PART [JSON or text]   |   lightsout part clear PLUGIN.PART");
+            return 2;
+        }
+    };
+    match api::call(session, cmd, args) {
+        Ok(_) => 0,
+        Err(e) => {
+            eprintln!("lightsout: {e}");
+            1
         }
     }
 }

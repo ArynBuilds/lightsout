@@ -173,6 +173,10 @@ pub struct Canvas<'a> {
     pub buf: &'a mut [u32],
     pub w: u32,
     pub h: u32,
+    /// Where (0, 0) is: a part of the screen (the sidebar, the bar...) is drawn as if it
+    /// were at the top left, wherever it is.
+    pub ox: i32,
+    pub oy: i32,
 }
 
 #[inline]
@@ -194,6 +198,7 @@ impl Canvas<'_> {
     }
 
     pub fn rect(&mut self, x: i32, y: i32, w: u32, h: u32, color: u32) {
+        let (x, y) = (x + self.ox, y + self.oy);
         let x0 = x.max(0) as u32;
         let y0 = y.max(0) as u32;
         let x1 = ((x + w as i32).max(0) as u32).min(self.w);
@@ -211,8 +216,8 @@ impl Canvas<'_> {
         }
         let ascent = f.ascent as i32;
         let (m, bitmap) = f.glyph(c, bold);
-        let gx = x + m.xmin;
-        let gy = y + 1 + ascent - (m.height as i32 + m.ymin);
+        let gx = x + self.ox + m.xmin;
+        let gy = y + self.oy + 1 + ascent - (m.height as i32 + m.ymin);
         for row in 0..m.height {
             let py = gy + row as i32;
             if py < 0 || py >= self.h as i32 {

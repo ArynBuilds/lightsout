@@ -40,6 +40,10 @@ struct Grid {
     w: i32,
     h: i32,
     cells: Vec<Cell>,
+    /// Where (0, 0) is: a part of the screen (the sidebar, the bar...) is drawn as if it
+    /// were at the top left, wherever it is.
+    ox: i32,
+    oy: i32,
 }
 
 impl Grid {
@@ -55,10 +59,13 @@ impl Grid {
             w,
             h,
             cells: vec![blank; (w.max(0) * h.max(0)) as usize],
+            ox: 0,
+            oy: 0,
         }
     }
 
     fn at(&mut self, x: i32, y: i32) -> Option<&mut Cell> {
+        let (x, y) = (x + self.ox, y + self.oy);
         if x < 0 || y < 0 || x >= self.w || y >= self.h {
             return None;
         }
@@ -854,161 +861,181 @@ fn draw(app: &mut App, prefix: bool) -> (Grid, Option<(u16, u16, CursorShape)>) 
     }
 
     let (tab_states, rooms) = app.summary();
-    let sw = app.sidebar_w();
-    let content = app.content();
+    let layout = app.screen_layout();
+    let content = layout.content;
     let lo = platform::in_lightsout();
 
-    // ---- top bar: tabs left (they scroll), your items right
-    let mut right: Vec<(String, Option<Hit>)> = app
-        .bar_texts
-        .iter()
-        .filter(|s| !s.is_empty())
-        .map(|s| (s.clone(), None))
-        .collect();
-    if sw == 0 && !app.embedded {
-        right.push((app.battery_text.clone(), None));
-        right.push((
-            if lo { "Lights On" } else { "Lights Out" }.into(),
-            Some(Hit::Switch),
-        ));
-        right.push(("actions".into(), Some(Hit::Palette)));
-    }
-    if prefix {
-        right.push((
-            "Ctrl+B › press a key (P = actions)".into(),
-            Some(Hit::Palette),
-        ));
-    }
-    right.retain(|(s, _)| !s.is_empty());
-    let right_w: i32 = right.iter().map(|(s, _)| width(s) + 2).sum();
-    let labels: Vec<(String, i32)> = tab_states
-        .iter()
-        .enumerate()
-        .map(|(i, (title, _))| {
-            let label = format!(" {} {} ", i + 1, cut(title, 24));
-            let lw = width(&label) + 2;
-            (label, lw)
-        })
-        .collect();
-    let x0 = sw + 1;
-    let limit = w - right_w - 5;
-    if app.active != app.seen_tab {
-        app.seen_tab = app.active;
-        if app.active < app.tabs_first {
-            app.tabs_first = app.active;
+    app.part_clicks.clear();
+    // ---- the tab bar (top or bottom): tabs left (they scroll), your items right. Drawn as if
+    // at the top left, then moved where it is (with its click areas).
+    if let Some(br) = layout.bar {
+        let (hits0, scroll0) = (app.hits.len(), app.scroll_areas.len());
+        (g.ox, g.oy) = (br.x, br.y);
+        let (sw, w) = (0, br.w);
+        let mut right: Vec<(String, Option<Hit>)> = app
+            .bar_texts
+            .iter()
+            .filter(|s| !s.is_empty())
+            .map(|s| (s.clone(), None))
+            .collect();
+        if layout.sidebar.is_none() && !app.embedded {
+            right.push((app.battery_text.clone(), None));
+            right.push((
+                if lo { "Lights On" } else { "Lights Out" }.into(),
+                Some(Hit::Switch),
+            ));
+            right.push(("actions".into(), Some(Hit::Palette)));
         }
-        while app.tabs_first < app.active {
-            let used: i32 = labels[app.tabs_first..=app.active]
-                .iter()
-                .map(|l| l.1)
-                .sum::<i32>()
-                + 2;
-            if x0 + used <= limit {
-                break;
-            }
-            app.tabs_first += 1;
-        }
-    }
-    app.tabs_first = app.tabs_first.min(labels.len().saturating_sub(1));
-    let mut x = x0;
-    if app.tabs_first > 0 {
-        g.put(x, 0, '‹', t.fg, false);
-        app.hits.push((
-            Rect {
-                x,
-                y: 0,
-                w: 2,
-                h: 1,
-            },
-            Hit::TabsLeft,
-        ));
-        x += 2;
-    }
-    let mut more = false;
-    for (i, (label, lw)) in labels.iter().enumerate().skip(app.tabs_first) {
-        if x + lw > limit {
-            more = true;
-            break;
-        }
-        let (mark, mark_color) = state_mark(tab_states[i].1);
-        g.put(x, 0, mark, mark_color, false);
-        let on = i == app.active;
-        g.text(x + 1, 0, label, if on { t.fg } else { DIMTEXT }, on, w);
-        app.hits.push((
-            Rect {
-                x,
-                y: 0,
-                w: *lw,
-                h: 1,
-            },
-            Hit::Tab(i),
-        ));
-        x += lw;
-    }
-    if more {
-        g.put(x, 0, '›', t.fg, false);
-        app.hits.push((
-            Rect {
-                x,
-                y: 0,
-                w: 2,
-                h: 1,
-            },
-            Hit::TabsRight,
-        ));
-        x += 2;
-    }
-    g.text(x, 0, " + ", DIMTEXT, false, w);
-    app.hits.push((
-        Rect {
-            x,
-            y: 0,
-            w: 3,
-            h: 1,
-        },
-        Hit::NewTab,
-    ));
-    app.scroll_areas.push((
-        Rect {
-            x: sw,
-            y: 0,
-            w: w - sw,
-            h: 1,
-        },
-        Scroll::Tabs,
-    ));
-    let mut rx = w - 1;
-    for (s, hit) in right.into_iter().rev() {
-        let sw_ = width(&s);
-        rx -= sw_;
-        if rx < x + 4 {
-            break;
-        }
-        g.text(
-            rx,
-            0,
-            &s,
-            if hit.is_some() { t.fg } else { DIMTEXT },
-            false,
-            w,
-        );
-        if let Some(hh) = hit {
-            app.hits.push((
-                Rect {
-                    x: rx,
-                    y: 0,
-                    w: sw_,
-                    h: 1,
-                },
-                hh,
+        if prefix {
+            right.push((
+                "Ctrl+B › press a key (P = actions)".into(),
+                Some(Hit::Palette),
             ));
         }
-        rx -= 2;
+        right.retain(|(s, _)| !s.is_empty());
+        let right_w: i32 = right.iter().map(|(s, _)| width(s) + 2).sum();
+        let labels: Vec<(String, i32)> = tab_states
+            .iter()
+            .enumerate()
+            .map(|(i, (title, _))| {
+                let label = format!(" {} {} ", i + 1, cut(title, 24));
+                let lw = width(&label) + 2;
+                (label, lw)
+            })
+            .collect();
+        let x0 = sw + 1;
+        let limit = w - right_w - 5;
+        if app.active != app.seen_tab {
+            app.seen_tab = app.active;
+            if app.active < app.tabs_first {
+                app.tabs_first = app.active;
+            }
+            while app.tabs_first < app.active {
+                let used: i32 = labels[app.tabs_first..=app.active]
+                    .iter()
+                    .map(|l| l.1)
+                    .sum::<i32>()
+                    + 2;
+                if x0 + used <= limit {
+                    break;
+                }
+                app.tabs_first += 1;
+            }
+        }
+        app.tabs_first = app.tabs_first.min(labels.len().saturating_sub(1));
+        let mut x = x0;
+        if app.tabs_first > 0 {
+            g.put(x, 0, '‹', t.fg, false);
+            app.hits.push((
+                Rect {
+                    x,
+                    y: 0,
+                    w: 2,
+                    h: 1,
+                },
+                Hit::TabsLeft,
+            ));
+            x += 2;
+        }
+        let mut more = false;
+        for (i, (label, lw)) in labels.iter().enumerate().skip(app.tabs_first) {
+            if x + lw > limit {
+                more = true;
+                break;
+            }
+            let (mark, mark_color) = state_mark(tab_states[i].1);
+            g.put(x, 0, mark, mark_color, false);
+            let on = i == app.active;
+            g.text(x + 1, 0, label, if on { t.fg } else { DIMTEXT }, on, w);
+            app.hits.push((
+                Rect {
+                    x,
+                    y: 0,
+                    w: *lw,
+                    h: 1,
+                },
+                Hit::Tab(i),
+            ));
+            x += lw;
+        }
+        if more {
+            g.put(x, 0, '›', t.fg, false);
+            app.hits.push((
+                Rect {
+                    x,
+                    y: 0,
+                    w: 2,
+                    h: 1,
+                },
+                Hit::TabsRight,
+            ));
+            x += 2;
+        }
+        g.text(x, 0, " + ", DIMTEXT, false, w);
+        app.hits.push((
+            Rect {
+                x,
+                y: 0,
+                w: 3,
+                h: 1,
+            },
+            Hit::NewTab,
+        ));
+        app.scroll_areas.push((
+            Rect {
+                x: sw,
+                y: 0,
+                w: w - sw,
+                h: 1,
+            },
+            Scroll::Tabs,
+        ));
+        let mut rx = w - 1;
+        for (s, hit) in right.into_iter().rev() {
+            let sw_ = width(&s);
+            rx -= sw_;
+            if rx < x + 4 {
+                break;
+            }
+            g.text(
+                rx,
+                0,
+                &s,
+                if hit.is_some() { t.fg } else { DIMTEXT },
+                false,
+                w,
+            );
+            if let Some(hh) = hit {
+                app.hits.push((
+                    Rect {
+                        x: rx,
+                        y: 0,
+                        w: sw_,
+                        h: 1,
+                    },
+                    hh,
+                ));
+            }
+            rx -= 2;
+        }
+
+        (g.ox, g.oy) = (0, 0);
+        for hit in &mut app.hits[hits0..] {
+            (hit.0.x, hit.0.y) = (hit.0.x + br.x, hit.0.y + br.y);
+        }
+        for a in &mut app.scroll_areas[scroll0..] {
+            (a.0.x, a.0.y) = (a.0.x + br.x, a.0.y + br.y);
+        }
     }
 
-    // ---- sidebar: rooms on top, what runs in this room below, switch and actions at the bottom
-    if sw > 0 {
-        g.vline(sw - 1, 0, h, LINE);
+    // ---- sidebar (left or right): rooms on top, what runs in this room below, switch and
+    // actions at the bottom. Drawn as if at the top left, then moved where it is.
+    if let Some(sr) = layout.sidebar {
+        let (hits0, scroll0) = (app.hits.len(), app.scroll_areas.len());
+        (g.ox, g.oy) = (sr.x, sr.y);
+        let (sw, h) = (sr.w, sr.h);
+        // its line on the side of the panes
+        g.vline(if layout.sidebar_right { 0 } else { sw - 1 }, 0, h, LINE);
         let inner = sw - 2; // text from column 1 to sw-2
         let bottom = h - 3; // battery and buttons take the last two rows
         let mid = bottom / 2;
@@ -1166,6 +1193,72 @@ fn draw(app: &mut App, prefix: bool) -> (Grid, Option<(u16, u16, CursorShape)>) 
             },
             Hit::Palette,
         ));
+        (g.ox, g.oy) = (0, 0);
+        for hit in &mut app.hits[hits0..] {
+            (hit.0.x, hit.0.y) = (hit.0.x + sr.x, hit.0.y + sr.y);
+        }
+        for a in &mut app.scroll_areas[scroll0..] {
+            (a.0.x, a.0.y) = (a.0.x + sr.x, a.0.y + sr.y);
+        }
+    }
+
+    // ---- plugins' parts: their rows of pieces; a piece with a command can be clicked
+    let palette = app.palette();
+    for (id, r, side) in &layout.parts {
+        let content = app.part_content.get(id).cloned();
+        let bg = parts::color(
+            content.as_ref().and_then(|c| c.bg.as_deref()),
+            palette,
+            t.bg,
+        );
+        g.fill(*r, bg);
+        // a line on the side of the panes; the rows inside it
+        let inner = match side.as_str() {
+            "left" => {
+                g.vline(r.x + r.w - 1, r.y, r.h, LINE);
+                Rect { w: r.w - 1, ..*r }
+            }
+            "right" => {
+                g.vline(r.x, r.y, r.h, LINE);
+                Rect {
+                    x: r.x + 1,
+                    w: r.w - 1,
+                    ..*r
+                }
+            }
+            _ => *r,
+        };
+        let Some(content) = content else {
+            continue;
+        };
+        for (n, row) in content
+            .rows
+            .iter()
+            .enumerate()
+            .take(inner.h.max(0) as usize)
+        {
+            let y = inner.y + n as i32;
+            let mut x = inner.x + 1;
+            for sp in row {
+                let color = parts::color(sp.color.as_deref(), palette, t.fg);
+                let end = g.text(x, y, &sp.text, color, sp.bold, inner.x + inner.w - 1);
+                if let Some(cmd) = &sp.command {
+                    if end > x {
+                        app.hits.push((
+                            Rect {
+                                x,
+                                y,
+                                w: end - x,
+                                h: 1,
+                            },
+                            Hit::Part(app.part_clicks.len()),
+                        ));
+                        app.part_clicks.push(cmd.clone());
+                    }
+                }
+                x = end;
+            }
+        }
     }
 
     // ---- panes

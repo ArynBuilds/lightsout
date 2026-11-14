@@ -66,7 +66,36 @@ pub struct Manifest {
     pub events: Vec<PluginEvent>,
     #[serde(default)]
     pub links: Vec<PluginLink>,
+    #[serde(default)]
+    pub parts: Vec<PluginPart>,
 }
+
+/// A part of the screen a plugin draws: a strip on one side (any number, on any side),
+/// filled with what its program sends (`lightsout part set`).
+#[derive(Deserialize, Clone, Debug)]
+pub struct PluginPart {
+    pub id: String,
+    /// left, right, top, bottom
+    pub side: String,
+    /// Columns (left, right) or rows (top, bottom).
+    #[serde(default = "part_size")]
+    pub size: u16,
+    /// "sidebar" or "tabs": the built-in one goes, this one takes its place.
+    #[serde(default)]
+    pub replaces: String,
+    /// Started when the part appears (Lights Out starts, the plugin is added): it fills the
+    /// part, and keeps it current from events.
+    #[serde(default)]
+    pub run: Vec<String>,
+    #[serde(default)]
+    pub platforms: Vec<String>,
+}
+
+fn part_size() -> u16 {
+    1
+}
+
+pub const SIDES: &[&str] = &["left", "right", "top", "bottom"];
 
 /// Where a command's program runs: unseen in the background, or on screen in a pane.
 pub const PLACES: &[&str] = &["background", "popup", "tab", "split", "split-down"];
@@ -268,6 +297,31 @@ pub fn read_manifest(root: &Path) -> Result<Manifest, String> {
     for l in &m.links {
         if l.pattern.is_empty() || l.command.trim().is_empty() {
             return Err("a link needs a pattern and a command".into());
+        }
+    }
+    for p in &m.parts {
+        if !good_name(&p.id) {
+            return Err(format!(
+                "part `{}`: use lowercase letters, digits, - and _",
+                p.id
+            ));
+        }
+        if !SIDES.contains(&p.side.as_str()) {
+            return Err(format!(
+                "part `{}`: side `{}` doesn't exist ({})",
+                p.id,
+                p.side,
+                SIDES.join(", ")
+            ));
+        }
+        if !["", "sidebar", "tabs"].contains(&p.replaces.as_str()) {
+            return Err(format!(
+                "part `{}`: it can replace sidebar or tabs, not `{}`",
+                p.id, p.replaces
+            ));
+        }
+        if p.size == 0 || p.size > 200 {
+            return Err(format!("part `{}`: size goes from 1 to 200", p.id));
         }
     }
     for e in &m.events {
@@ -572,7 +626,20 @@ fn describe(m: &Manifest, root: &Path) -> String {
     for l in &m.links {
         s += &format!("    link {:<25} {}\n", l.pattern, l.command);
     }
-    if m.commands.is_empty() && m.events.is_empty() {
+    for p in &m.parts {
+        let what = format!(
+            "{} {}{}",
+            p.side,
+            p.size,
+            if p.replaces.is_empty() {
+                String::new()
+            } else {
+                format!(", instead of the {}", p.replaces)
+            }
+        );
+        s += &format!("    part {:<25} {} ({what})\n", p.id, p.run.join(" "));
+    }
+    if m.commands.is_empty() && m.events.is_empty() && m.parts.is_empty() {
         s += "    nothing\n";
     }
     s
@@ -584,6 +651,8 @@ fn programs(m: &Manifest) -> Vec<String> {
         .iter()
         .map(|c| c.run.join(" "))
         .chain(m.events.iter().map(|e| e.run.join(" ")))
+        .chain(m.parts.iter().map(|p| p.run.join(" ")))
+        .filter(|r| !r.is_empty())
         .collect()
 }
 
