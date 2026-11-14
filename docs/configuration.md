@@ -2,7 +2,7 @@
 
 Lights Out works without any settings. When you want to change something, open **actions → Settings** (Ctrl+,). It opens your settings file, with every option explained. Saved changes apply right away, with no restart.
 
-The file is `~/.config/lightsout/config.toml` (on Windows: `%USERPROFILE%\.config\lightsout\config.toml`).
+The file is `~/.config/lightsout/config.toml` (on Windows: `%USERPROFILE%\.config\lightsout\config.toml`). Windows and Lights Out mode share it.
 
 ## The settings file
 
@@ -10,12 +10,13 @@ The file is `~/.config/lightsout/config.toml` (on Windows: `%USERPROFILE%\.confi
 [theme]
 background = "#000000"   # full black: OLED pixels are switched off
 foreground = "#d6d6d6"
+accent = "#f5c542"
 font_size = 0            # 0 = automatic
 
 [notify]
 popup = true             # a popup in the window when an agent finishes or needs you
 sound = false            # a short sound with it (Windows, Mac)
-sound_done = ""          # your own sound files
+sound_done = ""          # your own .wav files
 sound_needs_you = ""
 
 [status]
@@ -23,7 +24,7 @@ sound_needs_you = ""
 needs_you = []
 
 [history]
-keep = true              # bring tabs, splits and screen history back after a restart
+keep = true              # bring rooms, tabs and conversations back after Quit or a restart
 
 [bar]
 # extra items in the top bar, e.g.
@@ -33,12 +34,27 @@ items = []
 
 ## Your own keys
 
-Run any command with a key: in a popup, a new tab, or a split.
+A key can run any action (every name is in `lightsout commands`), a command line in a popup, a new tab or a split, or nothing:
 
 ```toml
 [keys]
-"ctrl+alt+g" = { command = "lazygit", mode = "popup" }
-"ctrl+alt+t" = { command = "npm test", mode = "split" }
+"ctrl+alt+r" = "room.rename"                              # any action
+"ctrl+shift+t" = "room.new"                               # take over a Lights Out key
+"alt+g" = "run.popup lazygit"                             # a command line, as an action
+"ctrl+alt+g" = { command = "lazygit", mode = "popup" }    # the same, written out
+"ctrl+alt+t" = { command = "npm test", mode = "split" }   # mode: popup, tab or split
+"ctrl+shift+w" = ""                                       # free the key: your programs get it
+```
+
+Keys are written as you like (`Ctrl+Alt+R`, `alt+ctrl+r`, `ctrl+shift+right`, `f5`...). Your keys come before any [plugin's](plugins.md#keys) and Lights Out's. Command lines from your keys also show in the actions menu as **Run: ...**.
+
+## When an agent asks in its own words
+
+Lights Out recognises common questions by itself. If a tool waits for you in a way it misses, add the phrase:
+
+```toml
+[status]
+needs_you = ["Approve this plan?", "Type the code"]
 ```
 
 ## Rooms on a server
@@ -55,28 +71,20 @@ lightsout room remove desktop                   # leaves it here; it keeps runni
 
 The server needs Lights Out too (`curl -fsSL https://lightsout.sh | sh`). Logins use your normal SSH setup (keys, `~/.ssh/config`); Lights Out keeps no passwords. To see everything on a server at once: `lightsout open me@server`.
 
-## When an agent asks in its own words
-
-Lights Out recognises common questions by itself. If a tool waits for you in a way it misses, add the phrase:
-
-```toml
-[status]
-needs_you = ["Approve this plan?", "Type the code"]
-```
-
 ## Data files
 
-Two plain files describe how tabs are handed over. Your own copies in `~/.config/lightsout/` win over the built-in ones.
+Two plain files describe how tabs are handed over. Your own copies in `~/.config/lightsout/` add to the built-in ones (yours win).
 
 | File | What it holds |
 |---|---|
-| `resume.conf` | How a program continues when its tab is reopened: `program = command`. See [Agents](agents.md#how-conversations-continue). |
+| `resume.conf` | How each agent continues its own conversation. See [Restoring your tabs](session-state.md#adding-an-agent). |
 | `per-system.conf` | Folders in your home that hold programs for one system only (for example `.cargo`, `.nvm`), so Windows and Lights Out each keep their own copy. |
 
 ## Where things are kept
 
 | What | Where |
 |---|---|
-| Settings | `~/.config/lightsout/` |
-| Saved tabs | Windows: `%LOCALAPPDATA%\lightsout`; Linux and Mac: `~/.local/state/lightsout` |
+| Settings, your keys, `resume.conf` | `~/.config/lightsout/` |
+| Plugins | `~/.config/lightsout/plugins/`, `plugins.json`, `plugin-settings/` ([Plugins](plugins.md#where-things-are)) |
+| Saved tabs, plugins' own files | Windows: `%LOCALAPPDATA%\lightsout`; Linux and Mac: `~/.local/state/lightsout` |
 | The Lights Out system (Windows) | `C:\LightsOut` |

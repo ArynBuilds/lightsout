@@ -30,8 +30,9 @@ There is no fixed watt limit. When work is waiting for a core (Lights Out reads 
 |---|---|---|
 | Windows, light use | 10–12 W | about 6 hours |
 | Lights Out, agents working, screen off | 3–5 W (target) | about 14–24 hours |
+| Lights Out, idle, lid closed (measured) | 2.5 W | about 27 hours |
 
-Your numbers depend on the laptop and on what the agents do. Claude Code mostly waits on the network, which costs almost nothing; builds and test runs cost the most.
+The measured line is an ASUS ROG Zephyrus G16 (2024). Your numbers depend on the laptop and on what the agents do. Claude Code mostly waits on the network, which costs almost nothing; builds and test runs cost the most.
 
 On a Mac the gain is smaller, because macOS already idles efficiently: roughly 2–4 times longer with the screen off.
 

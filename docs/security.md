@@ -31,6 +31,8 @@ A start that came from the Lights Out button in Windows carries a one-time pass 
 - **Logins:** your agents use the logins they already have in your home folder. Lights Out doesn't copy, upload or read them.
 - **Clipboard:** programs in a tab can copy to your clipboard but can't read it, so a file you open or a server you log into can't take a copied password.
 - **Network:** the control commands listen only on `127.0.0.1`, behind a random token that only your user can read. Nothing listens on your network.
+- **Plugins:** a [plugin](plugins.md) runs as you, like any program you install, with every Lights Out command. Before one is installed, Lights Out shows every program it can start and asks; an update that adds a program asks again. Plugins aren't reviewed or sandboxed: install the ones you trust.
+- **Links:** Ctrl+click opens only `http` and `https` links, in your browser, with no shell in between.
 
 ## The installers
 

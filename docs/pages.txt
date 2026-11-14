@@ -1,0 +1,17 @@
+# The docs, in reading order: FILE | TITLE | WHAT IT COVERS | in the short bundle (yes/no)
+# lightsout.sh builds /docs, /llms.txt, /llms-full.txt and /llms-small.txt from this list.
+README.md | Overview | What Lights Out is and where everything is | yes
+getting-started.md | Getting started | Install it, open it, start an agent, switch to Lights Out and back | yes
+the-terminal.md | The terminal | Rooms, tabs, splits, floating panes, the sidebar, the mouse, links and every key; running inside any terminal | yes
+lights-out-mode.md | Lights Out mode | What happens when you press Lights Out and Lights On, on Windows, Linux and Mac | yes
+agents.md | Agents | Any agent, its states, how one agent runs others, and the skill for agents | yes
+session-state.md | Restoring your tabs | What comes back after Quit, a restart, Lights Out and Lights On, and how each agent continues its own conversation | yes
+commands.md | Commands | Every lightsout command, and every action with its key (lightsout do) | yes
+plugins.md | Plugins | Add commands, keys, programs on events, panes and link handlers in any language | yes
+configuration.md | Configuration | config.toml, your own keys, colours, rooms on servers, where things are kept | yes
+power-and-battery.md | Power and battery | What switches off, how the CPU is used, what to expect and how to measure | no
+add-lightsout-support.md | Add Lights Out support to your agent | How an agent tells Lights Out its conversation, so its tabs continue it | no
+security.md | Security | How an encrypted drive is opened without a recovery key, and what Lights Out and plugins can reach | no
+troubleshooting.md | Troubleshooting | Common problems and their fixes | no
+update.md | Update | lightsout update, test versions, and what keeps your things | no
+uninstall.md | Uninstall | Removing Lights Out completely | no

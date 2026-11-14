@@ -9,7 +9,7 @@ Press **Lights Out** and your computer keeps doing exactly one thing: running yo
 1. Lights Out saves your tabs, rooms, folders and what each tab runs.
 2. Windows shuts down completely, as in a normal restart. Apps with unsaved work can still stop the shutdown and ask you first.
 3. A small Linux starts in its place, from the starter Lights Out keeps next to Windows' own boot files. It unlocks your C: drive with its own key (no recovery key to type, see [Security](security.md)), joins your Wi-Fi with the networks Windows knew, and opens the same terminal with your tabs.
-4. Agents continue their conversations: each `claude` tab its own chat, `codex` with `codex resume --last`, and so on. Other commands are typed back in for you, without being run.
+4. Each agent continues its own conversation (see [Restoring your tabs](session-state.md)). Other commands are typed back in for you, without being run.
 
 Your home folder in Lights Out is your Windows user folder, so your agents' logins, settings and projects are the same ones. Whatever you install in Lights Out stays installed for the next time.
 

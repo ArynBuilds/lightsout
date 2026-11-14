@@ -36,8 +36,17 @@ Local servers were running (anything listening on a port, such as a database or 
 
 ## Agents
 
-**An agent started a new conversation instead of continuing**
-Only agents listed in `resume.conf` are continued automatically. Add your agent: see [Agents](agents.md#how-conversations-continue).
+**An agent's command was typed back in instead of continuing its conversation**
+Lights Out continues an agent only when it knows that tab's own conversation; it never guesses. Agents that aren't in `resume.conf` are typed back in: add yours, see [Restoring your tabs](session-state.md#adding-an-agent). For Codex, approve Lights Out's hook once (`/hooks` in Codex). Right after updating from an older version, the first reopen may still miss a conversation, because the older version saved the tabs.
+
+**A plugin wasn't installed: "... is already used by ..."**
+Its key belongs to your settings, another plugin or Lights Out. The message says how to fix it: see [Plugins](plugins.md#keys).
+
+**A plugin does nothing**
+Its log is in `plugin-data/ID/log.txt` (see [Plugins](plugins.md#where-things-are)). `lightsout plugin list` shows whether it is on, and `broken` when its `lightsout-plugin.toml` has a mistake.
+
+**Ctrl+click on a link says "No browser here"**
+In Lights Out mode on a Windows PC there is no desktop, so no browser. A [plugin](plugins.md#links) can handle links there.
 
 **A program shows as working but waits for me**
 Add the phrase it asks with to `needs_you`: see [Configuration](configuration.md#when-an-agent-asks-in-its-own-words).
