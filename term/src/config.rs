@@ -32,8 +32,9 @@ keep = true              # bring tabs, splits and screen history back after a re
 # items = [ { text = "my laptop" }, { command = "git branch --show-current", every = 30 } ]
 items = []
 
-# Your own keys. A key runs any Lights Out command (all of them: `lightsout commands`),
-# a command line in a popup, a new tab or a split, or "" to free a key for your programs.
+# Your own keys (they come before any plugin's). A key runs any Lights Out command (all of
+# them: `lightsout commands`), a command line in a popup, a new tab or a split; or "" takes
+# it away from Lights Out, for your programs (or a plugin).
 # [keys]
 # "ctrl+alt+r" = "room.rename"
 # "ctrl+shift+w" = ""

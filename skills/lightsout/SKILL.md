@@ -89,7 +89,9 @@ pattern = "https://github.com/*/pull/*"     # runs the command with the link
 command = "my-plugin.hello"                 # (no match: the link opens in the browser)
 ```
 
-Changes to plugins apply without restarting Lights Out.
+Changes to plugins apply without restarting Lights Out. A plugin whose key is already used
+(by the user's settings, another plugin or Lights Out) isn't added: the message says who has
+it; pick another key. A key the user takes later wins; the plugin's then does nothing.
 
 ```
 lightsout plugin link FOLDER                use a plugin you are making

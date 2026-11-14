@@ -192,6 +192,13 @@ jobs:
           $B/lightsout do test-plugin.show here
           sleep 2
           $B/lightsout read "$($B/lightsout list | awk 'NR > 1 {print $1}' | sort -n | tail -1)" | grep -q "plugin-pane in .* with here"
+          # a plugin that wants a key in use isn't added, and says who has it
+          mkdir -p /tmp/clash
+          printf 'id = "clash"\nname = "Clash"\nversion = "1"\n[[commands]]\nid = "x"\ntitle = "x"\nrun = ["true"]\n[[keys]]\nkey = "Ctrl+Alt+H"\ncommand = "clash.x"\n' > /tmp/clash/lightsout-plugin.toml
+          ! $B/lightsout plugin link /tmp/clash 2> clash.txt
+          cat clash.txt
+          grep -q "ctrl+alt+h is already used by test-plugin (test-plugin.hello)" clash.txt
+          ! $B/lightsout plugin list | grep -q clash
           $B/lightsout plugin off test-plugin
           ! $B/lightsout commands | grep -q test-plugin
           $B/lightsout plugin remove test-plugin

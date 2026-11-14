@@ -515,6 +515,38 @@ fn list() -> i32 {
     0
 }
 
+/// A plugin's keys that are already used (by your settings, another plugin that is on, or
+/// Lights Out): it isn't added then, and each is said with who has it and how to fix it.
+/// True when there was one.
+fn refuse_key_clashes(m: &Manifest) -> bool {
+    let own: Vec<(String, String)> = crate::config::load()
+        .config
+        .keys
+        .iter()
+        .map(|(k, b)| (k.clone(), b.command()))
+        .collect();
+    let others: Vec<(String, String, String)> = load()
+        .0
+        .iter()
+        .filter(|p| p.m.id != m.id)
+        .flat_map(|p| {
+            p.m.keys
+                .iter()
+                .map(|k| (p.m.id.clone(), k.key.clone(), k.command.clone()))
+        })
+        .collect();
+    let keys: Vec<(String, String)> = m
+        .keys
+        .iter()
+        .map(|k| (k.key.clone(), k.command.clone()))
+        .collect();
+    let clashes = crate::commands::clashes(&own, &others, &m.id, &keys);
+    for c in &clashes {
+        eprintln!("lightsout: {c}");
+    }
+    !clashes.is_empty()
+}
+
 /// Everything a plugin can start, for the person installing it to read.
 fn describe(m: &Manifest, root: &Path) -> String {
     let mut s = format!("{} {} ({})\n", m.name, m.version, m.id);
@@ -669,6 +701,11 @@ fn install(source: &str, r#ref: Option<String>, yes: bool) -> i32 {
         );
         return 1;
     }
+    if refuse_key_clashes(&m) {
+        let _ = std::fs::remove_dir_all(&tmp);
+        eprintln!("lightsout: {} not installed.", m.name);
+        return 1;
+    }
     print!("{}", describe(&m, &installed_dir(&m.id)));
     if !runs_here(&m.platforms) {
         println!(
@@ -716,6 +753,10 @@ fn link(dir: &str) -> i32 {
             "lightsout: {} is installed; `lightsout plugin remove {}` first",
             m.id, m.id
         );
+        return 1;
+    }
+    if refuse_key_clashes(&m) {
+        eprintln!("lightsout: {} not linked.", m.name);
         return 1;
     }
     reg.retain(|e| e.id != m.id);
@@ -780,6 +821,12 @@ fn update(only: Option<&str>, yes: bool) -> i32 {
                 continue;
             }
         };
+        if refuse_key_clashes(&new) {
+            let _ = std::fs::remove_dir_all(&tmp);
+            eprintln!("lightsout: {} not updated (your version stays).", e.id);
+            code = 1;
+            continue;
+        }
         // a program it didn't start before: asked again
         let before = read_manifest(&installed_dir(&e.id))
             .map(|m| programs(&m))

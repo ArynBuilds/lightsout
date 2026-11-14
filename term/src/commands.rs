@@ -465,24 +465,140 @@ fn word_case(w: &str) -> String {
     }
 }
 
-/// The keys in use: your own (from the settings) first, then your plugins', then the
-/// defaults nobody took over. Yours may name a command (`"ctrl+alt+r" = "room.rename"`) or
-/// be empty to free a key.
-pub fn keymap(own: &[(String, String)], plugins: &[(String, String)]) -> Vec<(String, String)> {
-    let mut v: Vec<(String, String)> = Vec::new();
-    for (k, cmd) in own.iter().chain(plugins) {
-        let k = key_name(k);
-        if !v.iter().any(|(x, _)| *x == k) {
-            v.push((k, cmd.trim().to_string()));
+/// Who a key belongs to.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Owner {
+    You,
+    Plugin(String),
+    LightsOut,
+}
+
+impl Owner {
+    pub fn name(&self) -> String {
+        match self {
+            Owner::You => "your settings".into(),
+            Owner::Plugin(id) => id.clone(),
+            Owner::LightsOut => "Lights Out".into(),
+        }
+    }
+}
+
+/// A key in use: the command it runs and whose it is.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Bound {
+    pub key: String,
+    pub command: String,
+    pub owner: Owner,
+}
+
+/// A plugin's key that someone had first, so it does nothing.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Skipped {
+    pub plugin: String,
+    pub key: String,
+    pub command: String,
+    pub taken: Bound,
+}
+
+/// The keys in use. Yours (from the settings) first; then each plugin's, in the order they
+/// were added (a key someone has already is skipped); then Lights Out's own, where nobody
+/// took the key. Yours may name a command (`"ctrl+alt+r" = "room.rename"`), or be empty to
+/// take a key away from Lights Out (a plugin may then have it). `plugins`: (plugin, key,
+/// command).
+pub fn bindings(
+    own: &[(String, String)],
+    plugins: &[(String, String, String)],
+) -> (Vec<Bound>, Vec<Skipped>) {
+    let mut v: Vec<Bound> = Vec::new();
+    let mut freed: Vec<String> = Vec::new();
+    for (k, cmd) in own {
+        let (key, command) = (key_name(k), cmd.trim().to_string());
+        if command.is_empty() {
+            freed.push(key);
+        } else if !v.iter().any(|b| b.key == key) {
+            v.push(Bound {
+                key,
+                command,
+                owner: Owner::You,
+            });
+        }
+    }
+    let mut skipped = Vec::new();
+    for (plugin, k, cmd) in plugins {
+        let key = key_name(k);
+        match v.iter().find(|b| b.key == key) {
+            // the same command already on it (you gave it the same key): nothing lost
+            Some(b) if b.command == cmd.trim() => {}
+            Some(b) => skipped.push(Skipped {
+                plugin: plugin.clone(),
+                key,
+                command: cmd.trim().to_string(),
+                taken: b.clone(),
+            }),
+            None => v.push(Bound {
+                key,
+                command: cmd.trim().to_string(),
+                owner: Owner::Plugin(plugin.clone()),
+            }),
         }
     }
     for (k, cmd) in DEFAULT_KEYS {
-        if !v.iter().any(|(x, _)| x == k) {
-            v.push((k.to_string(), cmd.to_string()));
+        if !freed.iter().any(|f| f == k) && !v.iter().any(|b| b.key == *k) {
+            v.push(Bound {
+                key: k.to_string(),
+                command: cmd.to_string(),
+                owner: Owner::LightsOut,
+            });
         }
     }
-    v.retain(|(_, cmd)| !cmd.is_empty());
-    v
+    (v, skipped)
+}
+
+/// The keys in use, as (key, command).
+pub fn keymap(
+    own: &[(String, String)],
+    plugins: &[(String, String, String)],
+) -> Vec<(String, String)> {
+    bindings(own, plugins)
+        .0
+        .into_iter()
+        .map(|b| (b.key, b.command))
+        .collect()
+}
+
+/// A new plugin's keys that are already used (by you, another plugin, or Lights Out where
+/// you didn't free the key), and twice in itself: each as a sentence saying who has it and
+/// how to fix it. Empty: it may have them all.
+pub fn clashes(
+    own: &[(String, String)],
+    others: &[(String, String, String)],
+    plugin: &str,
+    keys: &[(String, String)],
+) -> Vec<String> {
+    let (bound, _) = bindings(own, others);
+    let mut out = Vec::new();
+    for (i, (k, _)) in keys.iter().enumerate() {
+        let key = key_name(k);
+        if keys[..i].iter().any(|(x, _)| key_name(x) == key) {
+            out.push(format!("{key} is in {plugin} twice"));
+            continue;
+        }
+        if let Some(b) = bound.iter().find(|b| b.key == key) {
+            let fix = match &b.owner {
+                Owner::You => "or change it in your settings".to_string(),
+                Owner::Plugin(id) => format!("or switch {id} off (lightsout plugin off {id})"),
+                Owner::LightsOut => {
+                    format!("or free it in your settings: \"{key}\" = \"\"")
+                }
+            };
+            out.push(format!(
+                "{key} is already used by {} ({}). Change the key in {plugin}, {fix}.",
+                b.owner.name(),
+                b.command
+            ));
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -561,16 +677,60 @@ mod tests {
             s("ctrl+shift+w", ""),
             s("ctrl+alt+g", "run.popup lazygit"),
         ];
+        let p = |a: &str, b: &str, c: &str| (a.to_string(), b.to_string(), c.to_string());
         let plugins = vec![
-            s("ctrl+alt+g", "git-tools.status"),
-            s("ctrl+shift+j", "notes.open"),
+            p("git-tools", "ctrl+alt+g", "git-tools.status"),
+            p("notes", "ctrl+shift+j", "notes.open"),
+            p("other", "ctrl+shift+j", "other.open"),
         ];
-        let m = keymap(&own, &plugins);
-        let get = |k: &str| m.iter().find(|(x, _)| x == k).map(|(_, c)| c.as_str());
+        let (bound, skipped) = bindings(&own, &plugins);
+        let get = |k: &str| {
+            bound
+                .iter()
+                .find(|b| b.key == k)
+                .map(|b| b.command.as_str())
+        };
         assert_eq!(get("ctrl+shift+t"), Some("room.new"));
+        // freed by you: gone from Lights Out, nobody has it
         assert_eq!(get("ctrl+shift+w"), None);
         assert_eq!(get("ctrl+alt+g"), Some("run.popup lazygit"));
+        // a plugin before Lights Out's own; the first plugin before the next one
         assert_eq!(get("ctrl+shift+j"), Some("notes.open"));
         assert_eq!(get("ctrl+shift+n"), Some("room.new"));
+        let who: Vec<(&str, &str)> = skipped
+            .iter()
+            .map(|s| (s.plugin.as_str(), s.taken.command.as_str()))
+            .collect();
+        assert_eq!(
+            who,
+            [("git-tools", "run.popup lazygit"), ("other", "notes.open")]
+        );
+    }
+
+    #[test]
+    fn a_new_plugin_cant_take_a_key_in_use() {
+        let s = |a: &str, b: &str| (a.to_string(), b.to_string());
+        let own = vec![s("ctrl+alt+r", "room.rename"), s("ctrl+shift+w", "")];
+        let others = vec![(
+            "git-tools".to_string(),
+            "ctrl+alt+g".to_string(),
+            "git-tools.status".to_string(),
+        )];
+        let keys = vec![
+            s("Ctrl+Alt+G", "mine.a"),
+            s("ctrl+alt+r", "mine.b"),
+            s("ctrl+shift+t", "mine.c"),
+            s("ctrl+shift+w", "mine.d"),
+            s("ctrl+alt+x", "mine.e"),
+            s("ctrl+alt+x", "mine.f"),
+        ];
+        let c = clashes(&own, &others, "mine", &keys);
+        assert_eq!(c.len(), 4, "{c:?}");
+        assert!(c[0].starts_with("ctrl+alt+g is already used by git-tools (git-tools.status)"));
+        assert!(c[1].contains("by your settings (room.rename)"));
+        assert!(
+            c[2].contains("by Lights Out (tab.new)") && c[2].contains("\"ctrl+shift+t\" = \"\"")
+        );
+        assert_eq!(c[3], "ctrl+alt+x is in mine twice");
     }
 }

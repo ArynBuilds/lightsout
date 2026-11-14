@@ -486,6 +486,8 @@ struct App {
     /// The plugins that are on (plugins.rs), and how their files looked when read.
     plugins: Vec<plugins::Plugin>,
     plugins_stamp: Vec<Option<std::time::SystemTime>>,
+    /// Plugin keys already said to do nothing (each said once).
+    keys_warned: Vec<String>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -602,6 +604,7 @@ impl App {
             room: 0,
             plugins: Vec::new(),
             plugins_stamp: Vec::new(),
+            keys_warned: Vec::new(),
         };
         if let Some(e) = loaded.error {
             app.toast(e, ALERT);
@@ -1694,18 +1697,58 @@ impl App {
     /// The keys in use: yours from the settings, your plugins', then the defaults (see
     /// commands.rs).
     fn keymap(&self) -> Vec<(String, String)> {
-        let own: Vec<(String, String)> = self
+        let (own, from_plugins) = self.key_sources();
+        commands::keymap(&own, &from_plugins)
+    }
+
+    /// Your keys (key, command) and your plugins' (plugin, key, command), in the order they
+    /// were added.
+    #[allow(clippy::type_complexity)]
+    fn key_sources(&self) -> (Vec<(String, String)>, Vec<(String, String, String)>) {
+        let own = self
             .cfg
             .keys
             .iter()
             .map(|(k, b)| (k.clone(), b.command()))
             .collect();
-        let from_plugins: Vec<(String, String)> = self
+        let from_plugins = self
             .plugins
             .iter()
-            .flat_map(|p| p.m.keys.iter().map(|k| (k.key.clone(), k.command.clone())))
+            .flat_map(|p| {
+                p.m.keys
+                    .iter()
+                    .map(|k| (p.m.id.clone(), k.key.clone(), k.command.clone()))
+            })
             .collect();
-        commands::keymap(&own, &from_plugins)
+        (own, from_plugins)
+    }
+
+    /// A plugin key someone else had first (you, set later; or a plugin added before) does
+    /// nothing: said once, in a popup.
+    fn warn_skipped_keys(&mut self) {
+        let (own, from_plugins) = self.key_sources();
+        let now: Vec<String> = commands::bindings(&own, &from_plugins)
+            .1
+            .iter()
+            .map(|s| {
+                format!(
+                    "{}'s key {} does nothing: {} has it ({})",
+                    s.plugin,
+                    s.key,
+                    s.taken.owner.name(),
+                    s.taken.command
+                )
+            })
+            .collect();
+        for w in now.iter().filter(|w| !self.keys_warned.contains(w)) {
+            self.toasts.push(Toast {
+                text: w.clone(),
+                color: ALERT,
+                at: Instant::now(),
+            });
+        }
+        self.keys_warned = now;
+        self.dirty = true;
     }
 
     // ------------------------------------------------------------ plugins
@@ -1719,6 +1762,7 @@ impl App {
         for p in problems {
             self.toast(p, ALERT);
         }
+        self.warn_skipped_keys();
         self.dirty = true;
     }
 
@@ -4261,6 +4305,8 @@ impl App {
                 let font_before = self.cfg.theme.font_size;
                 self.cfg = loaded.config;
                 self.theme = theme_from(&self.cfg);
+                // a key you just set may take one a plugin had
+                self.warn_skipped_keys();
                 if !self.tui
                     && self.cfg.theme.font_size > 0.0
                     && self.cfg.theme.font_size != font_before
