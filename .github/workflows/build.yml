@@ -194,6 +194,19 @@ jobs:
           grep -qE '^sidebar +left' parts.txt
           # a frame: told its size, its plugin drew a picture of exactly that size
           grep -qE '^test-plugin[.]frame +right +[0-9]+ +[0-9]+ +12 +([0-9]+) +a picture 12×' parts.txt
+          # our web plugin: its panel appears when a page opens (inside a terminal it says the
+          # page shows in the window); drawn at a window's size by Chrome; gone when closed
+          $B/lightsout plugin link plugins/web
+          $B/lightsout do web.open example.com
+          sleep 4
+          $B/lightsout part list | tee web.txt
+          grep -qE '^web[.]page +right .* 2 rows' web.txt
+          LIGHTSOUT_PLUGIN_STATE=$HOME/.local/state/lightsout/plugin-data/web LIGHTSOUT_EVENT_JSON='{"part":"web.page","cols":70,"rows":30,"width":800,"height":600}' sh plugins/web/web.sh resized
+          $B/lightsout part list | grep -E '^web[.]page .* a picture 800×600'
+          $B/lightsout do web.close
+          sleep 2
+          ! $B/lightsout part list | grep -q web.page
+          $B/lightsout plugin remove web
           # a command shown on screen: its program in a split, in your folder
           $B/lightsout do test-plugin.show here
           sleep 2

@@ -693,8 +693,8 @@ impl App {
     /// Where everything is: the sidebar (left, right or off), plugins' parts on the left and
     /// right, all full height; then the tab bar (top, bottom or off) and plugins' parts at the
     /// top and bottom, across what is left; the panes in the rest. A plugin part that replaces
-    /// the sidebar or the tab bar takes its place. Parts that would leave the panes too little
-    /// room are left out.
+    /// the sidebar or the tab bar takes its place. A part is made smaller when the panes would
+    /// get too little room, and left out when it would be tiny.
     fn screen_layout(&self) -> ScreenLayout {
         let mut area = Rect {
             x: 0,
@@ -718,6 +718,12 @@ impl App {
                         .iter()
                         .filter(|x| plugins::runs_here(&x.platforms))
                         .map(|x| (format!("{}.{}", p.m.id, x.id), x.clone()))
+                        // one shown only when filled takes no room while it is empty
+                        .filter(|(id, x)| {
+                            x.show != "when-filled"
+                                || self.part_content.contains_key(id)
+                                || self.part_images.contains_key(id)
+                        })
                 })
                 .collect()
         };
@@ -747,8 +753,10 @@ impl App {
             .iter()
             .filter(|(_, p)| p.side == "left" || p.side == "right")
         {
-            let pw = p.size as i32 * cw + if self.tui { 0 } else { 2 * PADX };
-            if area.w - pw < min_w {
+            // as wide as asked, or what the panes can spare (left out only if that is tiny)
+            let want = p.size as i32 * cw + if self.tui { 0 } else { 2 * PADX };
+            let pw = want.min(area.w - min_w);
+            if pw < 4 * cw {
                 continue;
             }
             let right = p.side == "right";
@@ -790,8 +798,9 @@ impl App {
             .iter()
             .filter(|(_, p)| p.side == "top" || p.side == "bottom")
         {
-            let ph = p.size as i32 * ch + if self.tui { 0 } else { 8 };
-            if area.h - ph < min_h {
+            let want = p.size as i32 * ch + if self.tui { 0 } else { 8 };
+            let ph = want.min(area.h - min_h);
+            if ph < ch {
                 continue;
             }
             let bottom = p.side == "bottom";
@@ -993,9 +1002,11 @@ impl App {
                 self.fonts.cell_h.max(1) as i32,
             )
         };
-        let changed: Vec<(String, (i32, i32, i32, i32))> = self
-            .screen_layout()
-            .parts
+        let shown = self.screen_layout().parts;
+        // one that went (shown only when filled) is told its size again when it comes back
+        self.part_sizes
+            .retain(|id, _| shown.iter().any(|(x, _, _)| x == id));
+        let changed: Vec<(String, (i32, i32, i32, i32))> = shown
             .into_iter()
             .map(|(id, r, _)| (id, (r.w / cw, r.h / ch, r.w, r.h)))
             .filter(|(id, size)| self.part_sizes.get(id) != Some(size))
@@ -2065,8 +2076,12 @@ impl App {
         let (name, arg) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
         let (plugin, command) = name.split_once('.')?;
         let p = self.plugins.iter().find(|p| p.m.id == plugin)?;
-        let c = p.m.commands.iter().find(|c| c.id == command)?;
-        plugins::runs_here(&c.platforms).then(|| Action::Plugin {
+        // (a command may come once per system, under the same name)
+        let here =
+            p.m.commands
+                .iter()
+                .any(|c| c.id == command && plugins::runs_here(&c.platforms));
+        here.then(|| Action::Plugin {
             plugin: plugin.to_string(),
             command: command.to_string(),
             arg: arg.trim().to_string(),
@@ -2501,7 +2516,10 @@ impl App {
                     .iter()
                     .find(|p| p.m.id == plugin)
                     .and_then(|p| {
-                        let c = p.m.commands.iter().find(|c| c.id == command)?;
+                        let c =
+                            p.m.commands
+                                .iter()
+                                .find(|c| c.id == command && plugins::runs_here(&c.platforms))?;
                         Some((p.clone(), c.run.clone(), c.place.clone()))
                     });
                 let name = format!("{plugin}.{command}");
@@ -3619,7 +3637,11 @@ impl App {
                 } else {
                     match parts::load_image(&file) {
                         Ok(img) => {
+                            let shown = self.screen_layout().parts.len();
                             self.part_images.insert(id, img);
+                            if self.screen_layout().parts.len() != shown {
+                                self.resize_all();
+                            }
                             json!({ "ok": true })
                         }
                         Err(e) => json!({ "error": e }),
@@ -3636,12 +3658,17 @@ impl App {
                 if !known {
                     json!({ "error": format!("no part `{id}` (a plugin's [[parts]], named PLUGIN.PART)") })
                 } else {
+                    let shown = self.screen_layout().parts.len();
                     if req.cmd == "part-set" {
                         self.part_images.remove(&id);
                         self.part_content.insert(id, parts::parse(&a["content"]));
                     } else {
                         self.part_images.remove(&id);
                         self.part_content.remove(&id);
+                    }
+                    // a part shown only when filled came or went: the panes make room
+                    if self.screen_layout().parts.len() != shown {
+                        self.resize_all();
                     }
                     json!({ "ok": true })
                 }

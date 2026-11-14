@@ -1,0 +1,83 @@
+# Web: a web page in a panel on the right, drawn by the browser you already have (Edge,
+# Chrome or Chromium, without a window). Nothing keeps running: the page is drawn when you
+# open or reload it and when the panel changes size, and the panel takes room only while it
+# shows a page. A click on the page opens it in your browser.
+id = "web"
+name = "Web"
+version = "0.1.0"
+min_lightsout = "0.4.0"
+description = "A web page in a panel, drawn only when you open, reload or resize it"
+
+[[parts]]
+id = "page"
+side = "right"
+size = 70
+show = "when-filled"
+
+[[commands]]
+id = "open"
+title = "Web: open a page (lightsout do web.open URL)"
+run = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "./web.ps1", "open"]
+platforms = ["windows"]
+
+[[commands]]
+id = "open"
+title = "Web: open a page (lightsout do web.open URL)"
+run = ["sh", "./web.sh", "open"]
+platforms = ["linux", "macos"]
+
+[[commands]]
+id = "reload"
+title = "Web: reload the page"
+run = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "./web.ps1", "reload"]
+platforms = ["windows"]
+
+[[commands]]
+id = "reload"
+title = "Web: reload the page"
+run = ["sh", "./web.sh", "reload"]
+platforms = ["linux", "macos"]
+
+[[commands]]
+id = "browser"
+title = "Web: open the page in your browser"
+run = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "./web.ps1", "browser"]
+platforms = ["windows"]
+
+[[commands]]
+id = "browser"
+title = "Web: open the page in your browser"
+run = ["sh", "./web.sh", "browser"]
+platforms = ["linux", "macos"]
+
+[[commands]]
+id = "close"
+title = "Web: close the panel"
+run = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "./web.ps1", "close"]
+platforms = ["windows"]
+
+[[commands]]
+id = "close"
+title = "Web: close the panel"
+run = ["sh", "./web.sh", "close"]
+platforms = ["linux", "macos"]
+
+[[events]]
+on = "part.resized"
+run = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "./web.ps1", "resized"]
+platforms = ["windows"]
+
+[[events]]
+on = "part.resized"
+run = ["sh", "./web.sh", "resized"]
+platforms = ["linux", "macos"]
+
+[[events]]
+on = "part.clicked"
+run = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "./web.ps1", "clicked"]
+platforms = ["windows"]
+
+[[events]]
+on = "part.clicked"
+run = ["sh", "./web.sh", "clicked"]
+platforms = ["linux", "macos"]

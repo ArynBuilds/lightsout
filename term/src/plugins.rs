@@ -95,6 +95,9 @@ pub struct PluginPart {
     /// "sidebar" or "tabs": the built-in one goes, this one takes its place.
     #[serde(default)]
     pub replaces: String,
+    /// "always" (default), or "when-filled": it takes room only while it shows something.
+    #[serde(default = "always")]
+    pub show: String,
     /// Started when the part appears (Lights Out starts, the plugin is added): it fills the
     /// part, and keeps it current from events.
     #[serde(default)]
@@ -105,6 +108,10 @@ pub struct PluginPart {
 
 fn part_size() -> u16 {
     1
+}
+
+fn always() -> String {
+    "always".into()
 }
 
 pub const SIDES: &[&str] = &["left", "right", "top", "bottom"];
@@ -330,6 +337,12 @@ pub fn read_manifest(root: &Path) -> Result<Manifest, String> {
             return Err(format!(
                 "part `{}`: it can replace sidebar or tabs, not `{}`",
                 p.id, p.replaces
+            ));
+        }
+        if !["always", "when-filled"].contains(&p.show.as_str()) {
+            return Err(format!(
+                "part `{}`: show is always or when-filled, not `{}`",
+                p.id, p.show
             ));
         }
         if p.size == 0 || p.size > 200 {
