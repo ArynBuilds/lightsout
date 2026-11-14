@@ -201,9 +201,7 @@ jobs:
           info = json.load(open(sys.argv[1])); kind = sys.argv[2]
           s = socket.create_connection(("127.0.0.1", info["port"]))
           extra = "" if kind == "none" else f" gfx={kind} cell=10x20"
-          s.sendall((info["token"] + extra + "
-").encode() + b'{"Resize":[120,40]}
-')
+          s.sendall((info["token"] + extra + "\n").encode() + b'{"Resize":[120,40]}\n')
           s.settimeout(0.5); data = b""; end = time.time() + 6
           while time.time() < end:
               try:
@@ -211,7 +209,7 @@ jobs:
                   if not d: break
                   data += d
               except socket.timeout: pass
-          print("kitty picture" if b"_Ga=T,f=24" in data else "no picture")
+          print("kitty picture" if b"\x1b_Ga=T,f=24" in data else "no picture")
           PY
           python3 gfx.py ~/.local/state/lightsout/run/screen-cireopen.json kitty | tee gfx.txt
           grep -qx "kitty picture" gfx.txt
