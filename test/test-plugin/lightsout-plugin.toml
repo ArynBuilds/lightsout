@@ -33,3 +33,12 @@ id = "status"
 side = "bottom"
 size = 1
 run = ["sh", "./part.sh"]
+
+[[parts]]
+id = "frame"
+side = "right"
+size = 12
+
+[[events]]
+on = "part.resized"
+run = ["sh", "./frame.sh"]

@@ -209,6 +209,27 @@ impl Canvas<'_> {
         }
     }
 
+    /// A picture (`iw` pixels wide, row by row) with its top left at (x, y), cut to `w` × `h`.
+    pub fn image(&mut self, x: i32, y: i32, w: i32, h: i32, iw: u32, px: &[u32]) {
+        let (x, y) = (x + self.ox, y + self.oy);
+        let ih = if iw == 0 { 0 } else { px.len() as u32 / iw };
+        for row in 0..(h.max(0) as u32).min(ih) {
+            let sy = y + row as i32;
+            if sy < 0 || sy >= self.h as i32 {
+                continue;
+            }
+            let x0 = x.max(0);
+            let x1 = (x + (w.max(0) as u32).min(iw) as i32).min(self.w as i32);
+            if x1 <= x0 {
+                continue;
+            }
+            let src = (row * iw) as usize + (x0 - x) as usize;
+            let dst = (sy as u32 * self.w) as usize + x0 as usize;
+            let n = (x1 - x0) as usize;
+            self.buf[dst..dst + n].copy_from_slice(&px[src..src + n]);
+        }
+    }
+
     /// Draws one character with its top-left cell corner at (x, y).
     pub fn ch(&mut self, f: &mut Fonts, x: i32, y: i32, c: char, bold: bool, color: u32) {
         if c == ' ' || c == '\0' {

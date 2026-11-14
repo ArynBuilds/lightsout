@@ -503,8 +503,12 @@ struct App {
     plugins_stamp: Vec<Option<std::time::SystemTime>>,
     /// Plugin keys already said to do nothing (each said once).
     keys_warned: Vec<String>,
-    /// What each plugin part shows (PLUGIN.PART), as its program last sent it.
+    /// What each plugin part shows (PLUGIN.PART), as its program last sent it: rows, or a
+    /// picture it drew (a frame).
     part_content: HashMap<String, parts::Content>,
+    part_images: HashMap<String, parts::Image>,
+    /// Each part's size as its plugin was last told (cols, rows, width, height).
+    part_sizes: HashMap<String, (i32, i32, i32, i32)>,
     /// The commands of the pieces of parts on screen (a click finds them by `Hit::Part`).
     part_clicks: Vec<String>,
     /// Parts whose program has been started (once each).
@@ -632,6 +636,8 @@ impl App {
             plugins_stamp: Vec::new(),
             keys_warned: Vec::new(),
             part_content: HashMap::new(),
+            part_images: HashMap::new(),
+            part_sizes: HashMap::new(),
             part_clicks: Vec::new(),
             parts_started: Vec::new(),
             started: false,
@@ -970,6 +976,38 @@ impl App {
             }
         }
         self.dirty = true;
+        self.tell_part_sizes();
+    }
+
+    /// A plugin part got a new size (the window, the font, other parts changed): its plugin
+    /// hears it (`part.resized`), so a picture can be drawn again at the new size.
+    fn tell_part_sizes(&mut self) {
+        if !self.started {
+            return;
+        }
+        let (cw, ch) = if self.tui {
+            (1, 1)
+        } else {
+            (
+                self.fonts.cell_w.max(1) as i32,
+                self.fonts.cell_h.max(1) as i32,
+            )
+        };
+        let changed: Vec<(String, (i32, i32, i32, i32))> = self
+            .screen_layout()
+            .parts
+            .into_iter()
+            .map(|(id, r, _)| (id, (r.w / cw, r.h / ch, r.w, r.h)))
+            .filter(|(id, size)| self.part_sizes.get(id) != Some(size))
+            .collect();
+        for (id, size) in changed {
+            self.part_sizes.insert(id.clone(), size);
+            let (cols, rows, width, height) = size;
+            self.emit(
+                "part.resized",
+                json!({ "part": id, "cols": cols, "rows": rows, "width": width, "height": height }),
+            );
+        }
     }
 
     // ------------------------------------------------------------ panes and tabs
@@ -1792,6 +1830,7 @@ impl App {
         self.start_bar_items();
         self.started = true;
         self.start_parts();
+        self.tell_part_sizes();
         self.emit("app.started", json!({}));
     }
 
@@ -1937,6 +1976,8 @@ impl App {
         if self.plain {
             self.plugins.clear();
             self.part_content.clear();
+            self.part_images.clear();
+            self.part_sizes.clear();
             self.parts_started.clear();
             self.resize_all();
             return;
@@ -1965,6 +2006,8 @@ impl App {
             .collect();
         self.parts_started.retain(|id| present.contains(id));
         self.part_content.retain(|id, _| present.contains(id));
+        self.part_images.retain(|id, _| present.contains(id));
+        self.part_sizes.retain(|id, _| present.contains(id));
         let (cw, ch) = if self.tui {
             (1, 1)
         } else {
@@ -1996,6 +2039,8 @@ impl App {
                 ("LIGHTSOUT_PART", id),
                 ("LIGHTSOUT_PART_COLS", (r.w / cw).to_string()),
                 ("LIGHTSOUT_PART_ROWS", (r.h / ch).to_string()),
+                ("LIGHTSOUT_PART_WIDTH", r.w.to_string()),
+                ("LIGHTSOUT_PART_HEIGHT", r.h.to_string()),
             ];
             self.start_plugin(&p, &run, extra);
         }
@@ -3005,8 +3050,9 @@ impl App {
             return;
         }
         let layout = self.screen_layout();
-        // a plugin part: the piece clicked runs its command
-        if let Some((_, r, _)) = layout.parts.iter().find(|(_, r, _)| r.contains(x, y)) {
+        // a plugin part: the piece clicked runs its command; anywhere else, its plugin hears
+        // where (part.clicked: a frame can be clicked anywhere)
+        if let Some((part, r, _)) = layout.parts.iter().find(|(_, r, _)| r.contains(x, y)) {
             let piece = self.hits.iter().find(|(h, k)| {
                 r.contains(h.x, h.y) && h.contains(x, y) && matches!(k, Hit::Part(_))
             });
@@ -3019,6 +3065,22 @@ impl App {
                         ALERT,
                     ),
                 }
+            } else {
+                let (cw, ch) = if self.tui {
+                    (1, 1)
+                } else {
+                    (
+                        self.fonts.cell_w.max(1) as i32,
+                        self.fonts.cell_h.max(1) as i32,
+                    )
+                };
+                let which = match button {
+                    MouseButton::Right => "right",
+                    MouseButton::Middle => "middle",
+                    _ => "left",
+                };
+                let data = json!({ "part": part, "x": x - r.x, "y": y - r.y, "col": (x - r.x) / cw, "row": (y - r.y) / ch, "button": which });
+                self.emit("part.clicked", data);
             }
             return;
         }
@@ -3301,12 +3363,23 @@ impl App {
         true
     }
 
-    /// The wheel: a list under the mouse scrolls, else the pane under it.
+    /// The wheel: a list under the mouse scrolls; a plugin part hears it (part.scrolled);
+    /// else the pane under it scrolls.
     fn on_wheel(&mut self, lines: i32) {
         if self.wheel(lines) {
             return;
         }
         let (x, y) = (self.mouse.x as i32, self.mouse.y as i32);
+        if let Some((part, r, _)) = self
+            .screen_layout()
+            .parts
+            .into_iter()
+            .find(|(_, r, _)| r.contains(x, y))
+        {
+            let data = json!({ "part": part, "lines": lines, "x": x - r.x, "y": y - r.y });
+            self.emit("part.scrolled", data);
+            return;
+        }
         if let Some((id, r)) = self.pane_at(x, y) {
             // the program asked for the mouse: it gets the wheel too
             let code = if lines > 0 { 64 } else { 65 };
@@ -3526,11 +3599,33 @@ impl App {
                 }
                 for (id, r, side) in &lay.parts {
                     let rows = self.part_content.get(id).map(|c| c.rows.len()).unwrap_or(0);
-                    v.push(json!({ "id": id, "side": side, "at": cells(*r), "showing": rows }));
+                    let picture = self.part_images.get(id).map(|i| json!([i.w, i.h]));
+                    v.push(json!({ "id": id, "side": side, "at": cells(*r), "showing": rows, "picture": picture }));
                 }
                 json!({ "parts": v, "panes": cells(lay.content) })
             }
             // a plugin's part: what it shows now (`lightsout part set`), or nothing
+            // a picture a plugin drew for its part (a frame)
+            "part-image" => {
+                let id = a["id"].as_str().unwrap_or("").to_string();
+                let known = self.plugins.iter().any(|p| {
+                    p.m.parts
+                        .iter()
+                        .any(|x| format!("{}.{}", p.m.id, x.id) == id)
+                });
+                let file = PathBuf::from(a["file"].as_str().unwrap_or(""));
+                if !known {
+                    json!({ "error": format!("no part `{id}` (a plugin's [[parts]], named PLUGIN.PART)") })
+                } else {
+                    match parts::load_image(&file) {
+                        Ok(img) => {
+                            self.part_images.insert(id, img);
+                            json!({ "ok": true })
+                        }
+                        Err(e) => json!({ "error": e }),
+                    }
+                }
+            }
             "part-set" | "part-clear" => {
                 let id = a["id"].as_str().unwrap_or("").to_string();
                 let known = self.plugins.iter().any(|p| {
@@ -3542,8 +3637,10 @@ impl App {
                     json!({ "error": format!("no part `{id}` (a plugin's [[parts]], named PLUGIN.PART)") })
                 } else {
                     if req.cmd == "part-set" {
+                        self.part_images.remove(&id);
                         self.part_content.insert(id, parts::parse(&a["content"]));
                     } else {
+                        self.part_images.remove(&id);
                         self.part_content.remove(&id);
                     }
                     json!({ "ok": true })
@@ -4328,6 +4425,11 @@ impl App {
                 "right" => cv.rect(r.x, r.y, 1, r.h as u32, BORDER),
                 "top" => cv.rect(r.x, r.y + r.h - 1, r.w as u32, 1, BORDER),
                 _ => cv.rect(r.x, r.y, r.w as u32, 1, BORDER),
+            }
+            // a picture the plugin drew (a frame): as it is, from the top left
+            if let Some(img) = self.part_images.get(id) {
+                cv.image(r.x, r.y, r.w, r.h, img.w, &img.px);
+                continue;
             }
             let Some(content) = content else {
                 continue;
@@ -5537,7 +5639,9 @@ fn part_cmd(session: &str, args: &[String]) -> i32 {
                     )
                 };
                 for p in v["parts"].as_array().cloned().unwrap_or_default() {
+                    let pic = &p["picture"];
                     let showing = match p["showing"].as_i64() {
+                        _ if pic.is_array() => format!("a picture {}×{}", pic[0], pic[1]),
                         Some(1) => "1 row".into(),
                         Some(r) => format!("{r} rows"),
                         None => "built in".into(),
@@ -5559,7 +5663,7 @@ fn part_cmd(session: &str, args: &[String]) -> i32 {
         };
     }
     let (Some(what), Some(id)) = (args.first(), args.get(1)) else {
-        eprintln!("lightsout part list | set PLUGIN.PART [JSON or text] | clear PLUGIN.PART");
+        eprintln!("lightsout part list | set PLUGIN.PART [JSON or text] | image PLUGIN.PART FILE | clear PLUGIN.PART");
         return 2;
     };
     let id = match std::env::var("LIGHTSOUT_PLUGIN_ID") {
@@ -5577,8 +5681,21 @@ fn part_cmd(session: &str, args: &[String]) -> i32 {
             ("part-set", json!({ "id": id, "content": content }))
         }
         "clear" => ("part-clear", json!({ "id": id })),
+        "image" => {
+            let Some(file) = args.get(2) else {
+                eprintln!("lightsout part image PLUGIN.PART FILE   (a PNG or PPM picture)");
+                return 2;
+            };
+            // the app may run in another folder: the file's full path
+            let file = std::fs::canonicalize(file).unwrap_or_else(|_| PathBuf::from(file));
+            let file = file
+                .to_string_lossy()
+                .trim_start_matches(r"\\?\")
+                .to_string();
+            ("part-image", json!({ "id": id, "file": file }))
+        }
         _ => {
-            eprintln!("lightsout part set PLUGIN.PART [JSON or text]   |   lightsout part clear PLUGIN.PART");
+            eprintln!("lightsout part list | set PLUGIN.PART [JSON or text] | image PLUGIN.PART FILE | clear PLUGIN.PART");
             return 2;
         }
     };

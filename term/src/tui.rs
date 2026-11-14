@@ -1228,6 +1228,18 @@ fn draw(app: &mut App, prefix: bool) -> (Grid, Option<(u16, u16, CursorShape)>) 
             }
             _ => *r,
         };
+        // a picture the plugin drew shows in the window; here, its name
+        if app.part_images.contains_key(id) {
+            g.text(
+                inner.x + 1,
+                inner.y,
+                &format!("{id}: a picture (it shows in the window)"),
+                DIMTEXT,
+                false,
+                inner.x + inner.w - 1,
+            );
+            continue;
+        }
         let Some(content) = content else {
             continue;
         };

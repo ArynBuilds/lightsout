@@ -38,6 +38,18 @@ pub const EVENTS: &[(&str, &str)] = &[
     ("lights.on", "Lights On: going back (tabs saved)"),
     ("screen.off", "the screen was switched off"),
     ("battery.low", "the battery is low: percent"),
+    (
+        "part.resized",
+        "a part has a new size: part, cols, rows, width, height (pixels)",
+    ),
+    (
+        "part.clicked",
+        "a part was clicked (not on a command): part, x, y (pixels), col, row, button",
+    ),
+    (
+        "part.scrolled",
+        "the wheel turned over a part: part, lines (up > 0), x, y",
+    ),
 ];
 
 /// Names a plugin can't take: the first part of the built-in commands.
