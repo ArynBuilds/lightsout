@@ -2165,6 +2165,36 @@ pub fn editor_command(file: &Path) -> Option<String> {
     }
 }
 
+/// Opens a web link (http or https only) in your browser. False where there is none (Lights
+/// Out on a Windows PC has no desktop, so no browser).
+pub fn open_url(url: &str) -> bool {
+    if !(url.starts_with("https://") || url.starts_with("http://")) || image() {
+        return false;
+    }
+    let mut c = if cfg!(windows) {
+        // the browser Windows has for links (no shell in between: & ? in links stay as they are)
+        let mut c = quiet("rundll32");
+        c.args(["url.dll,FileProtocolHandler", url]);
+        c
+    } else if cfg!(target_os = "macos") {
+        let mut c = Command::new("open");
+        c.arg(url);
+        c
+    } else {
+        let mut c = Command::new("xdg-open");
+        c.arg(url);
+        c
+    };
+    c.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|mut child| {
+            std::thread::spawn(move || child.wait());
+        })
+        .is_ok()
+}
+
 /// Lets `lightsout <command>` print to the terminal it was started from
 /// (the app itself is a windowed program on Windows).
 pub fn attach_console() {

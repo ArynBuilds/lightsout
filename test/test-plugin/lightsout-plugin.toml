@@ -1,4 +1,5 @@
-# A plugin the tests use: a command with a key, and a program that runs on an event.
+# A plugin the tests use: a command with a key, one shown in a split, a link it opens,
+# and a program that runs on an event.
 id = "test-plugin"
 name = "Test plugin"
 version = "1.0.0"
@@ -9,8 +10,18 @@ id = "hello"
 title = "Say hello"
 run = ["sh", "./hello.sh"]
 
+[[commands]]
+id = "show"
+title = "Show where you are"
+place = "split"
+run = ["sh", "./show.sh"]
+
 [[keys]]
 key = "ctrl+alt+h"
+command = "test-plugin.hello"
+
+[[links]]
+pattern = "https://example.com/*"
 command = "test-plugin.hello"
 
 [[events]]

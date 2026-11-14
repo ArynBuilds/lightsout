@@ -188,6 +188,10 @@ jobs:
           sleep 2; cat $P/out.txt $P/events.txt
           grep -q "hello world from test-plugin.hello" $P/out.txt
           grep -q 'room.opened {"room":"Room 3"}' $P/events.txt
+          # a command shown on screen: its program in a split, in your folder
+          $B/lightsout do test-plugin.show here
+          sleep 2
+          $B/lightsout read "$($B/lightsout list | awk 'NR > 1 {print $1}' | sort -n | tail -1)" | grep -q "plugin-pane in .* with here"
           $B/lightsout plugin off test-plugin
           ! $B/lightsout commands | grep -q test-plugin
           $B/lightsout plugin remove test-plugin

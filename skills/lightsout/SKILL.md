@@ -70,13 +70,20 @@ version = "0.1.0"
 id = "hello"                                # lightsout do my-plugin.hello
 title = "Say hello"                         # its line in the actions menu
 run = ["sh", "./hello.sh"]                  # ./ = the plugin's folder
+place = "popup"                             # on screen: popup, tab, split, split-down
+                                            # (default: background, unseen)
 [[keys]]
 key = "ctrl+alt+h"
 command = "my-plugin.hello"
 [[events]]
 on = "agent.needs-you"                      # all of them: lightsout plugin events
 run = ["sh", "./ping.sh"]
+[[links]]                                   # Ctrl+click on a matching link (* = anything)
+pattern = "https://github.com/*/pull/*"     # runs the command with the link
+command = "my-plugin.hello"                 # (no match: the link opens in the browser)
 ```
+
+Changes to plugins apply without restarting Lights Out.
 
 ```
 lightsout plugin link FOLDER                use a plugin you are making

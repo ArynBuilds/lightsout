@@ -683,6 +683,7 @@ impl App {
         side_by_side: bool,
         command: Option<String>,
         target: Option<u64>,
+        env: Vec<(String, String)>,
     ) -> Option<u64> {
         let target = target.or_else(|| self.tabs.get(self.active).map(|t| t.focus))?;
         let ti = self.tab_of(target)?;
@@ -692,7 +693,7 @@ impl App {
             .map(|p| p.cwd.clone())
             .unwrap_or_else(platform::home);
         let size = self.grid_size(self.content());
-        let id = self.spawn(cwd, command, Vec::new(), size)?;
+        let id = self.spawn(cwd, command, env, size)?;
         self.tabs[ti].layout.split(target, id, side_by_side);
         self.tabs[ti].focus = id;
         self.active = ti;
@@ -1504,6 +1505,16 @@ impl App {
         self.dirty = true;
     }
 
+    /// Plugins changed on disk (installed, switched on or off, a description edited) are read
+    /// again right before they are used: a key, the menu, `lightsout do`, an event. So a
+    /// change applies at once, also in Lights Out with the screen off, and nothing has to
+    /// keep checking (a few file dates, no timer).
+    fn fresh_plugins(&mut self) {
+        if plugins::stamp() != self.plugins_stamp {
+            self.load_plugins();
+        }
+    }
+
     /// A command by its name: a built-in one, or one of a plugin's (`PLUGIN.COMMAND [ARG]`).
     fn parse_command(&self, line: &str) -> Option<Action> {
         if let Some(a) = Action::parse(line) {
@@ -1554,6 +1565,7 @@ impl App {
 
     /// Something happened: every plugin that asked for it runs its program.
     fn emit(&mut self, event: &str, data: Value) {
+        self.fresh_plugins();
         let due: Vec<(plugins::Plugin, Vec<String>)> = self
             .plugins
             .iter()
@@ -1714,6 +1726,7 @@ impl App {
     }
 
     fn open_palette(&mut self) {
+        self.fresh_plugins();
         self.overlay = Overlay::Palette {
             title: "Everything Lights Out can do".into(),
             items: self.actions(),
@@ -1770,10 +1783,10 @@ impl App {
             Action::CloseRoom => self.close_room(),
             Action::GoRoom(i) => self.switch_room(i),
             Action::SplitRight => {
-                self.split(true, None, None);
+                self.split(true, None, None, Vec::new());
             }
             Action::SplitDown => {
-                self.split(false, None, None);
+                self.split(false, None, None, Vec::new());
             }
             Action::ClosePane => {
                 if let Some(id) = self.focused() {
@@ -1878,22 +1891,7 @@ impl App {
                 });
                 self.resize_all();
             }
-            Action::Run { mode, command } => match mode {
-                "tab" => {
-                    self.new_tab(cwd, Some(command), Vec::new());
-                }
-                "split" => {
-                    self.split(true, Some(command), None);
-                }
-                _ => {
-                    let size = self.grid_size(self.popup_rect());
-                    // the popup closes itself when the command ends
-                    let cmd = format!("{command}; exit");
-                    if let Some(id) = self.spawn(cwd, Some(cmd), Vec::new(), size) {
-                        self.popup = Some(id);
-                    }
-                }
-            },
+            Action::Run { mode, command } => self.open_in(mode, command, Vec::new()),
             Action::Plugin {
                 plugin,
                 command,
@@ -1905,21 +1903,65 @@ impl App {
                     .find(|p| p.m.id == plugin)
                     .and_then(|p| {
                         let c = p.m.commands.iter().find(|c| c.id == command)?;
-                        Some((p.clone(), c.run.clone()))
+                        Some((p.clone(), c.run.clone(), c.place.clone()))
                     });
+                let name = format!("{plugin}.{command}");
                 match found {
-                    Some((p, run)) => {
-                        let extra = vec![
-                            ("LIGHTSOUT_COMMAND", format!("{plugin}.{command}")),
-                            ("LIGHTSOUT_ARG", arg),
-                        ];
+                    Some((p, run, place)) if place == "background" => {
+                        let extra = vec![("LIGHTSOUT_COMMAND", name), ("LIGHTSOUT_ARG", arg)];
                         self.start_plugin(&p, &run, extra);
                     }
-                    None => self.toast(format!("{plugin}.{command} is gone"), ALERT),
+                    // on screen: its program in a pane, in your folder, with what it needs
+                    Some((p, run, place)) => {
+                        let line = plugins::argv(&p, &run)
+                            .iter()
+                            .map(|w| shell_word(w))
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        // PowerShell runs a quoted program only after `&`
+                        let line = if cfg!(windows) {
+                            format!("& {line}")
+                        } else {
+                            line
+                        };
+                        let mut env = plugins::env(&p);
+                        env.push((
+                            "LIGHTSOUT_PLUGIN_CONTEXT".into(),
+                            self.context().to_string(),
+                        ));
+                        env.push(("LIGHTSOUT_COMMAND".into(), name));
+                        env.push(("LIGHTSOUT_ARG".into(), arg));
+                        self.open_in(&place, line, env);
+                    }
+                    None => self.toast(format!("{name} is gone"), ALERT),
                 }
             }
         }
         self.dirty = true;
+    }
+
+    /// A command line on screen: in a new tab, a split (right, or `split-down`), or a popup
+    /// that closes when it ends.
+    fn open_in(&mut self, place: &str, command: String, env: Vec<(String, String)>) {
+        let cwd = self.cwd();
+        match place {
+            "tab" => {
+                self.new_tab(cwd, Some(command), env);
+            }
+            "split" => {
+                self.split(true, Some(command), None, env);
+            }
+            "split-down" => {
+                self.split(false, Some(command), None, env);
+            }
+            _ => {
+                let size = self.grid_size(self.popup_rect());
+                let cmd = format!("{command}; exit");
+                if let Some(id) = self.spawn(cwd, Some(cmd), env, size) {
+                    self.popup = Some(id);
+                }
+            }
+        }
     }
 
     fn cycle(&mut self, d: i32) {
@@ -2022,6 +2064,7 @@ impl App {
         let Some(name) = self.key_name(key) else {
             return false;
         };
+        self.fresh_plugins();
         let Some((_, cmd)) = self.keymap().into_iter().find(|(k, _)| *k == name) else {
             return false;
         };
@@ -2461,6 +2504,13 @@ impl App {
         if self.popup != Some(pane) {
             self.focus(pane);
         }
+        // Ctrl+click on a web link: a plugin's command for it, else the browser
+        if button == MouseButton::Left && self.mods.control_key() {
+            if let Some(link) = self.link_at(pane, r, x, y) {
+                self.open_link(&link);
+                return;
+            }
+        }
         // the program asked for the mouse (Shift keeps it for selecting and the menu)
         let code = match button {
             MouseButton::Left => 0,
@@ -2503,6 +2553,50 @@ impl App {
                 };
             }
             _ => {}
+        }
+    }
+
+    /// The web link under the mouse in a pane, if there is one.
+    fn link_at(&self, pane: u64, r: Rect, x: i32, y: i32) -> Option<String> {
+        let (pt, _) = self.cell_point(pane, r, x, y)?;
+        let p = self.panes.get(&pane)?;
+        let term = p.term.lock();
+        let grid = term.grid();
+        let line: Vec<char> = (0..p.size.cols)
+            .map(|c| grid[pt.line][Column(c)].c)
+            .collect();
+        link_in(&line, pt.column.0)
+    }
+
+    /// A link was Ctrl+clicked: the first plugin whose pattern matches runs its command with
+    /// the link; none: it opens in the browser.
+    fn open_link(&mut self, link: &str) {
+        self.fresh_plugins();
+        let handler = self
+            .plugins
+            .iter()
+            .flat_map(|p| p.m.links.iter())
+            .find(|l| plugins::matches(&l.pattern, link))
+            .map(|l| l.command.clone());
+        let action = handler.and_then(|c| match self.parse_command(&c) {
+            // a plugin's command gets it as its argument (LIGHTSOUT_ARG), as it is
+            Some(Action::Plugin {
+                plugin, command, ..
+            }) => Some(Action::Plugin {
+                plugin,
+                command,
+                arg: link.to_string(),
+            }),
+            // any other command gets it after it, quoted (`run.popup gh pr view`)
+            _ => self.parse_command(&format!("{c} {}", shell_word(link))),
+        });
+        match action {
+            Some(a) if self.usable(&a) => self.run(a),
+            _ => {
+                if !platform::open_url(link) {
+                    self.toast(format!("No browser here: {link}"), DIMTEXT);
+                }
+            }
         }
     }
 
@@ -2693,6 +2787,9 @@ impl App {
                 .as_u64()
                 .or_else(|| a["pane"].as_str().and_then(|s| s.parse().ok()))
         };
+        if matches!(req.cmd.as_str(), "do" | "commands") {
+            self.fresh_plugins();
+        }
         let resp = match req.cmd.as_str() {
             // any command, as its key or the menu runs it (`lightsout do room.rename`)
             "do" => match a["command"].as_str().and_then(|c| self.parse_command(c)) {
@@ -2816,8 +2913,8 @@ impl App {
                     .map(str::to_string)
                     .filter(|c| !c.is_empty());
                 let id = match a["split"].as_str() {
-                    Some("right") => self.split(true, cmd, pane_arg(&a)),
-                    Some("down") => self.split(false, cmd, pane_arg(&a)),
+                    Some("right") => self.split(true, cmd, pane_arg(&a), Vec::new()),
+                    Some("down") => self.split(false, cmd, pane_arg(&a), Vec::new()),
                     _ => self.new_tab(cwd, cmd, Vec::new()),
                 };
                 match id {
@@ -3722,9 +3819,7 @@ impl App {
     /// The settings and the plugins, read again when their files changed.
     fn reload_config_if_changed(&mut self) {
         self.cfg_checked = Instant::now();
-        if plugins::stamp() != self.plugins_stamp {
-            self.load_plugins();
-        }
+        self.fresh_plugins();
         if !config::changed_since(self.cfg_modified) {
             return;
         }
@@ -4893,6 +4988,54 @@ fn wheel_lines(rest: &mut f64, delta: MouseScrollDelta, cell_h: f64) -> i32 {
 /// (it draws its own conversation again, and the old text would sit under it).
 fn screen_to_show<'a>(screen: Option<&'a str>, resume: Option<&str>) -> Option<&'a str> {
     screen.filter(|s| resume.is_none() && !s.trim().is_empty())
+}
+
+/// The web link (http or https) on a line of the screen around the column clicked: the word
+/// there (up to a space, quote, bracket...), from its `http`, without a full stop or comma
+/// after it.
+fn link_in(line: &[char], col: usize) -> Option<String> {
+    let stop = |c: char| c.is_whitespace() || "\"'<>`()[]{}|".contains(c);
+    if col >= line.len() || stop(line[col]) {
+        return None;
+    }
+    let mut start = col;
+    while start > 0 && !stop(line[start - 1]) {
+        start -= 1;
+    }
+    let mut end = col;
+    while end < line.len() && !stop(line[end]) {
+        end += 1;
+    }
+    let word: String = line[start..end].iter().collect();
+    let from = word.find("https://").or_else(|| word.find("http://"))?;
+    // the click is on the link itself, not on what comes before it in the same word
+    if col < start + word[..from].chars().count() {
+        return None;
+    }
+    let link = word[from..].trim_end_matches(['.', ',', ';', ':', '!', '?']);
+    (link.len() > "https://".len()).then(|| link.to_string())
+}
+
+#[cfg(test)]
+mod link_tests {
+    fn at(s: &str, col: usize) -> Option<String> {
+        super::link_in(&s.chars().collect::<Vec<_>>(), col)
+    }
+
+    #[test]
+    fn the_link_under_the_click() {
+        let s = "see https://github.com/a/b/pull/3, then (http://x.io/q?a=1&b=2).";
+        assert_eq!(at(s, 10).as_deref(), Some("https://github.com/a/b/pull/3"));
+        assert_eq!(at(s, 45).as_deref(), Some("http://x.io/q?a=1&b=2"));
+        assert_eq!(at(s, 1), None);
+        assert_eq!(
+            at("url=https://a.io/x", 6).as_deref(),
+            Some("https://a.io/x")
+        );
+        assert_eq!(at("url=https://a.io/x", 1), None);
+        assert_eq!(at("https://", 2), None);
+        assert_eq!(at("short", 99), None);
+    }
 }
 
 #[cfg(test)]

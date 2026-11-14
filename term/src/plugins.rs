@@ -64,18 +64,38 @@ pub struct Manifest {
     pub keys: Vec<PluginKey>,
     #[serde(default)]
     pub events: Vec<PluginEvent>,
+    #[serde(default)]
+    pub links: Vec<PluginLink>,
 }
+
+/// Where a command's program runs: unseen in the background, or on screen in a pane.
+pub const PLACES: &[&str] = &["background", "popup", "tab", "split", "split-down"];
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct PluginCommand {
     pub id: String,
     pub title: String,
     pub run: Vec<String>,
+    /// background (default), popup (closes when the program ends), tab, split, split-down
+    #[serde(default = "background")]
+    pub place: String,
     /// Shown in the actions menu (default yes).
     #[serde(default = "yes")]
     pub menu: bool,
     #[serde(default)]
     pub platforms: Vec<String>,
+}
+
+/// Ctrl+click on a link that matches `pattern` (`*` = anything) runs `command` with the link
+/// after it, instead of opening it in the browser.
+#[derive(Deserialize, Clone, Debug)]
+pub struct PluginLink {
+    pub pattern: String,
+    pub command: String,
+}
+
+fn background() -> String {
+    "background".into()
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -236,6 +256,19 @@ pub fn read_manifest(root: &Path) -> Result<Manifest, String> {
         if c.run.is_empty() {
             return Err(format!("command `{}` has nothing to run", c.id));
         }
+        if !PLACES.contains(&c.place.as_str()) {
+            return Err(format!(
+                "command `{}`: place `{}` doesn't exist ({})",
+                c.id,
+                c.place,
+                PLACES.join(", ")
+            ));
+        }
+    }
+    for l in &m.links {
+        if l.pattern.is_empty() || l.command.trim().is_empty() {
+            return Err("a link needs a pattern and a command".into());
+        }
     }
     for e in &m.events {
         if !EVENTS.iter().any(|(n, _)| *n == e.on) {
@@ -274,22 +307,65 @@ pub fn load() -> (Vec<Plugin>, Vec<String>) {
     (ok, problems)
 }
 
+/// A program's words as they run: `./x` and `../x` are in the plugin's folder (so they work
+/// wherever the program runs, also in a pane in your own folder).
+pub fn argv(p: &Plugin, run: &[String]) -> Vec<String> {
+    run.iter()
+        .map(|w| {
+            if w.starts_with("./") || w.starts_with("../") {
+                p.root.join(w).to_string_lossy().to_string()
+            } else {
+                w.clone()
+            }
+        })
+        .collect()
+}
+
+/// What every program of a plugin gets: which plugin, its folder, its settings and its own
+/// files (both made if missing).
+pub fn env(p: &Plugin) -> Vec<(String, String)> {
+    let (data, settings) = (data_dir(&p.m.id), settings_dir(&p.m.id));
+    let _ = std::fs::create_dir_all(&data);
+    let _ = std::fs::create_dir_all(&settings);
+    let s = |p: &Path| p.to_string_lossy().to_string();
+    vec![
+        ("LIGHTSOUT".into(), "1".into()),
+        ("LIGHTSOUT_PLUGIN_ID".into(), p.m.id.clone()),
+        ("LIGHTSOUT_PLUGIN_ROOT".into(), s(&p.root)),
+        ("LIGHTSOUT_PLUGIN_CONFIG".into(), s(&settings)),
+        ("LIGHTSOUT_PLUGIN_STATE".into(), s(&data)),
+    ]
+}
+
+/// `*` stands for anything (also nothing); the rest must match as written.
+pub fn matches(pattern: &str, text: &str) -> bool {
+    let parts: Vec<&str> = pattern.split('*').collect();
+    if parts.len() == 1 {
+        return pattern == text;
+    }
+    let (first, last) = (parts[0], parts[parts.len() - 1]);
+    if !text.starts_with(first) || !text[first.len()..].ends_with(last) {
+        return false;
+    }
+    let mut rest = &text[first.len()..text.len() - last.len()];
+    for mid in &parts[1..parts.len() - 1] {
+        match rest.find(mid) {
+            Some(i) => rest = &rest[i + mid.len()..],
+            None => return false,
+        }
+    }
+    true
+}
+
 /// Runs one of a plugin's programs, in its folder, without waiting. What it prints goes to
 /// its log (plugin-data/ID/log.txt). `extra` is added to its environment.
 pub fn spawn(p: &Plugin, run: &[String], extra: &[(&str, String)]) -> Result<(), String> {
-    let Some(first) = run.first() else {
+    let run = argv(p, run);
+    let Some(program) = run.first().cloned() else {
         return Err("nothing to run".into());
     };
-    let program = if first.starts_with("./") || first.starts_with("../") {
-        p.root.join(first).to_string_lossy().to_string()
-    } else {
-        first.clone()
-    };
-    let data = data_dir(&p.m.id);
-    let settings = settings_dir(&p.m.id);
-    let _ = std::fs::create_dir_all(&data);
-    let _ = std::fs::create_dir_all(&settings);
-    let log_file = data.join("log.txt");
+    let base = env(p); // (makes its folders)
+    let log_file = data_dir(&p.m.id).join("log.txt");
     // a log that grew big starts again
     if std::fs::metadata(&log_file).is_ok_and(|m| m.len() > 1_000_000) {
         let _ = std::fs::remove_file(&log_file);
@@ -305,12 +381,10 @@ pub fn spawn(p: &Plugin, run: &[String], extra: &[(&str, String)]) -> Result<(),
         .current_dir(&p.root)
         .stdin(std::process::Stdio::null())
         .stdout(log)
-        .stderr(err)
-        .env("LIGHTSOUT", "1")
-        .env("LIGHTSOUT_PLUGIN_ID", &p.m.id)
-        .env("LIGHTSOUT_PLUGIN_ROOT", &p.root)
-        .env("LIGHTSOUT_PLUGIN_CONFIG", &settings)
-        .env("LIGHTSOUT_PLUGIN_STATE", &data);
+        .stderr(err);
+    for (k, v) in base {
+        c.env(k, v);
+    }
     for (k, v) in extra {
         c.env(k, v);
     }
@@ -462,6 +536,9 @@ fn describe(m: &Manifest, root: &Path) -> String {
     }
     for k in &m.keys {
         s += &format!("    key {:<26} {}\n", k.key, k.command);
+    }
+    for l in &m.links {
+        s += &format!("    link {:<25} {}\n", l.pattern, l.command);
     }
     if m.commands.is_empty() && m.events.is_empty() {
         s += "    nothing\n";
@@ -831,6 +908,18 @@ run = ["./notify"]
         assert_eq!(github("a/b//etc"), None);
         assert_eq!(github(r"a/b/C:\Windows"), None);
         assert_eq!(github("a;rm/b"), None);
+    }
+
+    #[test]
+    fn link_patterns_match_with_stars() {
+        let pr = "https://github.com/*/pull/*";
+        assert!(matches(pr, "https://github.com/a/b/pull/12"));
+        assert!(!matches(pr, "https://github.com/a/b/issues/12"));
+        assert!(!matches(pr, "http://github.com/a/b/pull/12"));
+        assert!(matches("*", "anything"));
+        assert!(matches("https://x.com/*", "https://x.com/"));
+        assert!(matches("exact", "exact"));
+        assert!(!matches("a*b*c", "a-c-b"));
     }
 
     #[test]
