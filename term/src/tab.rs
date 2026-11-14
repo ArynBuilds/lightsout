@@ -19,8 +19,14 @@ pub enum UserEvent {
     /// Keys, mouse and resizes of the terminal Lights Out runs in (`lightsout` in a shell).
     Tty(crossterm::event::Event),
     /// A terminal connected to look at this (background) Lights Out; its number.
-    /// (and the one room it wants to see, when it's a room on another machine).
-    Attach(std::net::TcpStream, u64, Option<String>),
+    /// (and the one room it wants to see, when it's a room on another machine), and the
+    /// pictures it can draw (kitty, iterm or sixel, and its cell size in pixels).
+    Attach(
+        std::net::TcpStream,
+        u64,
+        Option<String>,
+        Option<(String, (u32, u32))>,
+    ),
     /// That terminal closed or detached.
     ClientGone(u64),
     Term(u64, Event),

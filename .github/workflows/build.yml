@@ -194,6 +194,28 @@ jobs:
           grep -qE '^sidebar +left' parts.txt
           # a frame: told its size, its plugin drew a picture of exactly that size
           grep -qE '^test-plugin[.]frame +right +[0-9]+ +[0-9]+ +12 +([0-9]+) +a picture 12×' parts.txt
+          # a terminal that draws pictures (here a stand-in that says it is kitty) gets the
+          # frame's picture, in kitty's way; one that can't, gets none
+          cat > gfx.py <<'PY'
+          import json, socket, sys, time
+          info = json.load(open(sys.argv[1])); kind = sys.argv[2]
+          s = socket.create_connection(("127.0.0.1", info["port"]))
+          extra = "" if kind == "none" else f" gfx={kind} cell=10x20"
+          s.sendall((info["token"] + extra + "
+").encode() + b'{"Resize":[120,40]}
+')
+          s.settimeout(0.5); data = b""; end = time.time() + 6
+          while time.time() < end:
+              try:
+                  d = s.recv(1 << 20)
+                  if not d: break
+                  data += d
+              except socket.timeout: pass
+          print("kitty picture" if b"_Ga=T,f=24" in data else "no picture")
+          PY
+          python3 gfx.py ~/.local/state/lightsout/run/screen-cireopen.json kitty | tee gfx.txt
+          grep -qx "kitty picture" gfx.txt
+          python3 gfx.py ~/.local/state/lightsout/run/screen-cireopen.json none | grep -qx "no picture"
           # our web plugin: its panel appears when a page opens (inside a terminal it says the
           # page shows in the window); drawn at a window's size by Chrome; gone when closed
           $B/lightsout plugin link plugins/web
@@ -202,7 +224,7 @@ jobs:
           $B/lightsout part list | tee web.txt
           grep -qE '^web[.]page +right .* 2 rows' web.txt
           LIGHTSOUT_PLUGIN_STATE=$HOME/.local/state/lightsout/plugin-data/web LIGHTSOUT_EVENT_JSON='{"part":"web.page","cols":70,"rows":30,"width":800,"height":600}' sh plugins/web/web.sh resized
-          $B/lightsout part list | grep -E '^web[.]page .* a picture 800×600'
+          $B/lightsout part list | grep -E '^web[.]page .* a picture 800×2400'
           $B/lightsout do web.close
           sleep 2
           ! $B/lightsout part list | grep -q web.page
@@ -218,6 +240,10 @@ jobs:
           cat clash.txt
           grep -q "ctrl+alt+h is already used by test-plugin (test-plugin.hello)" clash.txt
           ! $B/lightsout plugin list | grep -q clash
+          # a plugin off in one room only: gone there, back in the others
+          $B/lightsout plugin off test-plugin --room "$(lightsout room list | head -1 | awk '{print $1}')"
+          $B/lightsout plugin list | grep -q 'not in'
+          $B/lightsout plugin on test-plugin
           $B/lightsout plugin off test-plugin
           ! $B/lightsout commands | grep -q test-plugin
           $B/lightsout plugin remove test-plugin

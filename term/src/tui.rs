@@ -202,21 +202,37 @@ struct Screen {
     shown: Vec<Cell>,
     w: i32,
     cursor: Option<(u16, u16, CursorShape)>,
+    /// The rows this frame wrote again (a picture there has to be drawn again).
+    redrawn: Vec<bool>,
+    /// The plugin frames' pictures on screen: where, which picture, how far scrolled.
+    pictures: HashMap<String, Shown>,
 }
 
+/// A picture on the viewer's screen: its place, which picture (its pixels' address and size),
+/// how far down it is scrolled.
+type Shown = (Rect, (usize, u32, u32), u32);
+
 impl Screen {
-    /// The bytes that turn what the viewer shows now into `g`.
-    fn frame(&mut self, g: &Grid, cursor: Option<(u16, u16, CursorShape)>) -> io::Result<Vec<u8>> {
+    /// The bytes that turn what the viewer shows now into `g`; `pictures` adds the plugin
+    /// frames' pictures (told which rows were written again).
+    fn frame(
+        &mut self,
+        g: &Grid,
+        cursor: Option<(u16, u16, CursorShape)>,
+        pictures: impl FnOnce(&[bool], &mut HashMap<String, Shown>) -> Vec<u8>,
+    ) -> io::Result<Vec<u8>> {
         let mut out: Vec<u8> = Vec::with_capacity(32 * 1024);
         queue!(out, terminal::BeginSynchronizedUpdate, cursor::Hide)?;
         let full = self.w != g.w || self.shown.len() != g.cells.len();
         let (mut fg, mut bg, mut bold, mut under) = (None, None, false, false);
         queue!(out, SetAttribute(Attribute::Reset))?;
+        self.redrawn = vec![false; g.h.max(0) as usize];
         for y in 0..g.h {
             let row = &g.cells[(y * g.w) as usize..((y + 1) * g.w) as usize];
             if !full && &self.shown[(y * g.w) as usize..((y + 1) * g.w) as usize] == row {
                 continue;
             }
+            self.redrawn[y as usize] = true;
             queue!(out, cursor::MoveTo(0, y as u16))?;
             let mut covered = false;
             for c in row {
@@ -248,6 +264,7 @@ impl Screen {
             }
         }
         queue!(out, SetAttribute(Attribute::Reset))?;
+        out.extend(pictures(&self.redrawn, &mut self.pictures));
         if let Some((x, y, shape)) = cursor {
             let style = match shape {
                 CursorShape::Beam => cursor::SetCursorStyle::SteadyBar,
@@ -265,6 +282,71 @@ impl Screen {
         self.cursor = cursor;
         Ok(out)
     }
+}
+
+/// A short number for a plugin part's picture (kitty keeps pictures by number).
+fn picture_id(part: &str) -> u32 {
+    let h = part
+        .bytes()
+        .fold(2166136261u32, |h, b| (h ^ b as u32).wrapping_mul(16777619));
+    (h % 4_000_000) + 1
+}
+
+/// The plugin frames' pictures for the viewer, in what its terminal draws: sent again when
+/// the picture or its place changed, or (sixel, iTerm2: they are part of the text) when
+/// rows under it were written again. While a menu or question is open over the screen they
+/// are taken away (kitty) or left to be drawn over, and come back after.
+fn pictures(app: &App, redrawn: &[bool], shown: &mut HashMap<String, Shown>) -> Vec<u8> {
+    let mut out = Vec::new();
+    let Some((kind, (cw, ch))) = app.tui_gfx.clone() else {
+        return out;
+    };
+    let kitty = kind == "kitty";
+    let covered = !matches!(app.overlay, Overlay::None);
+    let layout = app.screen_layout();
+    let mut now = Vec::new();
+    if !covered {
+        for (id, r, _) in &layout.parts {
+            let Some(img) = app.part_images.get(id) else {
+                continue;
+            };
+            let top = app.part_scroll.get(id).copied().unwrap_or(0);
+            let key: Shown = (*r, (img.px.as_ptr() as usize, img.w, img.h), top);
+            now.push(id.clone());
+            let rewritten = (r.y..r.y + r.h).any(|y| redrawn.get(y as usize) == Some(&true));
+            if shown.get(id) == Some(&key) && (kitty || !rewritten) {
+                continue;
+            }
+            // a sixel at the last row would scroll the whole screen: one row less there
+            let rows = if kind == "sixel" && r.y + r.h >= redrawn.len() as i32 {
+                (r.h - 1).max(1)
+            } else {
+                r.h
+            };
+            let (w, h, px) = crate::pictures::crop(img, top, (r.w * cw) as u32, (rows * ch) as u32);
+            if w == 0 || h == 0 {
+                continue;
+            }
+            let _ = queue!(out, cursor::MoveTo(r.x as u16, r.y as u16));
+            out.extend(match kind.as_str() {
+                "kitty" => {
+                    crate::pictures::kitty(picture_id(id), w, h, &px, r.w as u32, rows as u32)
+                }
+                "iterm" => crate::pictures::iterm(w, h, &px, r.w as u32, rows as u32),
+                _ => crate::pictures::sixel(w, h, &px),
+            });
+            shown.insert(id.clone(), key);
+        }
+    }
+    // pictures no longer on screen (a menu over them, their part gone, the plugin off)
+    let gone: Vec<String> = shown.keys().filter(|k| !now.contains(k)).cloned().collect();
+    for id in gone {
+        shown.remove(&id);
+        if kitty {
+            out.extend(crate::pictures::kitty_delete(picture_id(&id)));
+        }
+    }
+    out
 }
 
 /// Puts the terminal back the way it was (also after a crash).
@@ -339,18 +421,33 @@ pub fn serve(session: &str) -> i32 {
             if reader.read_line(&mut line).is_err() {
                 continue;
             }
-            // "<token>" or "<token> room=<name>"
-            let mut words = line.split_whitespace();
-            if words.next() != Some(token.as_str()) {
+            // "<token>", then maybe "room=<name>" and "gfx=<kitty|iterm|sixel> cell=<W>x<H>"
+            let words: Vec<&str> = line.split_whitespace().collect();
+            if words.first() != Some(&token.as_str()) {
                 continue;
             }
             let room = words
+                .iter()
                 .find_map(|w| w.strip_prefix("room="))
                 .map(str::to_string);
+            // the pictures it can draw (plugins' frames), and its cell size in pixels
+            let gfx = words
+                .iter()
+                .find_map(|w| w.strip_prefix("gfx="))
+                .filter(|k| ["kitty", "iterm", "sixel"].contains(k))
+                .and_then(|k| {
+                    let cell = words.iter().find_map(|w| w.strip_prefix("cell="))?;
+                    let (cw, ch) = cell.split_once('x')?;
+                    let (cw, ch): (u32, u32) = (cw.parse().ok()?, ch.parse().ok()?);
+                    (cw > 0 && ch > 0).then(|| (k.to_string(), (cw, ch)))
+                });
             let _ = reader.get_ref().set_read_timeout(None);
             n += 1;
             let id = n;
-            if accept.send(UserEvent::Attach(stream, id, room)).is_err() {
+            if accept
+                .send(UserEvent::Attach(stream, id, room, gfx))
+                .is_err()
+            {
                 break;
             }
             // its keys, mouse and resizes, one per line
@@ -389,13 +486,15 @@ pub fn serve(session: &str) -> i32 {
         shown: Vec::new(),
         w: 0,
         cursor: None,
+        redrawn: Vec::new(),
+        pictures: HashMap::new(),
     };
     let mut client: Option<(std::net::TcpStream, u64)> = None;
     let on_event = |app: &mut App,
                     screen: &mut Screen,
                     client: &mut Option<(std::net::TcpStream, u64)>,
                     ev: UserEvent| match ev {
-        UserEvent::Attach(s, id, room) => {
+        UserEvent::Attach(s, id, room, gfx) => {
             // the newest terminal wins; the one before is told and let go
             if let Some((mut old, _)) = client.take() {
                 let _ = old.write_all(ELSEWHERE);
@@ -408,6 +507,11 @@ pub fn serve(session: &str) -> i32 {
             if let Some(r) = room.filter(|r| r != ".") {
                 app.open_room_named(&r);
             }
+            // plugins' frames hear their size in this terminal's pixels (or in cells, when
+            // it can't draw pictures)
+            app.tui_gfx = gfx.map(|(k, (cw, ch))| (k, (cw as i32, ch as i32)));
+            app.part_sizes.clear();
+            screen.pictures.clear();
             app.resize_all();
             screen.shown.clear();
             screen.agents_sent = None;
@@ -421,6 +525,7 @@ pub fn serve(session: &str) -> i32 {
                 *client = None;
                 screen.prefix = false;
                 app.window_focused = false;
+                app.tui_gfx = None;
             }
         }
         ev => handle(app, screen, ev),
@@ -461,7 +566,10 @@ pub fn serve(session: &str) -> i32 {
                         screen.agents_sent = Some(json);
                     }
                 }
-                let sent = screen.frame(&g, cursor).and_then(|bytes| {
+                let pics = |redrawn: &[bool], shown: &mut HashMap<String, Shown>| {
+                    pictures(&app, redrawn, shown)
+                };
+                let sent = screen.frame(&g, cursor, pics).and_then(|bytes| {
                     s.write_all(&head)?;
                     s.write_all(&bytes)
                 });
@@ -509,10 +617,16 @@ pub fn attach(session: &str, room: Option<&str>) -> Option<i32> {
         let _ = std::fs::remove_file(&file); // it ended without tidying up
         return None;
     };
-    let hello = match room {
-        Some(r) => format!("{token} room={r}\n"),
-        None => format!("{token}\n"),
-    };
+    let mut hello = token;
+    if let Some(r) = room {
+        hello += &format!(" room={r}");
+    }
+    // the pictures this terminal can draw (plugins' frames), and its cell size
+    let (gfx, (cw, ch)) = crate::pictures::detect();
+    if gfx != "none" {
+        hello += &format!(" gfx={gfx} cell={cw}x{ch}");
+    }
+    hello.push('\n');
     s.write_all(hello.as_bytes()).ok()?;
     Some(view(s))
 }
@@ -1228,7 +1342,11 @@ fn draw(app: &mut App, prefix: bool) -> (Grid, Option<(u16, u16, CursorShape)>) 
             }
             _ => *r,
         };
-        // a picture the plugin drew shows in the window; here, its name
+        // a picture the plugin drew: in a terminal that draws pictures it goes over this
+        // (empty) part; in any other, its name shows
+        if app.part_images.contains_key(id) && app.tui_gfx.is_some() {
+            continue;
+        }
         if app.part_images.contains_key(id) {
             g.text(
                 inner.x + 1,

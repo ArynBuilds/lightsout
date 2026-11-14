@@ -1,7 +1,8 @@
 # Web: a web page in a panel on the right, drawn by the browser you already have (Edge,
 # Chrome or Chromium, without a window). Nothing keeps running: the page is drawn when you
-# open or reload it and when the panel changes size, and the panel takes room only while it
-# shows a page. A click on the page opens it in your browser.
+# open or reload it and when the panel changes size (four screens of it, which the mouse
+# wheel scrolls with nothing drawn again), and the panel takes room only while it shows a
+# page. A click on the page opens it in your browser.
 id = "web"
 name = "Web"
 version = "0.1.0"

@@ -129,7 +129,7 @@ A part can show a picture its plugin drew, at its exact size: a web page, a grap
 lightsout part image my-plugin.view /path/to/picture.png   # a PNG, or a PPM (P6)
 ```
 
-The plugin hears the part's size when it appears and whenever it changes (`part.resized`: `cols`, `rows`, and `width` and `height` in pixels), and draws again then. Clicks and the mouse wheel over the part come as `part.clicked` (where, in pixels and in cells, and which button) and `part.scrolled`. In the window and in Lights Out mode the picture shows as it is; inside another terminal, where pictures can't show, the part shows its name (there, sizes are in cells, so `width` equals `cols`).
+The plugin hears the part's size when it appears and whenever it changes (`part.resized`: `cols`, `rows`, and `width` and `height` in pixels), and draws again then. A picture taller than its part is scrolled by the mouse wheel right in Lights Out, with nothing drawn again (so a long page or log costs nothing to scroll). Clicks and the wheel over the part come as `part.clicked` (where, in pixels and in cells, which button, and `top`: how far down the picture is scrolled) and `part.scrolled`. In the window and in Lights Out mode the picture shows as it is. Inside a terminal that can draw pictures it shows there too, at that terminal's size: kitty, WezTerm and Ghostty (kitty's way), iTerm2 (its own), Windows Terminal (sixel, in 216 colours); `LIGHTSOUT_GRAPHICS=kitty`, `iterm`, `sixel` or `none` picks one. In any other terminal the part shows its name, and its sizes are in cells (`width` equals `cols`).
 
 A PPM is the simplest to write from any language: the line `P6`, the width and height, `255`, then the red, green and blue bytes of each pixel.
 
@@ -152,8 +152,8 @@ A PPM is the simplest to write from any language: the line `P6`, the width and h
 | `screen.off` | the screen was switched off | |
 | `battery.low` | the battery is low | `percent` |
 | `part.resized` | a part has a new size | `part`, `cols`, `rows`, `width`, `height` |
-| `part.clicked` | a part was clicked (not on a piece with a command) | `part`, `x`, `y`, `col`, `row`, `button` |
-| `part.scrolled` | the mouse wheel turned over a part | `part`, `lines` (up > 0), `x`, `y` |
+| `part.clicked` | a part was clicked (not on a piece with a command) | `part`, `x`, `y`, `col`, `row`, `button`, `top` |
+| `part.scrolled` | the mouse wheel turned over a part | `part`, `lines` (up > 0), `x`, `y`, `top` |
 
 `lightsout plugin events` prints this list.
 
@@ -198,7 +198,7 @@ lightsout plugin install ArynBuilds/lightsout/plugins/web
 lightsout do web.open https://example.com
 ```
 
-`web.reload`, `web.browser` (open it in your browser; a click on the page does the same) and `web.close` (the panel goes, and its room returns to the panes). The page is a picture: it is drawn when you open or reload it and when the panel changes size, and nothing runs in between, so it costs no power while you read. Inside another terminal the panel tells you the page shows in the window.
+`web.reload`, `web.browser` (open it in your browser; a click on the page does the same) and `web.close` (the panel goes, and its room returns to the panes). The page is a picture, four screens of it, which the mouse wheel scrolls: it is drawn when you open or reload it and when the panel changes size, and nothing runs in between, so it costs no power while you read. In a terminal that can't draw pictures, the panel tells you the page shows in the window.
 
 ## Installing, updating, removing
 
@@ -210,8 +210,12 @@ lightsout plugin link FOLDER                      # one you are making, used whe
 lightsout plugin list
 lightsout plugin update [ID]                      # the newest version of installed ones
 lightsout plugin off ID | on ID
+lightsout plugin on ID --room NAME                # only in this room (and others switched on this way)
+lightsout plugin off ID --room NAME               # everywhere but this room
 lightsout plugin remove ID                        # its settings stay
 ```
+
+In a room where a plugin is off, its parts, keys, commands, events and link handlers are gone; switching rooms brings them back. `lightsout plugin on ID` alone puts it in every room again. Rooms are named as you see them (renaming a room takes it out of these lists).
 
 Installing needs `git`. Before anything is installed, Lights Out shows every program the plugin can start and asks; `--yes` skips the question. An update that adds a program it didn't start before asks again.
 

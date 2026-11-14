@@ -209,10 +209,14 @@ impl Canvas<'_> {
         }
     }
 
-    /// A picture (`iw` pixels wide, row by row) with its top left at (x, y), cut to `w` × `h`.
-    pub fn image(&mut self, x: i32, y: i32, w: i32, h: i32, iw: u32, px: &[u32]) {
+    /// A picture (`iw` pixels wide, row by row) with its top left at (x, y), cut to `w` × `h`,
+    /// from its row `top` (a picture taller than its place, scrolled).
+    #[allow(clippy::too_many_arguments)]
+    pub fn image(&mut self, x: i32, y: i32, w: i32, h: i32, iw: u32, px: &[u32], top: u32) {
         let (x, y) = (x + self.ox, y + self.oy);
         let ih = if iw == 0 { 0 } else { px.len() as u32 / iw };
+        let px = &px[(top.min(ih) * iw) as usize..];
+        let ih = ih.saturating_sub(top);
         for row in 0..(h.max(0) as u32).min(ih) {
             let sy = y + row as i32;
             if sy < 0 || sy >= self.h as i32 {

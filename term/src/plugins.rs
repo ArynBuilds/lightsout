@@ -44,11 +44,11 @@ pub const EVENTS: &[(&str, &str)] = &[
     ),
     (
         "part.clicked",
-        "a part was clicked (not on a command): part, x, y (pixels), col, row, button",
+        "a part was clicked (not on a command): part, x, y (pixels), col, row, button, top",
     ),
     (
         "part.scrolled",
-        "the wheel turned over a part: part, lines (up > 0), x, y",
+        "the wheel turned over a part: part, lines (up > 0), x, y, top",
     ),
 ];
 
@@ -169,6 +169,17 @@ fn yes() -> bool {
 pub struct Plugin {
     pub m: Manifest,
     pub root: PathBuf,
+    /// Only in these rooms (none: every room), and never in those.
+    pub only_rooms: Vec<String>,
+    pub not_rooms: Vec<String>,
+}
+
+impl Plugin {
+    /// On in the room with this name.
+    pub fn in_room(&self, room: &str) -> bool {
+        (self.only_rooms.is_empty() || self.only_rooms.iter().any(|r| r == room))
+            && !self.not_rooms.iter().any(|r| r == room)
+    }
 }
 
 /// One line of plugins.json.
@@ -185,6 +196,12 @@ pub struct Entry {
     pub path: Option<String>,
     #[serde(default = "yes")]
     pub enabled: bool,
+    /// On only in these rooms (none: every room)...
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rooms: Vec<String>,
+    /// ...and never in these.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub not_rooms: Vec<String>,
 }
 
 pub fn config_dir() -> PathBuf {
@@ -379,7 +396,12 @@ pub fn load() -> (Vec<Plugin>, Vec<String>) {
         let root = root_of(&e);
         match read_manifest(&root) {
             Ok(m) if !runs_here(&m.platforms) => {}
-            Ok(m) => ok.push(Plugin { m, root }),
+            Ok(m) => ok.push(Plugin {
+                m,
+                root,
+                only_rooms: e.rooms.clone(),
+                not_rooms: e.not_rooms.clone(),
+            }),
             Err(err) => problems.push(format!("plugin {}: {err}", e.id)),
         }
     }
@@ -486,7 +508,7 @@ lightsout plugin link FOLDER      a plugin you are making (used where it is)
 lightsout plugin list             your plugins
 lightsout plugin update [ID]      the newest version of installed plugins
 lightsout plugin remove ID        take one out (its settings stay)
-lightsout plugin on ID | off ID   switch one on or off
+lightsout plugin on ID | off ID   switch one on or off (--room NAME: in that room only)
 lightsout plugin events           what a plugin can run on
 ";
 
@@ -505,7 +527,7 @@ pub fn cli(session: &str, args: &[String]) -> i32 {
         for a in args.iter().skip(1) {
             if skip {
                 skip = false;
-            } else if a == "--ref" {
+            } else if a == "--ref" || a == "--room" {
                 skip = true;
             } else if !a.starts_with("--") {
                 v.push(a);
@@ -538,7 +560,7 @@ pub fn cli(session: &str, args: &[String]) -> i32 {
             }
         },
         Some(w @ ("on" | "off" | "enable" | "disable")) => match words.first() {
-            Some(id) => switch(id, matches!(w, "on" | "enable")),
+            Some(id) => switch(id, matches!(w, "on" | "enable"), value("--room")),
             None => {
                 eprint!("{HELP}");
                 2
@@ -568,7 +590,7 @@ fn list() -> i32 {
         println!("No plugins yet. `lightsout plugin install OWNER/REPO` adds one.");
         return 0;
     }
-    println!("{:<20} {:<10} {:<5} FROM", "PLUGIN", "VERSION", "ON");
+    println!("{:<20} {:<10} {:<16} FROM", "PLUGIN", "VERSION", "ON");
     for e in reg {
         let version = read_manifest(&root_of(&e))
             .map(|m| m.version)
@@ -584,12 +606,16 @@ fn list() -> i32 {
             (None, Some(p)) => format!("{p} (linked)"),
             _ => String::new(),
         };
-        println!(
-            "{:<20} {:<10} {:<5} {from}",
-            e.id,
-            version,
-            if e.enabled { "yes" } else { "no" }
-        );
+        let on = if !e.enabled {
+            "no".to_string()
+        } else if !e.rooms.is_empty() {
+            format!("in {}", e.rooms.join(", "))
+        } else if !e.not_rooms.is_empty() {
+            format!("not in {}", e.not_rooms.join(", "))
+        } else {
+            "yes".to_string()
+        };
+        println!("{:<20} {:<10} {:<16} {from}", e.id, version, on);
     }
     0
 }
@@ -823,6 +849,8 @@ fn install(source: &str, r#ref: Option<String>, yes: bool) -> i32 {
         r#ref,
         path: None,
         enabled: true,
+        rooms: Vec::new(),
+        not_rooms: Vec::new(),
     });
     if let Err(e) = save_registry(&reg) {
         eprintln!("lightsout: could not save plugins.json: {e}");
@@ -864,6 +892,8 @@ fn link(dir: &str) -> i32 {
         r#ref: None,
         path: Some(shown.clone()),
         enabled: true,
+        rooms: Vec::new(),
+        not_rooms: Vec::new(),
     });
     if let Err(e) = save_registry(&reg) {
         eprintln!("lightsout: could not save plugins.json: {e}");
@@ -974,18 +1004,46 @@ fn remove(id: &str) -> i32 {
     0
 }
 
-fn switch(id: &str, on: bool) -> i32 {
+/// On or off: everywhere, or (`--room NAME`) in one room. `on --room` keeps it to the rooms
+/// it is switched on in; `off --room` leaves it out of that one; `on` alone: every room again.
+fn switch(id: &str, on: bool, room: Option<String>) -> i32 {
     let mut reg = registry();
     let Some(e) = reg.iter_mut().find(|e| e.id == id) else {
         eprintln!("lightsout: no plugin `{id}` (lightsout plugin list)");
         return 1;
     };
-    e.enabled = on;
+    let said = match (&room, on) {
+        (None, true) => {
+            e.enabled = true;
+            e.rooms.clear();
+            e.not_rooms.clear();
+            format!("{id} is on, in every room.")
+        }
+        (None, false) => {
+            e.enabled = false;
+            format!("{id} is off.")
+        }
+        (Some(r), true) => {
+            e.enabled = true;
+            e.not_rooms.retain(|x| x != r);
+            if !e.rooms.contains(r) {
+                e.rooms.push(r.clone());
+            }
+            format!("{id} is on in: {}.", e.rooms.join(", "))
+        }
+        (Some(r), false) => {
+            e.rooms.retain(|x| x != r);
+            if !e.not_rooms.contains(r) {
+                e.not_rooms.push(r.clone());
+            }
+            format!("{id} is off in {r}.")
+        }
+    };
     if let Err(err) = save_registry(&reg) {
         eprintln!("lightsout: could not save plugins.json: {err}");
         return 1;
     }
-    println!("{id} is {}.", if on { "on" } else { "off" });
+    println!("{said}");
     0
 }
 

@@ -10,6 +10,7 @@ mod headless;
 mod keys;
 mod layout;
 mod parts;
+mod pictures;
 mod platform;
 mod plugins;
 mod render;
@@ -507,6 +508,8 @@ struct App {
     /// picture it drew (a frame).
     part_content: HashMap<String, parts::Content>,
     part_images: HashMap<String, parts::Image>,
+    /// How far down a picture taller than its part is scrolled (pixels from its top).
+    part_scroll: HashMap<String, u32>,
     /// Each part's size as its plugin was last told (cols, rows, width, height).
     part_sizes: HashMap<String, (i32, i32, i32, i32)>,
     /// The commands of the pieces of parts on screen (a click finds them by `Hit::Part`).
@@ -518,6 +521,9 @@ struct App {
     /// Plugins off (`lightsout --plain`, or Ctrl+Shift+F12 until pressed again): the way
     /// back when a plugin broke the screen.
     plain: bool,
+    /// Inside a terminal that draws pictures: which way (kitty, iterm, sixel) and its cell
+    /// size in pixels (plugins' frames show there, at that size).
+    pub tui_gfx: Option<(String, (i32, i32))>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -637,11 +643,13 @@ impl App {
             keys_warned: Vec::new(),
             part_content: HashMap::new(),
             part_images: HashMap::new(),
+            part_scroll: HashMap::new(),
             part_sizes: HashMap::new(),
             part_clicks: Vec::new(),
             parts_started: Vec::new(),
             started: false,
             plain: std::env::var("LIGHTSOUT_PLAIN").is_ok_and(|v| v == "1"),
+            tui_gfx: None,
         };
         if let Some(e) = loaded.error {
             app.toast(e, ALERT);
@@ -711,8 +719,7 @@ impl App {
         let plugin_parts: Vec<(String, plugins::PluginPart)> = if self.embedded {
             Vec::new()
         } else {
-            self.plugins
-                .iter()
+            self.room_plugins()
                 .flat_map(|p| {
                     p.m.parts
                         .iter()
@@ -835,6 +842,16 @@ impl App {
             "done": hex(DONE),
             "font_size": self.cfg.theme.font_size,
         })
+    }
+
+    /// The plugins that are on in the room you're in (`lightsout plugin on ID --room NAME`).
+    fn room_plugins(&self) -> impl Iterator<Item = &plugins::Plugin> + '_ {
+        let room = self
+            .rooms
+            .get(self.room)
+            .map(|r| r.name.clone())
+            .unwrap_or_default();
+        self.plugins.iter().filter(move |p| p.in_room(&room))
     }
 
     /// The colours a plugin's part can name (from the settings).
@@ -988,6 +1005,16 @@ impl App {
         self.tell_part_sizes();
     }
 
+    /// A part's size in pixels: in the window, as it is; inside a terminal that draws
+    /// pictures, its cells times the terminal's cell size; inside any other, in cells (no
+    /// picture shows there).
+    fn part_pixels(&self, r: Rect) -> (i32, i32) {
+        match (&self.tui_gfx, self.tui) {
+            (Some((_, (cw, ch))), true) => (r.w * cw, r.h * ch),
+            _ => (r.w, r.h),
+        }
+    }
+
     /// A plugin part got a new size (the window, the font, other parts changed): its plugin
     /// hears it (`part.resized`), so a picture can be drawn again at the new size.
     fn tell_part_sizes(&mut self) {
@@ -1008,7 +1035,10 @@ impl App {
             .retain(|id, _| shown.iter().any(|(x, _, _)| x == id));
         let changed: Vec<(String, (i32, i32, i32, i32))> = shown
             .into_iter()
-            .map(|(id, r, _)| (id, (r.w / cw, r.h / ch, r.w, r.h)))
+            .map(|(id, r, _)| {
+                let (w, h) = self.part_pixels(r);
+                (id, (r.w / cw, r.h / ch, w, h))
+            })
             .filter(|(id, size)| self.part_sizes.get(id) != Some(size))
             .collect();
         for (id, size) in changed {
@@ -1173,6 +1203,14 @@ impl App {
         self.tabs = std::mem::take(&mut self.rooms[i].tabs);
         self.active = self.rooms[i].active.min(self.tabs.len().saturating_sub(1));
         self.room = i;
+        // a plugin on in some rooms only: its parts come or go with the room
+        if self
+            .plugins
+            .iter()
+            .any(|p| !p.only_rooms.is_empty() || !p.not_rooms.is_empty())
+        {
+            self.resize_all();
+        }
         if let Some(f) = self.tabs.get(self.active).map(|t| t.focus) {
             if let Some(p) = self.panes.get_mut(&f) {
                 p.det.seen();
@@ -1939,8 +1977,7 @@ impl App {
             .map(|(k, b)| (k.clone(), b.command()))
             .collect();
         let from_plugins = self
-            .plugins
-            .iter()
+            .room_plugins()
             .flat_map(|p| {
                 p.m.keys
                     .iter()
@@ -2046,12 +2083,13 @@ impl App {
                 .find(|(x, _, _)| *x == id)
                 .map(|(_, r, _)| *r)
                 .unwrap_or_default();
+            let (pw, ph) = self.part_pixels(r);
             let extra = vec![
                 ("LIGHTSOUT_PART", id),
                 ("LIGHTSOUT_PART_COLS", (r.w / cw).to_string()),
                 ("LIGHTSOUT_PART_ROWS", (r.h / ch).to_string()),
-                ("LIGHTSOUT_PART_WIDTH", r.w.to_string()),
-                ("LIGHTSOUT_PART_HEIGHT", r.h.to_string()),
+                ("LIGHTSOUT_PART_WIDTH", pw.to_string()),
+                ("LIGHTSOUT_PART_HEIGHT", ph.to_string()),
             ];
             self.start_plugin(&p, &run, extra);
         }
@@ -2075,7 +2113,7 @@ impl App {
         let line = line.trim();
         let (name, arg) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
         let (plugin, command) = name.split_once('.')?;
-        let p = self.plugins.iter().find(|p| p.m.id == plugin)?;
+        let p = self.room_plugins().find(|p| p.m.id == plugin)?;
         // (a command may come once per system, under the same name)
         let here =
             p.m.commands
@@ -2124,8 +2162,7 @@ impl App {
     fn emit(&mut self, event: &str, data: Value) {
         self.fresh_plugins();
         let due: Vec<(plugins::Plugin, Vec<String>)> = self
-            .plugins
-            .iter()
+            .room_plugins()
             .flat_map(|p| {
                 p.m.events
                     .iter()
@@ -2204,7 +2241,7 @@ impl App {
             .filter(|c| c.menu && shown(c.id))
             .filter_map(|c| self.item(c.id, &keys))
             .collect();
-        for p in &self.plugins {
+        for p in self.room_plugins() {
             for c in
                 p.m.commands
                     .iter()
@@ -2512,8 +2549,7 @@ impl App {
                 arg,
             } => {
                 let found = self
-                    .plugins
-                    .iter()
+                    .room_plugins()
                     .find(|p| p.m.id == plugin)
                     .and_then(|p| {
                         let c =
@@ -3097,7 +3133,9 @@ impl App {
                     MouseButton::Middle => "middle",
                     _ => "left",
                 };
-                let data = json!({ "part": part, "x": x - r.x, "y": y - r.y, "col": (x - r.x) / cw, "row": (y - r.y) / ch, "button": which });
+                // (a scrolled picture: `top` is how far down it is, so the place in it is y + top)
+                let top = self.part_scroll.get(part).copied().unwrap_or(0);
+                let data = json!({ "part": part, "x": x - r.x, "y": y - r.y, "col": (x - r.x) / cw, "row": (y - r.y) / ch, "button": which, "top": top });
                 self.emit("part.clicked", data);
             }
             return;
@@ -3277,8 +3315,7 @@ impl App {
     fn open_link(&mut self, link: &str) {
         self.fresh_plugins();
         let handler = self
-            .plugins
-            .iter()
+            .room_plugins()
             .flat_map(|p| p.m.links.iter())
             .find(|l| plugins::matches(&l.pattern, link))
             .map(|l| l.command.clone());
@@ -3394,7 +3431,26 @@ impl App {
             .into_iter()
             .find(|(_, r, _)| r.contains(x, y))
         {
-            let data = json!({ "part": part, "lines": lines, "x": x - r.x, "y": y - r.y });
+            // a picture taller than its part scrolls right here (nothing is drawn again)
+            let (_, ph) = self.part_pixels(r);
+            let room = self
+                .part_images
+                .get(&part)
+                .map(|i| i.h as i32 - ph)
+                .unwrap_or(0);
+            let mut top = self.part_scroll.get(&part).copied().unwrap_or(0) as i32;
+            if room > 0 {
+                let step = 3 * match (&self.tui_gfx, self.tui) {
+                    (Some((_, (_, ch))), true) => *ch,
+                    (None, true) => 1,
+                    _ => self.fonts.cell_h as i32,
+                };
+                top = (top - lines * step).clamp(0, room);
+                self.part_scroll.insert(part.clone(), top as u32);
+                self.dirty = true;
+            }
+            let data =
+                json!({ "part": part, "lines": lines, "x": x - r.x, "y": y - r.y, "top": top });
             self.emit("part.scrolled", data);
             return;
         }
@@ -3569,7 +3625,7 @@ impl App {
                 let all: Vec<(String, String, String)> = commands::COMMANDS
                     .iter()
                     .map(|c| (c.id.to_string(), c.arg.to_string(), c.title.to_string()))
-                    .chain(self.plugins.iter().flat_map(|p| {
+                    .chain(self.room_plugins().flat_map(|p| {
                         p.m.commands
                             .iter()
                             .filter(|c| plugins::runs_here(&c.platforms))
@@ -3638,6 +3694,11 @@ impl App {
                     match parts::load_image(&file) {
                         Ok(img) => {
                             let shown = self.screen_layout().parts.len();
+                            // a new picture starts at its top, unless it is as tall as before
+                            // (the same page drawn again keeps its place)
+                            if self.part_images.get(&id).map(|i| i.h) != Some(img.h) {
+                                self.part_scroll.remove(&id);
+                            }
                             self.part_images.insert(id, img);
                             if self.screen_layout().parts.len() != shown {
                                 self.resize_all();
@@ -4455,7 +4516,8 @@ impl App {
             }
             // a picture the plugin drew (a frame): as it is, from the top left
             if let Some(img) = self.part_images.get(id) {
-                cv.image(r.x, r.y, r.w, r.h, img.w, &img.px);
+                let top = self.part_scroll.get(id).copied().unwrap_or(0);
+                cv.image(r.x, r.y, r.w, r.h, img.w, &img.px, top);
                 continue;
             }
             let Some(content) = content else {

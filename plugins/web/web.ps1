@@ -37,7 +37,7 @@ function Draw {
     $dataDir = Join-Path $state 'profile'
     $p = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden -ArgumentList @(
         '--headless=new', '--disable-gpu', '--hide-scrollbars', '--no-first-run',
-        "--user-data-dir=`"$dataDir`"", "--window-size=$w,$h", '--virtual-time-budget=4000',
+        "--user-data-dir=`"$dataDir`"", "--window-size=$w,$($h * 4)", '--virtual-time-budget=4000',
         "--screenshot=`"$png`"", $url)
     $p | Wait-Process -Timeout 30
     if (Test-Path $png) { lightsout part image $part $png | Out-Null }

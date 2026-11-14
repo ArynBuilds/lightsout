@@ -114,6 +114,8 @@ Type `lightsout` in PowerShell, cmd, bash, zsh or any terminal app, and Lights O
 
 Terminals keep many Ctrl+Shift keys for themselves, so there the keys are **Ctrl+B, then the key**: Ctrl+B P actions, T new tab, W close, N new room, A start an agent, → split right, ↓ split down, Tab next tab. Ctrl+B twice sends Ctrl+B to the program. **F1** also opens actions.
 
+Plugins' pictures (frames, such as a web page) show there too in terminals that can draw them: kitty, WezTerm, Ghostty, iTerm2 and Windows Terminal.
+
 Closing that terminal doesn't stop anything: your agents keep running in the background, and `lightsout` brings you back to the same screen. **Ctrl+B D** (or **actions → Detach**) does the same on purpose. `lightsout --window` opens the window instead.
 
 ## Wi-Fi

@@ -41,7 +41,7 @@ lightsout do web.browser opens it in your browser."
   png=$state/page.png
   rm -f "$png"
   "$b" --headless=new --disable-gpu --hide-scrollbars --no-first-run \
-    --user-data-dir="$state/profile" --window-size="$w,$h" --virtual-time-budget=4000 \
+    --user-data-dir="$state/profile" --window-size="$w,$((h * 4))" --virtual-time-budget=4000 \
     --screenshot="$png" "$url" >/dev/null 2>&1
   if [ -s "$png" ]; then lightsout part image "$part" "$png" >/dev/null 2>&1
   else say "Couldn't draw $url"; fi
