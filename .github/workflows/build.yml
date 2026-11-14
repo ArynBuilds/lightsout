@@ -178,6 +178,26 @@ jobs:
           sleep 2
           $B/lightsout read "$($B/lightsout list | awk 'NR > 1 {print $1}' | sort -n | tail -1)" | grep -q did-split
           ! $B/lightsout do nope.nope
+          # plugins: one linked from a folder adds a command (with its key), runs it with what
+          # was written after its name, and runs a program on an event; off, it is gone
+          P=~/.local/state/lightsout/plugin-data/test-plugin
+          $B/lightsout plugin link test/test-plugin
+          $B/lightsout commands | grep -qE '^test-plugin\.hello +Ctrl\+Alt\+H +Say hello'
+          $B/lightsout do test-plugin.hello world
+          $B/lightsout do room.new
+          sleep 2; cat $P/out.txt $P/events.txt
+          grep -q "hello world from test-plugin.hello" $P/out.txt
+          grep -q 'room.opened {"room":"Room 3"}' $P/events.txt
+          $B/lightsout plugin off test-plugin
+          ! $B/lightsout commands | grep -q test-plugin
+          $B/lightsout plugin remove test-plugin
+          # the same plugin installed from GitHub (this repo, this branch): shown, then put in place
+          $B/lightsout plugin install ArynBuilds/lightsout/test/test-plugin --ref "$GITHUB_REF_NAME" --yes
+          test -f ~/.config/lightsout/plugins/test-plugin/hello.sh
+          $B/lightsout plugin list | grep -q "ArynBuilds/lightsout/test/test-plugin"
+          $B/lightsout commands | grep -q test-plugin.hello
+          $B/lightsout plugin remove test-plugin
+          test ! -e ~/.config/lightsout/plugins/test-plugin
           pkill -f -- "--session cireopen --server" || true
           # Quit keeps each agent's own conversation: two Claudes in one folder each come back to
           # theirs, in the folder they work in (a stand-in Claude that, like the real one, records

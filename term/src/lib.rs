@@ -10,6 +10,7 @@ mod headless;
 mod keys;
 mod layout;
 mod platform;
+mod plugins;
 mod render;
 mod session;
 mod status;
@@ -365,6 +366,9 @@ struct App {
     running_at: Instant,
     rooms: Vec<Room>,
     room: usize,
+    /// The plugins that are on (plugins.rs), and how their files looked when read.
+    plugins: Vec<plugins::Plugin>,
+    plugins_stamp: Vec<Option<std::time::SystemTime>>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -479,10 +483,13 @@ impl App {
                 ..Default::default()
             }],
             room: 0,
+            plugins: Vec::new(),
+            plugins_stamp: Vec::new(),
         };
         if let Some(e) = loaded.error {
             app.toast(e, ALERT);
         }
+        app.load_plugins();
         app
     }
 
@@ -641,8 +648,11 @@ impl App {
             env,
         ) {
             Ok(p) => {
+                let data =
+                    json!({ "pane": id, "command": p.command, "cwd": p.cwd.to_string_lossy() });
                 self.panes.insert(id, p);
                 self.dirty = true;
+                self.emit("pane.opened", data);
                 Some(id)
             }
             Err(e) => {
@@ -736,17 +746,22 @@ impl App {
         self.dirty = true;
     }
 
-    fn new_room(&mut self) {
+    /// A new room (named, or "Room N"), with a tab, and you in it.
+    fn new_room(&mut self, name: Option<&str>) {
         let cwd = self.cwd();
-        let n = self.rooms.len() + 1;
+        let name = name
+            .filter(|n| !n.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("Room {}", self.rooms.len() + 1));
         self.rooms.push(Room {
-            name: format!("Room {n}"),
+            name: name.clone(),
             tabs: Vec::new(),
             active: 0,
             ..Default::default()
         });
         self.switch_room(self.rooms.len() - 1);
         self.new_tab(cwd, None, Vec::new());
+        self.emit("room.opened", json!({ "room": name }));
     }
 
     /// Rooms on servers (server-rooms.json): they appear when added and go when removed.
@@ -866,9 +881,7 @@ impl App {
         if let Some(i) = self.rooms.iter().position(|r| r.name == name) {
             self.switch_room(i);
         } else {
-            self.new_room();
-            let ri = self.room;
-            self.rooms[ri].name = name.to_string();
+            self.new_room(Some(name));
         }
     }
 
@@ -893,6 +906,9 @@ impl App {
     }
 
     fn close_room(&mut self) {
+        if let Some(name) = self.rooms.get(self.room).map(|r| r.name.clone()) {
+            self.emit("room.closed", json!({ "room": name }));
+        }
         // a server room: it leaves the list here (its agents keep running on the server)
         if let Some(m) = self
             .rooms
@@ -932,6 +948,9 @@ impl App {
     fn close_pane(&mut self, id: u64) {
         if self.closing {
             return;
+        }
+        if self.panes.contains_key(&id) {
+            self.emit("pane.closed", json!({ "pane": id }));
         }
         // a pane in another room closes there, without switching rooms
         if self.popup != Some(id) {
@@ -1036,6 +1055,7 @@ impl App {
             let pids: Vec<u32> = self.panes.values().filter_map(|p| p.shell_pid).collect();
             let running = platform::running_programs(&pids);
             platform::stay_awake(running.values().any(|r| r.is_some()));
+            let mut events = Vec::new();
             for p in self.panes.values_mut() {
                 let found = p
                     .shell_pid
@@ -1055,14 +1075,31 @@ impl App {
                 }
                 let now = found.map(|(_, name)| name);
                 if now != p.running {
+                    if let Some(old) = &p.running {
+                        events.push(("program.ended", json!({ "pane": p.id, "program": old })));
+                    }
+                    if let Some(new) = &now {
+                        events.push(("program.started", json!({ "pane": p.id, "program": new })));
+                    }
                     p.running = now;
                     self.dirty = true;
                     self.commands_stale = true;
                 }
             }
+            for (e, data) in events {
+                self.emit(e, data);
+            }
         }
         for (id, s) in changes {
             self.dirty = true;
+            let title = self.panes.get(&id).map(|p| p.title.clone());
+            match s {
+                State::NeedsYou => {
+                    self.emit("agent.needs-you", json!({ "pane": id, "title": title }))
+                }
+                State::Done => self.emit("agent.done", json!({ "pane": id, "title": title })),
+                _ => {}
+            }
             if matches!(s, State::NeedsYou | State::Done) && focused != Some(id) {
                 self.alert(id, s);
             }
@@ -1357,6 +1394,7 @@ impl App {
         }
         self.sync_server_rooms();
         self.start_bar_items();
+        self.emit("app.started", json!({}));
     }
 
     fn start_bar_items(&mut self) {
@@ -1415,10 +1453,12 @@ impl App {
         if !cfg!(target_os = "macos") {
             self.begin_closing();
         }
+        self.emit("lights.on", json!({}));
         platform::back_to_windows(&self.saved(80));
     }
 
     fn start_switch(&mut self) {
+        self.emit("lights.out", json!({}));
         let saved = self.saved(80);
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
@@ -1433,7 +1473,8 @@ impl App {
 
     // ------------------------------------------------------------ actions
 
-    /// The keys in use: yours from the settings, then the defaults (see commands.rs).
+    /// The keys in use: yours from the settings, your plugins', then the defaults (see
+    /// commands.rs).
     fn keymap(&self) -> Vec<(String, String)> {
         let own: Vec<(String, String)> = self
             .cfg
@@ -1441,7 +1482,95 @@ impl App {
             .iter()
             .map(|(k, b)| (k.clone(), b.command()))
             .collect();
-        commands::keymap(&own)
+        let from_plugins: Vec<(String, String)> = self
+            .plugins
+            .iter()
+            .flat_map(|p| p.m.keys.iter().map(|k| (k.key.clone(), k.command.clone())))
+            .collect();
+        commands::keymap(&own, &from_plugins)
+    }
+
+    // ------------------------------------------------------------ plugins
+
+    /// Reads the plugins that are on (at start, and when plugins.json or a plugin's
+    /// description changes).
+    fn load_plugins(&mut self) {
+        self.plugins_stamp = plugins::stamp();
+        let (list, problems) = plugins::load();
+        self.plugins = list;
+        for p in problems {
+            self.toast(p, ALERT);
+        }
+        self.dirty = true;
+    }
+
+    /// A command by its name: a built-in one, or one of a plugin's (`PLUGIN.COMMAND [ARG]`).
+    fn parse_command(&self, line: &str) -> Option<Action> {
+        if let Some(a) = Action::parse(line) {
+            return Some(a);
+        }
+        let line = line.trim();
+        let (name, arg) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
+        let (plugin, command) = name.split_once('.')?;
+        let p = self.plugins.iter().find(|p| p.m.id == plugin)?;
+        let c = p.m.commands.iter().find(|c| c.id == command)?;
+        plugins::runs_here(&c.platforms).then(|| Action::Plugin {
+            plugin: plugin.to_string(),
+            command: command.to_string(),
+            arg: arg.trim().to_string(),
+        })
+    }
+
+    /// Where you are, for a plugin's program: session, room, tab, pane, its folder and
+    /// program, the selected text.
+    fn context(&self) -> Value {
+        let pane = self.focused().and_then(|id| self.panes.get(&id));
+        json!({
+            "session": self.session,
+            "room": self.rooms.get(self.room).map(|r| r.name.clone()),
+            "tab": self.active + 1,
+            "pane": pane.map(|p| p.id),
+            "cwd": pane.map(|p| p.cwd.to_string_lossy().to_string()),
+            "program": pane.and_then(|p| p.running.clone()),
+            "selection": pane.and_then(|p| p.term.lock().selection_to_string()),
+        })
+    }
+
+    /// Starts one of a plugin's programs with what it needs to know.
+    fn start_plugin(&mut self, p: &plugins::Plugin, run: &[String], extra: Vec<(&str, String)>) {
+        let mut env = vec![
+            ("LIGHTSOUT_SESSION", self.session.clone()),
+            ("LIGHTSOUT_PLUGIN_CONTEXT", self.context().to_string()),
+        ];
+        // `lightsout read self` and the like reach the pane you are in
+        if let Some(id) = self.focused() {
+            env.push(("LIGHTSOUT_PANE", id.to_string()));
+        }
+        env.extend(extra);
+        if let Err(e) = plugins::spawn(p, run, &env) {
+            self.toast(e, ALERT);
+        }
+    }
+
+    /// Something happened: every plugin that asked for it runs its program.
+    fn emit(&mut self, event: &str, data: Value) {
+        let due: Vec<(plugins::Plugin, Vec<String>)> = self
+            .plugins
+            .iter()
+            .flat_map(|p| {
+                p.m.events
+                    .iter()
+                    .filter(|e| e.on == event && plugins::runs_here(&e.platforms))
+                    .map(|e| (p.clone(), e.run.clone()))
+            })
+            .collect();
+        for (p, run) in due {
+            let extra = vec![
+                ("LIGHTSOUT_EVENT", event.to_string()),
+                ("LIGHTSOUT_EVENT_JSON", data.to_string()),
+            ];
+            self.start_plugin(&p, &run, extra);
+        }
     }
 
     /// Whether a command can run here (the rest of the time it does nothing, and its key
@@ -1487,8 +1616,8 @@ impl App {
         })
     }
 
-    /// The actions menu: every command that makes sense here, the other rooms, and the
-    /// command lines your own keys run.
+    /// The actions menu: every command that makes sense here, your plugins' commands, the
+    /// other rooms, and the command lines your own keys run.
     fn actions(&self) -> Vec<Item> {
         let lo = platform::in_lightsout();
         let keys = self.keymap();
@@ -1506,6 +1635,29 @@ impl App {
             .filter(|c| c.menu && shown(c.id))
             .filter_map(|c| self.item(c.id, &keys))
             .collect();
+        for p in &self.plugins {
+            for c in
+                p.m.commands
+                    .iter()
+                    .filter(|c| c.menu && plugins::runs_here(&c.platforms))
+            {
+                let name = format!("{}.{}", p.m.id, c.id);
+                v.push(Item {
+                    label: c.title.clone(),
+                    // its key, else which plugin it comes from
+                    hint: keys
+                        .iter()
+                        .find(|(_, cmd)| *cmd == name)
+                        .map(|(k, _)| commands::key_label(k))
+                        .unwrap_or_else(|| p.m.name.clone()),
+                    action: Action::Plugin {
+                        plugin: p.m.id.clone(),
+                        command: c.id.clone(),
+                        arg: String::new(),
+                    },
+                });
+            }
+        }
         for (i, r) in self.rooms.iter().enumerate() {
             if i != self.room {
                 v.push(Item {
@@ -1598,7 +1750,7 @@ impl App {
                     purpose: Purpose::Command,
                 }
             }
-            Action::NewRoom => self.new_room(),
+            Action::NewRoom => self.new_room(None),
             Action::NewServerRoom => {
                 self.overlay = Overlay::Ask {
                     title: "New room on a server (user@host, or a name from your ssh config):"
@@ -1704,6 +1856,7 @@ impl App {
                 platform::screen(false);
                 // macOS wakes the display itself (lid, trackpad), so keep drawing there
                 self.screen_off = !cfg!(target_os = "macos");
+                self.emit("screen.off", json!({}));
             }
             // in Lights Out, quitting is going back (the app has to keep running there)
             Action::Quit if platform::in_lightsout() => {
@@ -1741,6 +1894,30 @@ impl App {
                     }
                 }
             },
+            Action::Plugin {
+                plugin,
+                command,
+                arg,
+            } => {
+                let found = self
+                    .plugins
+                    .iter()
+                    .find(|p| p.m.id == plugin)
+                    .and_then(|p| {
+                        let c = p.m.commands.iter().find(|c| c.id == command)?;
+                        Some((p.clone(), c.run.clone()))
+                    });
+                match found {
+                    Some((p, run)) => {
+                        let extra = vec![
+                            ("LIGHTSOUT_COMMAND", format!("{plugin}.{command}")),
+                            ("LIGHTSOUT_ARG", arg),
+                        ];
+                        self.start_plugin(&p, &run, extra);
+                    }
+                    None => self.toast(format!("{plugin}.{command} is gone"), ALERT),
+                }
+            }
         }
         self.dirty = true;
     }
@@ -1848,7 +2025,7 @@ impl App {
         let Some((_, cmd)) = self.keymap().into_iter().find(|(k, _)| *k == name) else {
             return false;
         };
-        match Action::parse(&cmd) {
+        match self.parse_command(&cmd) {
             Some(a) if self.usable(&a) => {
                 self.run(a);
                 true
@@ -1905,8 +2082,15 @@ impl App {
                                 self.new_tab(cwd, Some(value), Vec::new());
                             }
                             Purpose::RoomName(i) => {
-                                if let Some(r) = self.rooms.get_mut(i) {
-                                    r.name = value;
+                                let before = self
+                                    .rooms
+                                    .get_mut(i)
+                                    .map(|r| std::mem::replace(&mut r.name, value.clone()));
+                                if let Some(before) = before {
+                                    self.emit(
+                                        "room.renamed",
+                                        json!({ "room": value, "before": before }),
+                                    );
                                 }
                             }
                             Purpose::ServerRoom => {
@@ -2511,7 +2695,7 @@ impl App {
         };
         let resp = match req.cmd.as_str() {
             // any command, as its key or the menu runs it (`lightsout do room.rename`)
-            "do" => match a["command"].as_str().and_then(Action::parse) {
+            "do" => match a["command"].as_str().and_then(|c| self.parse_command(c)) {
                 Some(act) if self.usable(&act) => {
                     let ran = act.id();
                     self.run(act);
@@ -2533,21 +2717,40 @@ impl App {
             },
             "commands" => {
                 let keys = self.keymap();
-                let list: Vec<Value> = commands::COMMANDS
+                // the built-in ones, then each plugin's (`PLUGIN.COMMAND`)
+                let all: Vec<(String, String, String)> = commands::COMMANDS
                     .iter()
-                    .map(|c| {
+                    .map(|c| (c.id.to_string(), c.arg.to_string(), c.title.to_string()))
+                    .chain(self.plugins.iter().flat_map(|p| {
+                        p.m.commands
+                            .iter()
+                            .filter(|c| plugins::runs_here(&c.platforms))
+                            .map(|c| {
+                                let title = format!("{} ({})", c.title, p.m.name);
+                                (format!("{}.{}", p.m.id, c.id), String::new(), title)
+                            })
+                    }))
+                    .collect();
+                let list: Vec<Value> = all
+                    .iter()
+                    .map(|(id, arg, title)| {
                         let k: Vec<String> = keys
                             .iter()
-                            .filter(|(_, cmd)| cmd.split(' ').next() == Some(c.id))
+                            .filter(|(_, cmd)| cmd.split(' ').next() == Some(id.as_str()))
                             .map(|(k, cmd)| match cmd.split_once(' ') {
                                 Some((_, arg)) => format!("{} ({arg})", commands::key_label(k)),
                                 None => commands::key_label(k),
                             })
                             .collect();
-                        json!({ "id": c.id, "arg": c.arg, "title": c.title, "keys": k })
+                        json!({ "id": id, "arg": arg, "title": title, "keys": k })
                     })
                     .collect();
                 json!({ "commands": list })
+            }
+            // `lightsout plugin ...` changed something: read the plugins again
+            "plugins-reload" => {
+                self.load_plugins();
+                json!({ "ok": true, "plugins": self.plugins.iter().map(|p| p.m.id.clone()).collect::<Vec<_>>() })
             }
             "server-rooms" => {
                 self.sync_server_rooms();
@@ -2562,11 +2765,7 @@ impl App {
                 json!({ "rooms": rooms })
             }
             "room-add" => {
-                self.new_room();
-                if let Some(n) = req.args["name"].as_str().filter(|n| !n.is_empty()) {
-                    let ri = self.room;
-                    self.rooms[ri].name = n.to_string();
-                }
+                self.new_room(req.args["name"].as_str());
                 json!({ "ok": true })
             }
             "room-remove" => match self
@@ -2705,6 +2904,9 @@ impl App {
                 let on = a["on"].as_bool().unwrap_or(true);
                 platform::screen(on);
                 self.screen_off = !on;
+                if !on {
+                    self.emit("screen.off", json!({}));
+                }
                 json!({ "ok": true })
             }
             "power" => match platform::battery() {
@@ -2772,6 +2974,7 @@ impl App {
             LowBattery::Fine => self.battery_warned &= !b.charging && b.percent <= LOW_BATTERY,
             LowBattery::Warn => {
                 self.battery_warned = true;
+                self.emit("battery.low", json!({ "percent": b.percent }));
                 self.toast(
                     format!("Battery {}%: plug in. At {EMPTY_BATTERY}% Lights Out saves your tabs and shuts down.", b.percent),
                     ALERT,
@@ -3516,8 +3719,12 @@ impl App {
         present(buffer, &mut self.shown, w);
     }
 
+    /// The settings and the plugins, read again when their files changed.
     fn reload_config_if_changed(&mut self) {
         self.cfg_checked = Instant::now();
+        if plugins::stamp() != self.plugins_stamp {
+            self.load_plugins();
+        }
         if !config::changed_since(self.cfg_modified) {
             return;
         }
@@ -3978,6 +4185,8 @@ Lights Out: the terminal for AI agents.
   lightsout room add USER@HOST [NAME]   a room that lives on that server
   lightsout room list | remove NAME
   lightsout --session NAME        a separate, named set of tabs
+  lightsout plugin install OWNER/REPO | link FOLDER | list | update | remove ID | on ID | off ID
+                                  plugins: new commands, keys and programs that run on events
   lightsout update                the newest version (your settings, logins and programs stay)
   lightsout uninstall             remove Lights Out from this computer
 
@@ -4322,6 +4531,7 @@ fn run_command(session: &str, rest: &[String]) {
             "report-session" => std::process::exit(report_session(session, &rest[1..])),
             "update" => std::process::exit(update(session)),
             "room" | "rooms" => std::process::exit(room_cmd(session, &rest[1..])),
+            "plugin" | "plugins" => std::process::exit(plugins::cli(session, &rest[1..])),
             _ => std::process::exit(client(session, rest)),
         }
     }

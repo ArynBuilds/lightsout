@@ -53,6 +53,39 @@ lightsout do COMMAND [ARG]                  do one, as its key or the menu does
                                             `lightsout do run.split npm test`)
 ```
 
+## Plugins
+
+A plugin is a folder with `lightsout-plugin.toml` and programs in any language. It adds
+commands (they join `lightsout commands` as `PLUGIN.COMMAND`), keys, and programs that run
+on events. Its programs get `LIGHTSOUT_PLUGIN_CONTEXT` (room, tab, pane, folder, program,
+selected text as JSON), `LIGHTSOUT_ARG` (what was written after the command's name),
+`LIGHTSOUT_EVENT` and `LIGHTSOUT_EVENT_JSON` (on an event), and talk back with these same
+`lightsout` commands.
+
+```toml
+id = "my-plugin"
+name = "My plugin"
+version = "0.1.0"
+[[commands]]
+id = "hello"                                # lightsout do my-plugin.hello
+title = "Say hello"                         # its line in the actions menu
+run = ["sh", "./hello.sh"]                  # ./ = the plugin's folder
+[[keys]]
+key = "ctrl+alt+h"
+command = "my-plugin.hello"
+[[events]]
+on = "agent.needs-you"                      # all of them: lightsout plugin events
+run = ["sh", "./ping.sh"]
+```
+
+```
+lightsout plugin link FOLDER                use a plugin you are making
+lightsout plugin install OWNER/REPO[/FOLDER] [--ref TAG] [--yes]
+lightsout plugin list | update | remove ID | on ID | off ID | events
+```
+
+Install only what the user asked for: a plugin runs as the user.
+
 ## Other
 
 ```

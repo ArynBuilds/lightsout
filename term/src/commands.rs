@@ -50,6 +50,12 @@ pub enum Action {
         mode: &'static str,
         command: String,
     },
+    /// A plugin's command (`PLUGIN.COMMAND [ARG]`), with what was written after its name.
+    Plugin {
+        plugin: String,
+        command: String,
+        arg: String,
+    },
 }
 
 /// A command as it is listed: its name, what it needs after the name, what it does, and
@@ -283,6 +289,16 @@ impl Action {
             Action::Detach => s("app.detach"),
             Action::Quit => s("app.quit"),
             Action::Run { mode, command } => format!("run.{mode} {command}"),
+            Action::Plugin {
+                plugin,
+                command,
+                arg,
+            } if arg.is_empty() => format!("{plugin}.{command}"),
+            Action::Plugin {
+                plugin,
+                command,
+                arg,
+            } => format!("{plugin}.{command} {arg}"),
         }
     }
 }
@@ -356,11 +372,12 @@ fn word_case(w: &str) -> String {
     }
 }
 
-/// The keys in use: your own (from the settings) first, then the defaults you didn't take
-/// over. Yours may name a command (`"ctrl+alt+r" = "room.rename"`) or be empty to free a key.
-pub fn keymap(own: &[(String, String)]) -> Vec<(String, String)> {
+/// The keys in use: your own (from the settings) first, then your plugins', then the
+/// defaults nobody took over. Yours may name a command (`"ctrl+alt+r" = "room.rename"`) or
+/// be empty to free a key.
+pub fn keymap(own: &[(String, String)], plugins: &[(String, String)]) -> Vec<(String, String)> {
     let mut v: Vec<(String, String)> = Vec::new();
-    for (k, cmd) in own {
+    for (k, cmd) in own.iter().chain(plugins) {
         let k = key_name(k);
         if !v.iter().any(|(x, _)| *x == k) {
             v.push((k, cmd.trim().to_string()));
@@ -442,17 +459,23 @@ mod tests {
     }
 
     #[test]
-    fn your_keys_come_first_and_can_free_a_default() {
+    fn your_keys_come_first_then_plugins_then_the_defaults() {
+        let s = |a: &str, b: &str| (a.to_string(), b.to_string());
         let own = vec![
-            ("Ctrl+Shift+T".to_string(), "room.new".to_string()),
-            ("ctrl+shift+w".to_string(), String::new()),
-            ("ctrl+alt+g".to_string(), "run.popup lazygit".to_string()),
+            s("Ctrl+Shift+T", "room.new"),
+            s("ctrl+shift+w", ""),
+            s("ctrl+alt+g", "run.popup lazygit"),
         ];
-        let m = keymap(&own);
+        let plugins = vec![
+            s("ctrl+alt+g", "git-tools.status"),
+            s("ctrl+shift+j", "notes.open"),
+        ];
+        let m = keymap(&own, &plugins);
         let get = |k: &str| m.iter().find(|(x, _)| x == k).map(|(_, c)| c.as_str());
         assert_eq!(get("ctrl+shift+t"), Some("room.new"));
         assert_eq!(get("ctrl+shift+w"), None);
         assert_eq!(get("ctrl+alt+g"), Some("run.popup lazygit"));
+        assert_eq!(get("ctrl+shift+j"), Some("notes.open"));
         assert_eq!(get("ctrl+shift+n"), Some("room.new"));
     }
 }

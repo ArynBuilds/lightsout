@@ -1,0 +1,18 @@
+# A plugin the tests use: a command with a key, and a program that runs on an event.
+id = "test-plugin"
+name = "Test plugin"
+version = "1.0.0"
+min_lightsout = "0.3"
+
+[[commands]]
+id = "hello"
+title = "Say hello"
+run = ["sh", "./hello.sh"]
+
+[[keys]]
+key = "ctrl+alt+h"
+command = "test-plugin.hello"
+
+[[events]]
+on = "room.opened"
+run = ["sh", "./event.sh"]
