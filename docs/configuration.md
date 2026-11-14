@@ -26,6 +26,10 @@ needs_you = []
 [history]
 keep = true              # bring rooms, tabs and conversations back after Quit or a restart
 
+[parts]
+sidebar = "left"         # left, right or off (Ctrl+Shift+B shows and hides it)
+tabs = "top"             # top, bottom or off
+
 [bar]
 # extra items in the top bar, e.g.
 # items = [ { text = "my laptop" }, { command = "git branch --show-current", every = 30 } ]
@@ -46,7 +50,11 @@ A key can run any action (every name is in `lightsout commands`), a command line
 "ctrl+shift+w" = ""                                       # free the key: your programs get it
 ```
 
-Keys are written as you like (`Ctrl+Alt+R`, `alt+ctrl+r`, `ctrl+shift+right`, `f5`...). Your keys come before any [plugin's](plugins.md#keys) and Lights Out's. Command lines from your keys also show in the actions menu as **Run: ...**.
+Keys are written as you like (`Ctrl+Alt+R`, `alt+ctrl+r`, `ctrl+shift+right`, `f5`...). Your keys come before any [plugin's](plugins.md#keys) and Lights Out's. Command lines from your keys also show in the actions menu as **Run: ...**. One key stays Lights Out's: Ctrl+Shift+F12, which switches plugins off ([When a plugin breaks the screen](plugins.md#when-a-plugin-breaks-the-screen)).
+
+## Colours and the look
+
+The colours under `[theme]` are Lights Out's and every plugin's: plugins get them (`LIGHTSOUT_THEME`), and their parts can name them, so one change recolours everything. `[parts]` moves the sidebar to the right or the tab bar to the bottom, or switches either off. [Plugins](plugins.md#parts-of-the-screen) can add more parts on any side, or replace these two.
 
 ## When an agent asks in its own words
 

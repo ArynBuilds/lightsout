@@ -24,6 +24,8 @@ Lights Out is a terminal made for running AI agents: everything you need is on s
 - **Bottom left:** the battery and power draw, **Lights Out** (or **Lights On** inside Lights Out) and **actions**.
 - **Top:** the tabs of the room you're in.
 
+The sidebar can be on the right and the tabs at the bottom, or either can be off: `[parts]` in [the settings](configuration.md#colours-and-the-look). [Plugins](plugins.md#parts-of-the-screen) can add parts on any side, or replace these two.
+
 ## Rooms
 
 A room is its own set of tabs, for example one room per project. Click a room to switch to it; its tabs and agents come with it. Agents in other rooms keep running.
@@ -81,6 +83,7 @@ Every action is also a named command: `lightsout do room.rename` does from any t
 | Bigger / smaller text | Ctrl+= / Ctrl+- |
 | Settings | Ctrl+, |
 | Quit (stops all agents; in Lights Out: Lights On) | Ctrl+Shift+Q |
+| Plugins off / on (the way back if one breaks the screen) | Ctrl+Shift+F12 |
 
 Change any of them, give a key to any action, or free a key for your programs: see [Your own keys](configuration.md#your-own-keys). Plugins can add keys too.
 

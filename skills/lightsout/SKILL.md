@@ -87,7 +87,22 @@ run = ["sh", "./ping.sh"]
 [[links]]                                   # Ctrl+click on a matching link (* = anything)
 pattern = "https://github.com/*/pull/*"     # runs the command with the link
 command = "my-plugin.hello"                 # (no match: the link opens in the browser)
+[[parts]]                                   # a strip of the screen: left, right, top, bottom
+id = "status"                               # (replaces = "sidebar" or "tabs" takes their place;
+side = "bottom"                             #  show = "when-filled": only while it shows something)
+size = 1
+run = ["sh", "./status.sh"]                 # fills it when it appears
 ```
+
+```
+lightsout part set status "text"            # what a part shows: text, or JSON rows of pieces
+                                            # ({"text","color","bold","command"}: a click runs it)
+lightsout part image status FILE.png        # a picture drawn at its size (part.resized event)
+lightsout part list | clear ID
+```
+
+Programs get the user's colours in `LIGHTSOUT_THEME` (JSON). Ctrl+Shift+F12 (or
+`lightsout --plain`) switches every plugin off: the way back if one breaks the screen.
 
 Changes to plugins apply without restarting Lights Out. A plugin whose key is already used
 (by the user's settings, another plugin or Lights Out) isn't added: the message says who has

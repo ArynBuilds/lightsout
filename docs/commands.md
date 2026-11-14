@@ -9,6 +9,7 @@ Everything Lights Out does can be done from any terminal, a script or an agent, 
 | `lightsout` | Runs Lights Out in this terminal (or brings back the one running in the background) |
 | `lightsout --window` | Opens it in its own window |
 | `lightsout --session NAME` | A separate set of tabs and rooms |
+| `lightsout --plain` | Starts with plugins off (the way back if one breaks the screen) |
 | `lightsout open USER@HOST` | Lights Out on a server, over SSH; its agents live there |
 | `lightsout update` | Installs the newest version; settings, tabs, logins and programs stay ([Update](update.md)) |
 | `lightsout uninstall` | Removes Lights Out ([Uninstall](uninstall.md)) |
@@ -51,6 +52,10 @@ Everything Lights Out does can be done from any terminal, a script or an agent, 
 | `lightsout quit` | Saves the tabs and stops everything |
 | `lightsout report-session ID` | For an agent: its conversation in this tab ([Add Lights Out support](add-lightsout-support.md)) |
 | `lightsout plugin ...` | Install, link, list, update, remove, switch on or off plugins ([Plugins](plugins.md)) |
+| `lightsout part list` | Where every part of the screen is (sidebar, tabs, plugins' parts, the panes) and what it shows |
+| `lightsout part set ID [CONTENT]` | What a plugin's part shows: text, or rows of pieces as JSON (also on stdin) ([Parts](plugins.md#parts-of-the-screen)) |
+| `lightsout part image ID FILE` | A picture for a plugin's part: PNG or PPM ([Frames](plugins.md#frames)) |
+| `lightsout part clear ID` | The part shows nothing |
 
 ## Every action: `lightsout do`
 
@@ -93,6 +98,7 @@ lightsout do pane.move 10 20
 | `lights.switch` | Lights Out, or Lights On inside Lights Out (asks first) | Ctrl+Shift+L |
 | `app.detach` | Close this view, agents keep running (inside a terminal) | Ctrl+B D |
 | `app.quit` | Quit, stops all agents (in Lights Out: Lights On) | Ctrl+Shift+Q |
+| `app.plain` | Plugins off, or on again (this key can't be taken) | Ctrl+Shift+F12 |
 | `run.popup COMMAND` | A command line in a popup that closes when it ends | |
 | `run.tab COMMAND` | A command line in a new tab | |
 | `run.split COMMAND` | A command line in a split | |

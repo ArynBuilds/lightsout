@@ -42,6 +42,9 @@ Lights Out continues an agent only when it knows that tab's own conversation; it
 **A plugin wasn't installed: "... is already used by ..."**
 Its key belongs to your settings, another plugin or Lights Out. The message says how to fix it: see [Plugins](plugins.md#keys).
 
+**A plugin broke the screen, or its keys get in the way**
+Press **Ctrl+Shift+F12** (inside another terminal: Ctrl+B, then F12): every plugin is off until you press it again. Or start with `lightsout --plain`. Then `lightsout plugin off ID` the one at fault. See [Plugins](plugins.md#when-a-plugin-breaks-the-screen).
+
 **A plugin does nothing**
 Its log is in `plugin-data/ID/log.txt` (see [Plugins](plugins.md#where-things-are)). `lightsout plugin list` shows whether it is on, and `broken` when its `lightsout-plugin.toml` has a mistake.
 

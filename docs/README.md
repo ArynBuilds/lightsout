@@ -18,7 +18,7 @@ It is also a complete terminal for AI agents on Windows, Linux and Mac: rooms, t
 |---|---|
 | [Agents](agents.md) | Any agent, its states, and how one agent runs others |
 | [Restoring your tabs](session-state.md) | What comes back, and how each agent continues its own conversation |
-| [Plugins](plugins.md) | Add commands, keys, programs on events, panes and link handlers |
+| [Plugins](plugins.md) | Add commands, keys, events, parts of the screen, frames and link handlers |
 | [Configuration](configuration.md) | Settings, your own keys, colours, rooms on servers |
 | [Power and battery](power-and-battery.md) | What switches off, and what to expect |
 
