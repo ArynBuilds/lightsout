@@ -32,8 +32,11 @@ keep = true              # bring tabs, splits and screen history back after a re
 # items = [ { text = "my laptop" }, { command = "git branch --show-current", every = 30 } ]
 items = []
 
-# Your own keys: a command in a popup, a new tab or a split
+# Your own keys. A key runs any Lights Out command (all of them: `lightsout commands`),
+# a command line in a popup, a new tab or a split, or "" to free a key for your programs.
 # [keys]
+# "ctrl+alt+r" = "room.rename"
+# "ctrl+shift+w" = ""
 # "ctrl+alt+g" = { command = "lazygit", mode = "popup" }
 # "ctrl+alt+t" = { command = "npm test", mode = "split" }
 "##;
@@ -46,7 +49,7 @@ pub struct Config {
     pub status: Status,
     pub history: History,
     pub bar: Bar,
-    pub keys: HashMap<String, KeyCmd>,
+    pub keys: HashMap<String, KeyBinding>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -129,6 +132,30 @@ pub struct KeyCmd {
 }
 fn popup() -> String {
     "popup".into()
+}
+
+/// What one of your keys does: a Lights Out command by name, or a command line to run.
+#[derive(Deserialize, Clone)]
+#[serde(untagged)]
+pub enum KeyBinding {
+    Command(String),
+    Run(KeyCmd),
+}
+
+impl KeyBinding {
+    /// As a Lights Out command (`room.rename`, `run.popup lazygit`, or "" for none).
+    pub fn command(&self) -> String {
+        match self {
+            KeyBinding::Command(c) => c.clone(),
+            KeyBinding::Run(k) => {
+                let mode = match k.mode.as_str() {
+                    "tab" | "split" => k.mode.as_str(),
+                    _ => "popup",
+                };
+                format!("run.{mode} {}", k.command)
+            }
+        }
+    }
 }
 
 pub fn path() -> PathBuf {

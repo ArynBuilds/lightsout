@@ -42,6 +42,17 @@ lightsout room remove NAME                  a room here: closes it (stops its ag
                                             a server room: leaves it running on the server
 ```
 
+## Everything else Lights Out can do
+
+Every action, menu line and key is a named command:
+
+```
+lightsout commands                          all of them, with their keys
+lightsout do COMMAND [ARG]                  do one, as its key or the menu does
+                                            (`lightsout do room.rename`, `lightsout do tab.go 2`,
+                                            `lightsout do run.split npm test`)
+```
+
 ## Other
 
 ```

@@ -4,6 +4,7 @@
 //! Everything is reachable from one key: Ctrl+Shift+P.
 
 mod api;
+mod commands;
 mod config;
 mod headless;
 mod keys;
@@ -21,6 +22,7 @@ use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::TermMode;
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Rgb};
+use commands::Action;
 use layout::{Node, Rect};
 use platform::Lock;
 use render::{Canvas, Fonts};
@@ -176,42 +178,6 @@ enum Purpose {
     WifiPassword(usize),
     WifiName,
     ServerRoom,
-}
-
-#[derive(Clone)]
-enum Action {
-    NewTab,
-    Agent(String),
-    RunCommand,
-    SplitRight,
-    SplitDown,
-    ClosePane,
-    NextTab,
-    PrevTab,
-    Jump,
-    Editor,
-    Copy,
-    Paste,
-    Lights,
-    BackToWindows,
-    Quit,
-    /// Close this terminal's view; the agents keep running in the background.
-    Detach,
-    Settings,
-    FontBigger,
-    FontSmaller,
-    ToggleSidebar,
-    NewRoom,
-    /// Asks for an ssh address: a room that lives on that server.
-    NewServerRoom,
-    RenameRoom,
-    CloseRoom,
-    GoRoom(usize),
-    ScreenOff,
-    Wifi,
-    WifiJoin(usize),
-    WifiOther,
-    Custom(config::KeyCmd),
 }
 
 struct Item {
@@ -1467,105 +1433,96 @@ impl App {
 
     // ------------------------------------------------------------ actions
 
+    /// The keys in use: yours from the settings, then the defaults (see commands.rs).
+    fn keymap(&self) -> Vec<(String, String)> {
+        let own: Vec<(String, String)> = self
+            .cfg
+            .keys
+            .iter()
+            .map(|(k, b)| (k.clone(), b.command()))
+            .collect();
+        commands::keymap(&own)
+    }
+
+    /// Whether a command can run here (the rest of the time it does nothing, and its key
+    /// goes to the program in the pane).
+    fn usable(&self, a: &Action) -> bool {
+        match a {
+            Action::Detach => self.tui,
+            _ => true,
+        }
+    }
+
+    /// A command as a line of a menu: its title (some say what they do here) and its key.
+    fn item(&self, id: &str, keys: &[(String, String)]) -> Option<Item> {
+        let c = commands::COMMANDS.iter().find(|c| c.id == id)?;
+        let lo = platform::in_lightsout();
+        let label = match id {
+            "room.close"
+                if self
+                    .rooms
+                    .get(self.room)
+                    .is_some_and(|r| r.remote.is_some()) =>
+            {
+                "Remove this room here (its agents keep running on the server)"
+            }
+            "lights.switch" if lo && platform::image() => "Lights On (back to Windows)",
+            "lights.switch" if lo => "Lights On (back to the desktop)",
+            "lights.switch" if cfg!(windows) => "Lights Out (Windows off, only this terminal)",
+            "lights.switch" => "Lights Out (desktop off, only this terminal)",
+            _ => c.title,
+        };
+        let hint = if c.hint.is_empty() {
+            keys.iter()
+                .find(|(_, cmd)| cmd == id)
+                .map(|(k, _)| commands::key_label(k))
+                .unwrap_or_default()
+        } else {
+            c.hint.to_string()
+        };
+        Some(Item {
+            label: label.into(),
+            hint,
+            action: Action::parse(id)?,
+        })
+    }
+
+    /// The actions menu: every command that makes sense here, the other rooms, and the
+    /// command lines your own keys run.
     fn actions(&self) -> Vec<Item> {
         let lo = platform::in_lightsout();
-        let item = |label: &str, hint: &str, action: Action| Item {
-            label: label.into(),
-            hint: hint.into(),
-            action,
+        let keys = self.keymap();
+        let shown = |id: &str| match id {
+            "wifi.choose" => platform::wifi_available(),
+            "screen.off" => lo,
+            "app.detach" => !lo && self.tui,
+            "app.quit" => !lo,
+            // inside a terminal, the terminal sets the font
+            "font.bigger" | "font.smaller" => !self.tui,
+            _ => true,
         };
-        let mut v = vec![
-            item("New tab", "Ctrl+Shift+T", Action::NewTab),
-            item("Start an agent...", "Ctrl+Shift+A", Action::RunCommand),
-            item("Split right", "Ctrl+Shift+Right", Action::SplitRight),
-            item("Split down", "Ctrl+Shift+Down", Action::SplitDown),
-            item("Move between panes", "Alt+arrows", Action::NextTab),
-            item("Close pane", "Ctrl+Shift+W", Action::ClosePane),
-            item(
-                "Jump to the agent that needs you",
-                "Ctrl+Shift+J",
-                Action::Jump,
-            ),
-            item("Next tab", "Ctrl+Tab", Action::NextTab),
-            item("Previous tab", "Ctrl+Shift+Tab", Action::PrevTab),
-            item("Open output in an editor", "Ctrl+Shift+E", Action::Editor),
-            item("Copy selection", "Ctrl+Shift+C", Action::Copy),
-            item("Paste", "Ctrl+Shift+V", Action::Paste),
-            item("Bigger text", "Ctrl+=", Action::FontBigger),
-            item("Smaller text", "Ctrl+-", Action::FontSmaller),
-            item("New room", "Ctrl+Shift+N", Action::NewRoom),
-            item("Rename this room", "", Action::RenameRoom),
-            if self
-                .rooms
-                .get(self.room)
-                .is_some_and(|r| r.remote.is_some())
-            {
-                item(
-                    "Remove this room here (its agents keep running on the server)",
-                    "",
-                    Action::CloseRoom,
-                )
-            } else {
-                item("Delete this room (stops its agents)", "", Action::CloseRoom)
-            },
-            item("New room on a server...", "", Action::NewServerRoom),
-            item(
-                "Show / hide the sidebar",
-                "Ctrl+Shift+B",
-                Action::ToggleSidebar,
-            ),
-            item("Settings", "Ctrl+,", Action::Settings),
-        ];
-        if platform::wifi_available() {
-            v.push(item("Wi-Fi...", "", Action::Wifi));
-        }
-        if lo {
-            v.push(item(
-                "Screen off (any key turns it on)",
-                "Ctrl+Shift+O",
-                Action::ScreenOff,
-            ));
-            let back = if platform::image() {
-                "Lights On (back to Windows)"
-            } else {
-                "Lights On (back to the desktop)"
-            };
-            v.push(item(back, "Ctrl+Shift+L", Action::BackToWindows));
-        } else {
-            let what = if cfg!(windows) {
-                "Lights Out (Windows off, only this terminal)"
-            } else {
-                "Lights Out (desktop off, only this terminal)"
-            };
-            v.push(item(what, "Ctrl+Shift+L", Action::Lights));
-            if self.tui {
-                v.push(item(
-                    "Detach (close this view, agents keep running)",
-                    "Ctrl+B D",
-                    Action::Detach,
-                ));
-            }
-            v.push(item(
-                "Quit (stops all agents)",
-                "Ctrl+Shift+Q",
-                Action::Quit,
-            ));
-        }
+        let mut v: Vec<Item> = commands::COMMANDS
+            .iter()
+            .filter(|c| c.menu && shown(c.id))
+            .filter_map(|c| self.item(c.id, &keys))
+            .collect();
         for (i, r) in self.rooms.iter().enumerate() {
             if i != self.room {
-                v.push(item(
-                    &format!("Go to {}", r.name),
-                    "room",
-                    Action::GoRoom(i),
-                ));
+                v.push(Item {
+                    label: format!("Go to {}", r.name),
+                    hint: "room".into(),
+                    action: Action::GoRoom(i),
+                });
             }
         }
-        for (k, c) in &self.cfg.keys {
-            v.push(item(
-                &format!("Run: {}", c.command),
-                k,
-                Action::Custom(c.clone()),
-            ));
+        for (k, cmd) in &keys {
+            if let Some(Action::Run { mode, command }) = Action::parse(cmd) {
+                v.push(Item {
+                    label: format!("Run: {command}"),
+                    hint: commands::key_label(k),
+                    action: Action::Run { mode, command },
+                });
+            }
         }
         v
     }
@@ -1577,13 +1534,16 @@ impl App {
             .map(|a| Item {
                 label: a.program.clone(),
                 hint: "new tab".into(),
-                action: Action::Agent(a.program.clone()),
+                action: Action::Run {
+                    mode: "tab",
+                    command: a.program.clone(),
+                },
             })
             .collect();
         v.push(Item {
             label: "Any other command...".into(),
             hint: "type it".into(),
-            action: Action::RunCommand,
+            action: Action::AskCommand,
         });
         v
     }
@@ -1602,14 +1562,9 @@ impl App {
     }
 
     fn open_palette(&mut self) {
-        let mut items = self.actions();
-        if self.tui {
-            // inside a terminal, the terminal sets the font
-            items.retain(|i| !matches!(i.action, Action::FontBigger | Action::FontSmaller));
-        }
         self.overlay = Overlay::Palette {
             title: "Everything Lights Out can do".into(),
-            items,
+            items: self.actions(),
             filter: String::new(),
             sel: 0,
             picked: false,
@@ -1618,16 +1573,25 @@ impl App {
         self.dirty = true;
     }
 
+    /// Does one command (from the menu, a key, a button, `lightsout do` or the API).
     fn run(&mut self, a: Action) {
         let cwd = self.cwd();
         match a {
+            Action::Palette => self.open_palette(),
+            Action::Agents => {
+                self.overlay = Overlay::Palette {
+                    title: "Start an agent in a new tab".into(),
+                    items: self.agent_items(),
+                    filter: String::new(),
+                    sel: 0,
+                    picked: false,
+                    top: 0,
+                };
+            }
             Action::NewTab => {
                 self.new_tab(cwd, None, Vec::new());
             }
-            Action::Agent(c) => {
-                self.new_tab(cwd, Some(c), Vec::new());
-            }
-            Action::RunCommand => {
+            Action::AskCommand => {
                 self.overlay = Overlay::Ask {
                     title: "Command to run in a new tab:".into(),
                     text: String::new(),
@@ -1664,12 +1628,36 @@ impl App {
                     self.close_pane(id);
                 }
             }
+            Action::Focus(dx, dy) => {
+                if let Some(from) = self.tabs.get(self.active).map(|t| t.focus) {
+                    if let Some(to) = layout::neighbor(&self.active_rects(), from, dx, dy) {
+                        self.focus(to);
+                    }
+                }
+            }
             Action::NextTab => self.cycle(1),
             Action::PrevTab => self.cycle(-1),
+            Action::GoTab(i) => {
+                if let Some(f) = self.tabs.get(i).map(|t| t.focus) {
+                    self.focus(f);
+                }
+            }
             Action::Jump => self.jump(),
             Action::Editor => self.open_in_editor(),
             Action::Copy => self.copy(),
             Action::Paste => self.paste(),
+            Action::ScrollUp | Action::ScrollDown => {
+                let rows = self
+                    .focused()
+                    .and_then(|id| self.panes.get(&id))
+                    .map(|p| p.size.rows as i32)
+                    .unwrap_or(20);
+                self.scroll(if a == Action::ScrollUp {
+                    rows / 2
+                } else {
+                    -rows / 2
+                });
+            }
             Action::Detach => {
                 self.detach = true;
                 self.dirty = true;
@@ -1717,7 +1705,10 @@ impl App {
                 // macOS wakes the display itself (lid, trackpad), so keep drawing there
                 self.screen_off = !cfg!(target_os = "macos");
             }
-            Action::BackToWindows => self.overlay = Overlay::Confirm(Confirm::BackToWindows),
+            // in Lights Out, quitting is going back (the app has to keep running there)
+            Action::Quit if platform::in_lightsout() => {
+                self.overlay = Overlay::Confirm(Confirm::BackToWindows)
+            }
             Action::Quit => self.overlay = Overlay::Confirm(Confirm::Quit),
             Action::Settings => {
                 let _ = config::load(); // creates the file with explanations the first time
@@ -1734,17 +1725,17 @@ impl App {
                 });
                 self.resize_all();
             }
-            Action::Custom(k) => match k.mode.as_str() {
+            Action::Run { mode, command } => match mode {
                 "tab" => {
-                    self.new_tab(cwd, Some(k.command), Vec::new());
+                    self.new_tab(cwd, Some(command), Vec::new());
                 }
                 "split" => {
-                    self.split(true, Some(k.command), None);
+                    self.split(true, Some(command), None);
                 }
                 _ => {
                     let size = self.grid_size(self.popup_rect());
                     // the popup closes itself when the command ends
-                    let cmd = format!("{}; exit", k.command);
+                    let cmd = format!("{command}; exit");
                     if let Some(id) = self.spawn(cwd, Some(cmd), Vec::new(), size) {
                         self.popup = Some(id);
                     }
@@ -1848,111 +1839,22 @@ impl App {
         Some(parts.join("+"))
     }
 
+    /// A key that runs a command (yours from the settings, else the default one) runs it and
+    /// answers true. Any other key (or one whose command can't run here) is the pane's.
     fn shortcut(&mut self, key: &Key) -> bool {
-        // your own keys from the settings file come first
-        if let Some(name) = self.key_name(key) {
-            if let Some(k) = self.cfg.keys.get(&name).cloned() {
-                self.run(Action::Custom(k));
-                return true;
+        let Some(name) = self.key_name(key) else {
+            return false;
+        };
+        let Some((_, cmd)) = self.keymap().into_iter().find(|(k, _)| *k == name) else {
+            return false;
+        };
+        match Action::parse(&cmd) {
+            Some(a) if self.usable(&a) => {
+                self.run(a);
+                true
             }
+            _ => false,
         }
-        let m = self.mods;
-        let ch = match key {
-            Key::Character(s) => s.chars().next().map(|c| c.to_ascii_lowercase()),
-            _ => None,
-        };
-        let action = if m.control_key() && m.shift_key() {
-            match (ch, key) {
-                (Some('p'), _) => {
-                    self.open_palette();
-                    return true;
-                }
-                (Some('a'), _) => {
-                    self.overlay = Overlay::Palette {
-                        title: "Start an agent in a new tab".into(),
-                        items: self.agent_items(),
-                        filter: String::new(),
-                        sel: 0,
-                        picked: false,
-                        top: 0,
-                    };
-                    self.dirty = true;
-                    return true;
-                }
-                (Some('t'), _) => Action::NewTab,
-                (Some('d'), _) if self.tui => Action::Detach,
-                (Some('b'), _) => Action::ToggleSidebar,
-                (Some('n'), _) => Action::NewRoom,
-                (Some('w'), _) => Action::ClosePane,
-                (Some('j'), _) => Action::Jump,
-                (Some('e'), _) => Action::Editor,
-                (Some('c'), _) => Action::Copy,
-                (Some('v'), _) => Action::Paste,
-                (Some('l'), _) => Action::Lights,
-                (Some('o'), _) => Action::ScreenOff,
-                (Some('q'), _) => {
-                    if platform::in_lightsout() {
-                        Action::BackToWindows
-                    } else {
-                        Action::Quit
-                    }
-                }
-                (_, Key::Named(NamedKey::ArrowRight)) => Action::SplitRight,
-                (_, Key::Named(NamedKey::ArrowDown)) => Action::SplitDown,
-                (_, Key::Named(NamedKey::Tab)) => Action::PrevTab,
-                _ => return false,
-            }
-        } else if m.control_key() && !m.alt_key() {
-            match (ch, key) {
-                (_, Key::Named(NamedKey::Tab)) => Action::NextTab,
-                (Some('='), _) | (Some('+'), _) => Action::FontBigger,
-                (Some('-'), _) => Action::FontSmaller,
-                (Some(','), _) => Action::Settings,
-                _ => return false,
-            }
-        } else if m.alt_key() && !m.control_key() {
-            let dir = match key {
-                Key::Named(NamedKey::ArrowLeft) => Some((-1, 0)),
-                Key::Named(NamedKey::ArrowRight) => Some((1, 0)),
-                Key::Named(NamedKey::ArrowUp) => Some((0, -1)),
-                Key::Named(NamedKey::ArrowDown) => Some((0, 1)),
-                _ => None,
-            };
-            if let Some((dx, dy)) = dir {
-                if let Some(from) = self.tabs.get(self.active).map(|t| t.focus) {
-                    if let Some(to) = layout::neighbor(&self.active_rects(), from, dx, dy) {
-                        self.focus(to);
-                    }
-                }
-                return true;
-            }
-            if let Some(d @ '1'..='9') = ch {
-                let i = d as usize - '1' as usize;
-                if i < self.tabs.len() {
-                    let f = self.tabs[i].focus;
-                    self.focus(f);
-                }
-                return true;
-            }
-            return false;
-        } else if m.shift_key() {
-            let rows = self
-                .focused()
-                .and_then(|id| self.panes.get(&id))
-                .map(|p| p.size.rows as i32)
-                .unwrap_or(20);
-            match key {
-                Key::Named(NamedKey::PageUp) => self.scroll(rows / 2),
-                Key::Named(NamedKey::PageDown) => self.scroll(-rows / 2),
-                Key::Named(NamedKey::Insert) => self.paste(),
-                _ => return false,
-            }
-            return true;
-        } else {
-            return false;
-        };
-        self.run(action);
-        true
     }
 
     fn scroll(&mut self, lines: i32) {
@@ -2316,16 +2218,10 @@ impl App {
                 .map(|h| h.1);
             match hit {
                 Some(Hit::Pane(id)) => self.focus(id),
-                Some(Hit::Room(i)) => self.switch_room(i),
-                Some(Hit::NewRoom) => self.new_room(),
-                Some(Hit::Palette) => self.open_palette(),
-                Some(Hit::Switch) => {
-                    self.overlay = Overlay::Confirm(if platform::in_lightsout() {
-                        Confirm::BackToWindows
-                    } else {
-                        Confirm::EnterLightsOut
-                    });
-                }
+                Some(Hit::Room(i)) => self.run(Action::GoRoom(i)),
+                Some(Hit::NewRoom) => self.run(Action::NewRoom),
+                Some(Hit::Palette) => self.run(Action::Palette),
+                Some(Hit::Switch) => self.run(Action::Lights),
                 _ => {}
             }
             return;
@@ -2345,22 +2241,10 @@ impl App {
                     self.tabs_first += 1;
                     self.dirty = true;
                 }
-                Some(Hit::Tab(i)) if i < self.tabs.len() => {
-                    let f = self.tabs[i].focus;
-                    self.focus(f);
-                }
-                Some(Hit::NewTab) => {
-                    let cwd = self.cwd();
-                    self.new_tab(cwd, None, Vec::new());
-                }
-                Some(Hit::Palette) => self.open_palette(),
-                Some(Hit::Switch) => {
-                    self.overlay = Overlay::Confirm(if platform::in_lightsout() {
-                        Confirm::BackToWindows
-                    } else {
-                        Confirm::EnterLightsOut
-                    });
-                }
+                Some(Hit::Tab(i)) => self.run(Action::GoTab(i)),
+                Some(Hit::NewTab) => self.run(Action::NewTab),
+                Some(Hit::Palette) => self.run(Action::Palette),
+                Some(Hit::Switch) => self.run(Action::Lights),
                 _ => {}
             }
             return;
@@ -2415,19 +2299,18 @@ impl App {
                 }
             }
             MouseButton::Right => {
-                let item = |l: &str, h: &str, a: Action| Item {
-                    label: l.into(),
-                    hint: h.into(),
-                    action: a,
-                };
-                let items = vec![
-                    item("Copy", "Ctrl+Shift+C", Action::Copy),
-                    item("Paste", "Ctrl+Shift+V", Action::Paste),
-                    item("Split right", "Ctrl+Shift+Right", Action::SplitRight),
-                    item("Split down", "Ctrl+Shift+Down", Action::SplitDown),
-                    item("Open output in an editor", "Ctrl+Shift+E", Action::Editor),
-                    item("Close pane", "Ctrl+Shift+W", Action::ClosePane),
-                ];
+                let keys = self.keymap();
+                let items = [
+                    "edit.copy",
+                    "edit.paste",
+                    "pane.split-right",
+                    "pane.split-down",
+                    "pane.output-in-editor",
+                    "pane.close",
+                ]
+                .iter()
+                .filter_map(|id| self.item(id, &keys))
+                .collect();
                 self.overlay = Overlay::Menu {
                     x,
                     y,
@@ -2627,6 +2510,45 @@ impl App {
                 .or_else(|| a["pane"].as_str().and_then(|s| s.parse().ok()))
         };
         let resp = match req.cmd.as_str() {
+            // any command, as its key or the menu runs it (`lightsout do room.rename`)
+            "do" => match a["command"].as_str().and_then(Action::parse) {
+                Some(act) if self.usable(&act) => {
+                    let ran = act.id();
+                    self.run(act);
+                    json!({ "ok": true, "ran": ran })
+                }
+                Some(_) => json!({ "error": "that command can't run here" }),
+                None => {
+                    let line = a["command"].as_str().unwrap_or("").trim();
+                    let id = line.split_whitespace().next().unwrap_or("");
+                    match commands::COMMANDS.iter().find(|c| c.id == id) {
+                        Some(c) => {
+                            json!({ "error": format!("`{id}` needs a {} after it (lightsout commands)", c.arg) })
+                        }
+                        None => {
+                            json!({ "error": format!("unknown command `{line}` (all of them: lightsout commands)") })
+                        }
+                    }
+                }
+            },
+            "commands" => {
+                let keys = self.keymap();
+                let list: Vec<Value> = commands::COMMANDS
+                    .iter()
+                    .map(|c| {
+                        let k: Vec<String> = keys
+                            .iter()
+                            .filter(|(_, cmd)| cmd.split(' ').next() == Some(c.id))
+                            .map(|(k, cmd)| match cmd.split_once(' ') {
+                                Some((_, arg)) => format!("{} ({arg})", commands::key_label(k)),
+                                None => commands::key_label(k),
+                            })
+                            .collect();
+                        json!({ "id": c.id, "arg": c.arg, "title": c.title, "keys": k })
+                    })
+                    .collect();
+                json!({ "commands": list })
+            }
             "server-rooms" => {
                 self.sync_server_rooms();
                 json!({ "ok": true })
@@ -4060,6 +3982,8 @@ Lights Out: the terminal for AI agents.
   lightsout uninstall             remove Lights Out from this computer
 
 Control the running app (also for agents; details: `lightsout skill`):
+  lightsout commands              everything Lights Out can do, with its keys
+  lightsout do COMMAND [ARG]      do one of them, as its key or the menu does (`lightsout do room.rename`)
   lightsout list | new | send | read | wait | explain | focus | close | notify | screen | power | switch | quit
   lightsout report-session ID     (for an agent's hook: the conversation in its tab)
 ";
@@ -4122,6 +4046,15 @@ fn client(session: &str, args: &[String]) -> i32 {
         None
     };
     let (cmd, a) = match args[0].as_str() {
+        // the command's name as it is, the rest of a command line keeps its quoting
+        "do" if !rest.is_empty() => {
+            let line = std::iter::once(rest[0].clone())
+                .chain(rest[1..].iter().map(|w| shell_word(w)))
+                .collect::<Vec<_>>()
+                .join(" ");
+            ("do", json!({ "command": line }))
+        }
+        "commands" => ("commands", json!({})),
         "list" => ("list", json!({})),
         "new" => (
             "new",
@@ -4159,6 +4092,26 @@ fn client(session: &str, args: &[String]) -> i32 {
     match api::call(session, cmd, a) {
         Ok(v) => {
             match cmd {
+                "commands" => {
+                    println!("{:<30} {:<26} WHAT IT DOES", "COMMAND", "KEYS");
+                    for c in v["commands"].as_array().cloned().unwrap_or_default() {
+                        let name = match c["arg"].as_str() {
+                            Some(a) if !a.is_empty() => {
+                                format!("{} {a}", c["id"].as_str().unwrap_or(""))
+                            }
+                            _ => c["id"].as_str().unwrap_or("").to_string(),
+                        };
+                        let keys: Vec<&str> = c["keys"]
+                            .as_array()
+                            .map(|k| k.iter().filter_map(|x| x.as_str()).collect())
+                            .unwrap_or_default();
+                        println!(
+                            "{name:<30} {:<26} {}",
+                            keys.join(", "),
+                            c["title"].as_str().unwrap_or("")
+                        );
+                    }
+                }
                 "list" => {
                     println!(
                         "{:<5} {:<12} {:<4} {:<10} {:<20} FOLDER",

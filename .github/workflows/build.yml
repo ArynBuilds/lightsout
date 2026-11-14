@@ -167,6 +167,17 @@ jobs:
           $B/lightsout read "$(pane 3)" | grep -q "echo typed-back"
           $B/lightsout close "$(pane 3)"; sleep 1          # closing a pane: it is gone from the list
           ! $B/lightsout list | awk 'NR > 1 {print $1}' | grep -qx "$(pane 3)"
+          # everything is a command: the list with its keys, one done by name (as its key or the
+          # menu does), a command line in a split (its quoting kept), an unknown name refused
+          $B/lightsout commands | tee commands.txt
+          grep -qE '^room\.new +Ctrl\+Shift\+N +New room' commands.txt
+          grep -qE '^run\.split COMMAND ' commands.txt
+          $B/lightsout do room.new
+          $B/lightsout room list | grep -q "Room 2"
+          $B/lightsout do run.split sh -c 'echo did-split; sleep 30'
+          sleep 2
+          $B/lightsout read "$($B/lightsout list | awk 'NR > 1 {print $1}' | sort -n | tail -1)" | grep -q did-split
+          ! $B/lightsout do nope.nope
           pkill -f -- "--session cireopen --server" || true
           # Quit keeps each agent's own conversation: two Claudes in one folder each come back to
           # theirs, in the folder they work in (a stand-in Claude that, like the real one, records
